@@ -11,3 +11,8 @@ dependencies = [
 
 [tool.uv.sources]
 gpjax = { git = "https://github.com/thomaspinder/GPJax.git" }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.9",
+]
