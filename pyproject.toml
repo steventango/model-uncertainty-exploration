@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "gpjax",
+    "seaborn>=0.13.2",
 ]
 
 [tool.uv.sources]
