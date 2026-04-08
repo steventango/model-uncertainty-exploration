@@ -58,12 +58,15 @@ def test_sample_shapes():
 def test_consecutive_pairs():
     buffer, state = _build(batch_size=2)
     for i in range(10):
-        state = buffer.add(state, {
-            "obs": jnp.array([[float(i)]]),
-            "action": jnp.array([[0.0]]),
-            "reward": jnp.array([0.0]),
-            "done": jnp.array([0.0]),
-        })
+        state = buffer.add(
+            state,
+            {
+                "obs": jnp.array([[float(i)]]),
+                "action": jnp.array([[0.0]]),
+                "reward": jnp.array([0.0]),
+                "done": jnp.array([0.0]),
+            },
+        )
     batch = buffer.sample(state, jax.random.key(0))
     first_obs = batch.experience.first["obs"]
     second_obs = batch.experience.second["obs"]
@@ -73,18 +76,24 @@ def test_consecutive_pairs():
 def test_discrete_action_space():
     buffer, state = _build(env_id="CartPole-v1")
     obs_dim = 4  # CartPole obs
-    state = buffer.add(state, {
-        "obs": jnp.zeros((1, obs_dim)),
-        "action": jnp.array([[1.0]]),
-        "reward": jnp.array([1.0]),
-        "done": jnp.array([0.0]),
-    })
-    state = buffer.add(state, {
-        "obs": jnp.ones((1, obs_dim)),
-        "action": jnp.array([[0.0]]),
-        "reward": jnp.array([1.0]),
-        "done": jnp.array([0.0]),
-    })
+    state = buffer.add(
+        state,
+        {
+            "obs": jnp.zeros((1, obs_dim)),
+            "action": jnp.array([[1.0]]),
+            "reward": jnp.array([1.0]),
+            "done": jnp.array([0.0]),
+        },
+    )
+    state = buffer.add(
+        state,
+        {
+            "obs": jnp.ones((1, obs_dim)),
+            "action": jnp.array([[0.0]]),
+            "reward": jnp.array([1.0]),
+            "done": jnp.array([0.0]),
+        },
+    )
     assert buffer.can_sample(state)
     batch = buffer.sample(state, jax.random.key(0))
     assert batch.experience.first["obs"].shape == (4, 4)
