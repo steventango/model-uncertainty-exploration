@@ -6,10 +6,10 @@ name: Python test
 on:
   push:
     branches: [ "main" ]
-    paths: [ "**.py", ".github/workflows/pytest.yml" ]
+    paths: [ "**.py", ".github/workflows/python-test.yml" ]
   pull_request:
     branches: [ "main" ]
-    paths: [ "**.py", ".github/workflows/pytest.yml" ]
+    paths: [ "**.py", ".github/workflows/python-test.yml" ]
 
 jobs:
   test:
