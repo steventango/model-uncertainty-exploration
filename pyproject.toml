@@ -23,5 +23,15 @@ gpjax = { git = "https://github.com/thomaspinder/GPJax.git" }
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0",
     "ruff>=0.15.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
 ]
