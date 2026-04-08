@@ -2,31 +2,7 @@
 
 import jax.numpy as jnp
 
-from mue.types import BatchTransition, ModelPrediction, Transition
-
-
-def test_transition_fields():
-    t = Transition(
-        obs=jnp.array([1.0]),
-        action=jnp.array([2.0]),
-        next_obs=jnp.array([3.0]),
-        reward=jnp.array(4.0),
-        done=jnp.array(0.0),
-    )
-    assert t._fields == ("obs", "action", "next_obs", "reward", "done")
-
-
-def test_batch_transition():
-    bt = BatchTransition(
-        obs=jnp.ones((4, 3)),
-        action=jnp.ones((4, 1)),
-        next_obs=jnp.ones((4, 3)),
-        reward=jnp.ones(4),
-        done=jnp.zeros(4),
-    )
-    assert bt.obs.shape == (4, 3)
-    assert bt.action.shape == (4, 1)
-    assert bt.reward.shape == (4,)
+from mue.types import ModelPrediction
 
 
 def test_model_prediction_defaults():

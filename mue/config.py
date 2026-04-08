@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from mue.data import BufferConfig
 
 
 @dataclass
@@ -8,3 +10,4 @@ class ExperimentConfig:
     max_steps: int = 10_000
     eval_episodes: int = 5
     log_dir: str = "results"
+    buffer: BufferConfig = field(default_factory=BufferConfig)
