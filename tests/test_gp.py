@@ -1,4 +1,4 @@
-"""Tests for world model classes."""
+"""Tests for GPModel."""
 
 import jax
 import jax.numpy as jnp
@@ -20,19 +20,16 @@ def training_data():
     return obs, actions, next_obs, rewards
 
 
-class TestEnsembleModel:
+class TestGPModel:
     @pytest.fixture
     def model(self):
-        from mue.models.ensemble import EnsembleModel
+        from mue.models.gp import GPModel
 
-        return EnsembleModel(
+        return GPModel(
             obs_dim=OBS_DIM,
             act_dim=ACT_DIM,
-            num_members=2,
-            hidden_sizes=(8, 8),
-            learning_rate=1e-3,
-            train_epochs=2,
-            batch_size=8,
+            learning_rate=0.01,
+            num_iters=50,
             seed=0,
         )
 
@@ -45,27 +42,39 @@ class TestEnsembleModel:
     def test_predict_shapes(self, model, training_data):
         obs, actions, next_obs, rewards = training_data
         model.fit(obs, actions, next_obs, rewards)
-
-        test_obs = obs[:5]
-        test_act = actions[:5]
-        pred = model.predict(test_obs, test_act)
+        pred = model.predict(obs[:5], actions[:5])
 
         out_dim = OBS_DIM + 1
         assert pred.mean.shape == (5, out_dim)
         assert pred.covariance.shape == (5, out_dim, out_dim)
         assert pred.epistemic_covariance is not None
-        assert pred.epistemic_covariance.shape == (5, out_dim, out_dim)
+        assert pred.aleatoric_covariance is not None
 
-    def test_predict_members_length(self, model, training_data):
-        obs, actions, next_obs, rewards = training_data
-        model.fit(obs, actions, next_obs, rewards)
-        members = model.predict_members(obs[:3], actions[:3])
-        assert len(members) == 2
-
-    def test_covariance_nonnegative_diagonal(self, model, training_data):
+    def test_covariance_diagonal_nonnegative(self, model, training_data):
         obs, actions, next_obs, rewards = training_data
         model.fit(obs, actions, next_obs, rewards)
         pred = model.predict(obs[:5], actions[:5])
         for i in range(OBS_DIM + 1):
             assert jnp.all(pred.covariance[:, i, i] >= 0)
 
+    def test_condition_on_fantasy(self, model, training_data):
+        obs, actions, next_obs, rewards = training_data
+        model.fit(obs, actions, next_obs, rewards)
+
+        # Fantasy observations and targets
+        fantasy_obs = obs[:2]
+        fantasy_actions = actions[:2]
+        fantasy_targets = (next_obs - obs)[:2]
+        fantasy_targets_with_r = jnp.concatenate(
+            [fantasy_targets, rewards[:2].reshape(-1, 1)], axis=-1
+        )
+
+        # Condition on fantasy data
+        fantasy_model = model.condition_on(
+            fantasy_obs, fantasy_actions, fantasy_targets_with_r
+        )
+
+        # Should still be able to predict
+        pred = fantasy_model.predict(obs[:3], actions[:3])
+        out_dim = OBS_DIM + 1
+        assert pred.mean.shape == (3, out_dim)
