@@ -16,6 +16,7 @@ dependencies = [
     "tensorboard>=2.20.0",
     "tensorboardx>=2.6.5",
     "tqdm>=4.67.3",
+    "tyro>=1.0.12",
 ]
 
 [tool.uv.sources]
