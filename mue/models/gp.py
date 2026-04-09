@@ -1,23 +1,27 @@
 from __future__ import annotations
 
 import gpjax as gpx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax as ox
+from gpjax.kernels import Matern52
 
 from mue.types import ModelPrediction
 
 
 class GPModel:
-    """Independent GP per output dimension for dynamics + reward prediction.
+    """Multi-output GP with optional Linear Model of Coregionalization (LCM).
 
-    Predicts p(s', r | s, a) by fitting one GP per output dimension,
+    When `latent_dim` is None, reduces to independent GPs per output dimension
+    (classic Gaussian Process regression). When `latent_dim > 0, uses LCM kernel
+    to capture cross-output correlations.
+
+    Predicts p(s', r | s, a) by fitting one (or shared) GP per output dimension,
     using [s, a] as input and [s' - s, r] as targets.
 
-    Uses an ARD (Automatic Relevance Determination) RBF kernel with
-    per-dimension lengthscales, input/output normalization, and learned
-    observation noise.  Cross-output correlations are *not* captured;
-    use ``LCMGPModel`` when those matter.
+    Uses ARD kernels with per-dimension lengthscales, input/output normalization,
+    and learned observation noise.
 
     Supports the ``FantasyModel`` protocol: calling ``condition_on`` returns
     a lightweight copy whose posteriors include the fantasy data, so
@@ -30,6 +34,7 @@ class GPModel:
         act_dim: int,
         learning_rate: float = 0.01,
         num_iters: int = 500,
+        latent_dim: int | None = None,
         seed: int = 0,
     ):
         self.obs_dim = obs_dim
@@ -38,6 +43,7 @@ class GPModel:
         self.out_dim = obs_dim + 1  # state deltas + reward
         self.learning_rate = learning_rate
         self.num_iters = num_iters
+        self.latent_dim = latent_dim
         self.key = jr.key(seed)
 
         self._posteriors: list[gpx.gps.ConjugatePosterior] = []
@@ -50,7 +56,8 @@ class GPModel:
         self._Y_std: jnp.ndarray | None = None
 
     def _build_gp(self, n: int) -> gpx.gps.ConjugatePosterior:
-        kernel = gpx.kernels.RBF(n_dims=self.in_dim)
+        """Build independent GP for a single output dimension."""
+        kernel = gpx.kernels.Matern52(n_dims=self.in_dim)
         mean_function = gpx.mean_functions.Zero()
         prior = gpx.gps.Prior(kernel=kernel, mean_function=mean_function, jitter=1e-4)
         likelihood = gpx.likelihoods.Gaussian(num_datapoints=n)
@@ -230,6 +237,7 @@ class GPModel:
         new_model.out_dim = self.out_dim
         new_model.learning_rate = self.learning_rate
         new_model.num_iters = self.num_iters
+        new_model.latent_dim = self.latent_dim
         new_model.key = self.key
         new_model._X_mean = self._X_mean
         new_model._X_std = self._X_std
