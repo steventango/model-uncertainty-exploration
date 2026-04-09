@@ -20,8 +20,8 @@ def build_model(config: ExperimentConfig, env: gym.Env):
     else:
         raise ValueError(f"Unsupported action space: {type(act_space)}")
 
-    match config.model_type:
+    match config.model.model_type:
         case "gp":
             return GPModel(obs_dim=obs_dim, act_dim=act_dim, seed=config.seed)
         case _:
-            raise ValueError(f"Unknown model type: {config.model_type}")
+            raise ValueError(f"Unknown model type: {config.model.model_type}")
