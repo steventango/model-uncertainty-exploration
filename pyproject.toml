@@ -10,6 +10,7 @@ dependencies = [
     "flax>=0.10.0",
     "gpjax",
     "gymnasium[classic-control]>=1.2.3",
+    "gymnax>=0.0.9",
     "jax[cuda12]>=0.9.2",
     "optax>=0.2.0",
     "pyyaml>=6.0",
