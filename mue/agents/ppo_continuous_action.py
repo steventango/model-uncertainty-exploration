@@ -1,19 +1,20 @@
+from typing import NamedTuple, Sequence
+
+import distrax
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
-from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
-import distrax
 from wrappers import (
-    LogWrapper,
     BraxGymnaxWrapper,
-    VecEnv,
+    ClipAction,
+    LogWrapper,
     NormalizeVecObservation,
     NormalizeVecReward,
-    ClipAction,
+    VecEnv,
 )
 
 
@@ -229,9 +230,9 @@ def make_train(config):
                 train_state, traj_batch, advantages, targets, rng = update_state
                 rng, _rng = jax.random.split(rng)
                 batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
-                assert (
-                    batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
-                ), "batch size must be equal to number of steps * number of envs"
+                assert batch_size == config["NUM_STEPS"] * config["NUM_ENVS"], (
+                    "batch size must be equal to number of steps * number of envs"
+                )
                 permutation = jax.random.permutation(_rng, batch_size)
                 batch = (traj_batch, advantages, targets)
                 batch = jax.tree_util.tree_map(
