@@ -25,25 +25,26 @@ class Environment(
         state: TEnvState,
         action: int | float | jax.Array,
         params: TEnvParams | None = None,
-    ) -> tuple[jax.Array, TEnvState, jax.Array, jax.Array, dict[Any, Any]]:
+    ) -> tuple[jax.Array, TEnvState, jax.Array, jax.Array, jax.Array, dict[Any, Any]]:
         """Performs step transitions in the environment."""
         if params is None:
             params = self.default_params
 
         # Step
         key_step, key_reset = jax.random.split(key)
-        obs_st, state_st, reward, done, info = self.step_env(
+        obs_st, state_st, reward, terminated, truncated, info = self.step_env(
             key_step, state, action, params
         )
+        done = terminated | truncated
         obs_re, state_re = self.reset_env(key_reset, params)
 
-        # Auto-reset environment based on termination
+        # Auto-reset environment based on done
         state = jax.tree.map(
             lambda x, y: jax.lax.select(done, x, y), state_re, state_st
         )
         obs = jax.lax.select(done, obs_re, obs_st)
 
-        return obs, state, reward, done, info
+        return obs, state, reward, terminated, truncated, info
 
     def step_env(
         self,
@@ -51,6 +52,6 @@ class Environment(
         state: TEnvState,
         action: int | float | jax.Array,
         params: TEnvParams,
-    ) -> tuple[jax.Array, TEnvState, jax.Array, jax.Array, dict[Any, Any]]:
+    ) -> tuple[jax.Array, TEnvState, jax.Array, jax.Array, jax.Array, dict[Any, Any]]:
         """Environment-specific step transition."""
         raise NotImplementedError
