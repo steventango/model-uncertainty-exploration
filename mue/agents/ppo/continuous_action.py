@@ -8,14 +8,6 @@ import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
-from wrappers import (
-    BraxGymnaxWrapper,
-    ClipAction,
-    LogWrapper,
-    NormalizeVecObservation,
-    NormalizeVecReward,
-    VecEnv,
-)
 
 
 class ActorCritic(nn.Module):
@@ -67,59 +59,61 @@ class Transition(NamedTuple):
     info: jnp.ndarray
 
 
-def make_train(config):
+def _update_config(config):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
-    env, env_params = BraxGymnaxWrapper(config["ENV_NAME"]), None
-    env = LogWrapper(env)
-    env = ClipAction(env)
-    env = VecEnv(env)
-    if config["NORMALIZE_ENV"]:
-        env = NormalizeVecObservation(env)
-        env = NormalizeVecReward(env, config["GAMMA"])
+    return config
 
-    def linear_schedule(count):
-        frac = (
-            1.0
-            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
-            / config["NUM_UPDATES"]
-        )
-        return config["LR"] * frac
 
-    def train(rng):
-        # INIT NETWORK
-        network = ActorCritic(
-            env.action_space(env_params).shape[0], activation=config["ACTIVATION"]
+def _make_optimizer(config):
+    if config["ANNEAL_LR"]:
+
+        def linear_schedule(count):
+            frac = (
+                1.0
+                - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
+                / config["NUM_UPDATES"]
+            )
+            return config["LR"] * frac
+
+        return optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=linear_schedule, eps=1e-5),
         )
-        rng, _rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space(env_params).shape)
-        network_params = network.init(_rng, init_x)
-        if config["ANNEAL_LR"]:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["LR"], eps=1e-5),
-            )
-        train_state = TrainState.create(
+    return optax.chain(
+        optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+        optax.adam(config["LR"], eps=1e-5),
+    )
+
+
+def build_policy(config, env, env_params):
+    _update_config(config)
+    network = ActorCritic(
+        env.action_space(env_params).shape[0], activation=config["ACTIVATION"]
+    )
+    tx = _make_optimizer(config)
+    init_x = jnp.zeros(env.observation_space(env_params).shape)
+
+    def init_train_state(rng):
+        network_params = network.init(rng, init_x)
+        return TrainState.create(
             apply_fn=network.apply,
             params=network_params,
             tx=tx,
         )
 
-        # INIT ENV
-        rng, _rng = jax.random.split(rng)
-        reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
-        obsv, env_state = env.reset(reset_rng, env_params)
+    return network, init_train_state
 
-        # TRAIN LOOP
+
+
+def make_update_fn(config, env, network):
+    _update_config(config)
+
+    def update_steps(_rng, train_state, env_state, obsv, env_params):
         def _update_step(runner_state, unused):
             # COLLECT TRAJECTORIES
             def _env_step(runner_state, unused):
@@ -279,36 +273,10 @@ def make_train(config):
             runner_state = (train_state, env_state, last_obs, rng)
             return runner_state, metric
 
-        rng, _rng = jax.random.split(rng)
         runner_state = (train_state, env_state, obsv, _rng)
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
         )
         return {"runner_state": runner_state, "metrics": metric}
 
-    return train
-
-
-if __name__ == "__main__":
-    config = {
-        "LR": 3e-4,
-        "NUM_ENVS": 2048,
-        "NUM_STEPS": 10,
-        "TOTAL_TIMESTEPS": 5e7,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 32,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.0,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.5,
-        "ACTIVATION": "tanh",
-        "ENV_NAME": "hopper",
-        "ANNEAL_LR": False,
-        "NORMALIZE_ENV": True,
-        "DEBUG": True,
-    }
-    rng = jax.random.PRNGKey(30)
-    train_jit = jax.jit(make_train(config))
-    out = train_jit(rng)
+    return update_steps
