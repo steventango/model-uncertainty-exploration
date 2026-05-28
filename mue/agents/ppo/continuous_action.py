@@ -13,6 +13,7 @@ from flax.training.train_state import TrainState
 class ActorCritic(nn.Module):
     action_dim: Sequence[int]
     activation: str = "tanh"
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x):
@@ -23,10 +24,14 @@ class ActorCritic(nn.Module):
         actor_mean = nn.Dense(
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(x)
+        if self.use_layer_norm:
+            actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = activation(actor_mean)
         actor_mean = nn.Dense(
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(actor_mean)
+        if self.use_layer_norm:
+            actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = activation(actor_mean)
         actor_mean = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
@@ -37,10 +42,14 @@ class ActorCritic(nn.Module):
         critic = nn.Dense(
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(x)
+        if self.use_layer_norm:
+            critic = nn.LayerNorm()(critic)
         critic = activation(critic)
         critic = nn.Dense(
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(critic)
+        if self.use_layer_norm:
+            critic = nn.LayerNorm()(critic)
         critic = activation(critic)
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
             critic
@@ -93,7 +102,9 @@ def _make_optimizer(config):
 def build_policy(config, env, env_params):
     _update_config(config)
     network = ActorCritic(
-        env.action_space(env_params).shape[0], activation=config["ACTIVATION"]
+        env.action_space(env_params).shape[0],
+        activation=config["ACTIVATION"],
+        use_layer_norm=config["USE_LAYER_NORM"],
     )
     tx = _make_optimizer(config)
     init_x = jnp.zeros(env.observation_space(env_params).shape)
