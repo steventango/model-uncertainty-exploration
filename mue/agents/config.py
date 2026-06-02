@@ -1,5 +1,4 @@
-from dataclasses import dataclass
+from mue.agents.ppo.config import PPOConfig
+from mue.agents.random.config import RandomConfig
 
-@dataclass
-class AgentConfig:
-    agent_type: str = "random"
+AgentConfig = PPOConfig | RandomConfig

@@ -1,6 +1,11 @@
+from dataclasses import dataclass
 from typing import Protocol
 
 import jax.numpy as jnp
+
+@dataclass
+class BaseAgentConfig:
+    update_steps: int = 5
 
 
 class Agent(Protocol):
