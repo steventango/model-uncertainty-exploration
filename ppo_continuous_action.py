@@ -1,19 +1,21 @@
+from typing import NamedTuple, Sequence
+
+import distrax
+import flax.linen as nn
+import gymnax
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
-from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
-import distrax
+
 from wrappers import (
+    ClipAction,
     LogWrapper,
-    BraxGymnaxWrapper,
-    VecEnv,
     NormalizeVecObservation,
     NormalizeVecReward,
-    ClipAction,
+    VecEnv,
 )
 
 
@@ -73,7 +75,7 @@ def make_train(config):
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
-    env, env_params = BraxGymnaxWrapper(config["ENV_NAME"]), None
+    env, env_params = gymnax.make(config["ENV_NAME"])
     env = LogWrapper(env)
     env = ClipAction(env)
     env = VecEnv(env)
@@ -303,7 +305,7 @@ if __name__ == "__main__":
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.5,
         "ACTIVATION": "tanh",
-        "ENV_NAME": "hopper",
+        "ENV_NAME": "Pendulum-v1",
         "ANNEAL_LR": False,
         "NORMALIZE_ENV": True,
         "DEBUG": True,
