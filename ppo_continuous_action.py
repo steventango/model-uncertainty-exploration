@@ -1,14 +1,13 @@
-from typing import NamedTuple, Sequence
+from typing import NamedTuple
 
 import distrax
-import flax.linen as nn
+from flax import nnx
 import gymnax
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from flax.linen.initializers import constant, orthogonal
-from flax.training.train_state import TrainState
+from flax.nnx.nn.initializers import constant, orthogonal
 
 from wrappers import (
     ClipAction,
@@ -19,43 +18,110 @@ from wrappers import (
 )
 
 
-class ActorCritic(nn.Module):
-    action_dim: Sequence[int]
-    activation: str = "tanh"
-
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
+class Actor(nnx.Module):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        activation: str = "tanh",
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.action_dim = action_dim
+        if activation == "relu":
+            self.activation = nnx.relu
         else:
-            activation = nn.tanh
-        actor_mean = nn.Dense(
-            256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(x)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(
-            256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(actor_mean)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(
-            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
-        )(actor_mean)
-        actor_logtstd = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
-        pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(actor_logtstd))
+            self.activation = nnx.tanh
+        self.dense1 = nnx.Linear(
+            state_dim,
+            256,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+        self.dense2 = nnx.Linear(
+            256,
+            256,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+        self.dense3 = nnx.Linear(
+            256,
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+        self.log_std = nnx.Param(jnp.zeros(self.action_dim))
 
-        critic = nn.Dense(
-            256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(x)
-        critic = activation(critic)
-        critic = nn.Dense(
-            256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(critic)
-        critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
-            critic
+    def __call__(self, x: jax.Array):
+        actor_mean = self.dense1(x)
+        actor_mean = self.activation(actor_mean)
+        actor_mean = self.dense2(actor_mean)
+        actor_mean = self.activation(actor_mean)
+        actor_mean = self.dense3(actor_mean)
+        pi = distrax.MultivariateNormalDiag(
+            actor_mean, jnp.exp(self.log_std.get_value())
+        )
+        return pi
+
+
+class Critic(nnx.Module):
+    def __init__(self, state_dim: int, activation: str = "tanh", *, rngs: nnx.Rngs):
+        if activation == "relu":
+            self.activation = nnx.relu
+        else:
+            self.activation = nnx.tanh
+        self.dense1 = nnx.Linear(
+            state_dim,
+            256,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+        self.dense2 = nnx.Linear(
+            256,
+            256,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+        self.dense3 = nnx.Linear(
+            256,
+            1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+            rngs=rngs,
         )
 
-        return pi, jnp.squeeze(critic, axis=-1)
+    def __call__(self, x: jax.Array):
+        critic = self.dense1(x)
+        critic = self.activation(critic)
+        critic = self.dense2(critic)
+        critic = self.activation(critic)
+        critic = self.dense3(critic)
+        return jnp.squeeze(critic, axis=-1)
+
+
+class ActorCritic(nnx.Module):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        activation: str = "tanh",
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.action_dim = action_dim
+        self.activation = activation
+        self.actor = Actor(state_dim, action_dim, activation, rngs=rngs)
+        self.critic = Critic(state_dim, activation, rngs=rngs)
+
+    def __call__(self, x):
+        pi = self.actor(x)
+        critic = self.critic(x)
+        return pi, critic
 
 
 class Transition(NamedTuple):
@@ -95,12 +161,14 @@ def make_train(config):
 
     def train(rng):
         # INIT NETWORK
-        network = ActorCritic(
-            env.action_space(env_params).shape[0], activation=config["ACTIVATION"]
-        )
         rng, _rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space(env_params).shape)
-        network_params = network.init(_rng, init_x)
+        rngs = nnx.Rngs(_rng)
+        network = ActorCritic(
+            env.observation_space(env_params).shape[0],
+            env.action_space(env_params).shape[0],
+            activation=config["ACTIVATION"],
+            rngs=rngs,
+        )
         if config["ANNEAL_LR"]:
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
@@ -111,11 +179,8 @@ def make_train(config):
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                 optax.adam(config["LR"], eps=1e-5),
             )
-        train_state = TrainState.create(
-            apply_fn=network.apply,
-            params=network_params,
-            tx=tx,
-        )
+        optimizer = nnx.Optimizer(network, tx, wrt=nnx.Param)
+        train_state = (network, optimizer)
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
@@ -127,10 +192,10 @@ def make_train(config):
             # COLLECT TRAJECTORIES
             def _env_step(runner_state, unused):
                 train_state, env_state, last_obs, rng = runner_state
-
+                network, _ = train_state
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
-                pi, value = network.apply(train_state.params, last_obs)
+                pi, value = network(last_obs)
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
 
@@ -143,7 +208,7 @@ def make_train(config):
 
                 # GET NEXT VALUE
                 next_obs = info.pop("next_obs")
-                _, next_value = network.apply(train_state.params, next_obs)
+                _, next_value = network(next_obs)
 
                 transition = Transition(
                     terminated,
@@ -159,8 +224,8 @@ def make_train(config):
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
 
-            runner_state, traj_batch = jax.lax.scan(
-                _env_step, runner_state, None, config["NUM_STEPS"]
+            runner_state, traj_batch = nnx.scan(_env_step, length=config["NUM_STEPS"])(
+                runner_state, None
             )
 
             # CALCULATE ADVANTAGE
@@ -199,11 +264,12 @@ def make_train(config):
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
+                    network, optimizer = train_state
                     traj_batch, advantages, targets = batch_info
 
-                    def _loss_fn(params, traj_batch, gae, targets):
+                    def _loss_fn(network, traj_batch, gae, targets):
                         # RERUN NETWORK
-                        pi, value = network.apply(params, traj_batch.obs)
+                        pi, value = network(traj_batch.obs)
                         log_prob = pi.log_prob(traj_batch.action)
 
                         # CALCULATE VALUE LOSS
@@ -239,11 +305,11 @@ def make_train(config):
                         )
                         return total_loss, (value_loss, loss_actor, entropy)
 
-                    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
+                    grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
-                        train_state.params, traj_batch, advantages, targets
+                        network, traj_batch, advantages, targets
                     )
-                    train_state = train_state.apply_gradients(grads=grads)
+                    optimizer.update(network, grads)
                     return train_state, total_loss
 
                 train_state, traj_batch, advantages, targets, rng = update_state
@@ -266,16 +332,16 @@ def make_train(config):
                     ),
                     shuffled_batch,
                 )
-                train_state, total_loss = jax.lax.scan(
-                    _update_minbatch, train_state, minibatches
+                train_state, total_loss = nnx.scan(_update_minbatch)(
+                    train_state, minibatches
                 )
                 update_state = (train_state, traj_batch, advantages, targets, rng)
                 return update_state, total_loss
 
             update_state = (train_state, traj_batch, advantages, targets, rng)
-            update_state, loss_info = jax.lax.scan(
-                _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
-            )
+            update_state, loss_info = nnx.scan(
+                _update_epoch, length=config["UPDATE_EPOCHS"]
+            )(update_state, None)
             train_state = update_state[0]
             metric = traj_batch.info
             rng = update_state[-1]
@@ -300,8 +366,8 @@ def make_train(config):
 
         rng, _rng = jax.random.split(rng)
         runner_state = (train_state, env_state, obsv, _rng)
-        runner_state, metric = jax.lax.scan(
-            _update_step, runner_state, None, config["NUM_UPDATES"]
+        runner_state, metric = nnx.scan(_update_step, length=config["NUM_UPDATES"])(
+            runner_state, None
         )
         return {"runner_state": runner_state, "metrics": metric}
 
