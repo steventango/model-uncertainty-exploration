@@ -59,9 +59,11 @@ class ActorCritic(nn.Module):
 
 
 class Transition(NamedTuple):
-    done: jnp.ndarray
+    terminated: jnp.ndarray
+    truncated: jnp.ndarray
     action: jnp.ndarray
     value: jnp.ndarray
+    next_value: jnp.ndarray
     reward: jnp.ndarray
     log_prob: jnp.ndarray
     obs: jnp.ndarray
@@ -135,11 +137,24 @@ def make_train(config):
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config["NUM_ENVS"])
-                obsv, env_state, reward, done, info = env.step(
+                obsv, env_state, reward, terminated, truncated, info = env.step(
                     rng_step, env_state, action, env_params
                 )
+
+                # GET NEXT VALUE
+                next_obs = info.pop("next_obs")
+                _, next_value = network.apply(train_state.params, next_obs)
+
                 transition = Transition(
-                    done, action, value, reward, log_prob, last_obs, info
+                    terminated,
+                    truncated,
+                    action,
+                    value,
+                    next_value,
+                    reward,
+                    log_prob,
+                    last_obs,
+                    info,
                 )
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
@@ -150,33 +165,36 @@ def make_train(config):
 
             # CALCULATE ADVANTAGE
             train_state, env_state, last_obs, rng = runner_state
-            _, last_val = network.apply(train_state.params, last_obs)
 
-            def _calculate_gae(traj_batch, last_val):
-                def _get_advantages(gae_and_next_value, transition):
-                    gae, next_value = gae_and_next_value
-                    done, value, reward = (
-                        transition.done,
+            def _calculate_gae(traj_batch):
+                def _get_advantages(gae, transition):
+                    terminated, truncated, value, next_value, reward = (
+                        transition.terminated,
+                        transition.truncated,
                         transition.value,
+                        transition.next_value,
                         transition.reward,
                     )
-                    delta = reward + config["GAMMA"] * next_value * (1 - done) - value
+                    delta = (
+                        reward + config["GAMMA"] * next_value * (1 - terminated) - value
+                    )
+                    done = terminated | truncated
                     gae = (
                         delta
                         + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
                     )
-                    return (gae, value), gae
+                    return gae, gae
 
                 _, advantages = jax.lax.scan(
                     _get_advantages,
-                    (jnp.zeros_like(last_val), last_val),
+                    jnp.zeros_like(traj_batch.value[0]),
                     traj_batch,
                     reverse=True,
                     unroll=16,
                 )
                 return advantages, advantages + traj_batch.value
 
-            advantages, targets = _calculate_gae(traj_batch, last_val)
+            advantages, targets = _calculate_gae(traj_batch)
 
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
