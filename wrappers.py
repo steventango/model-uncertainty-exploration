@@ -51,10 +51,13 @@ class FlattenObservationWrapper(GymnaxWrapper):
         state: environment.EnvState,
         action: Union[int, float],
         params: Optional[environment.EnvParams] = None,
-    ) -> Tuple[chex.Array, environment.EnvState, float, bool, dict]:
-        obs, state, reward, done, info = self._env.step(key, state, action, params)
+    ) -> Tuple[chex.Array, environment.EnvState, float, bool, bool, dict]:
+        obs, state, reward, terminated, truncated, info = self._env.step(
+            key, state, action, params
+        )
         obs = jnp.reshape(obs, (-1,))
-        return obs, state, reward, done, info
+        info["next_obs"] = jnp.reshape(info["next_obs"], (-1,))
+        return obs, state, reward, terminated, truncated, info
 
 
 @struct.dataclass
@@ -88,10 +91,11 @@ class LogWrapper(GymnaxWrapper):
         state: environment.EnvState,
         action: Union[int, float],
         params: Optional[environment.EnvParams] = None,
-    ) -> Tuple[chex.Array, environment.EnvState, float, bool, dict]:
-        obs, env_state, reward, done, info = self._env.step(
+    ) -> Tuple[chex.Array, environment.EnvState, float, bool, bool, dict]:
+        obs, env_state, reward, terminated, truncated, info = self._env.step(
             key, state.env_state, action, params
         )
+        done = terminated | truncated
         new_episode_return = state.episode_returns + reward
         new_episode_length = state.episode_lengths + 1
         state = LogEnvState(
@@ -108,7 +112,7 @@ class LogWrapper(GymnaxWrapper):
         info["returned_episode_lengths"] = state.returned_episode_lengths
         info["timestep"] = state.timestep
         info["returned_episode"] = done
-        return obs, state, reward, done, info
+        return obs, state, reward, terminated, truncated, info
 
 
 class ClipAction(GymnaxWrapper):
@@ -134,8 +138,11 @@ class TransformObservation(GymnaxWrapper):
         return self.transform_obs(obs), state
 
     def step(self, key, state, action, params=None):
-        obs, state, reward, done, info = self._env.step(key, state, action, params)
-        return self.transform_obs(obs), state, reward, done, info
+        obs, state, reward, terminated, truncated, info = self._env.step(
+            key, state, action, params
+        )
+        info["next_obs"] = self.transform_obs(info["next_obs"])
+        return self.transform_obs(obs), state, reward, terminated, truncated, info
 
 
 class TransformReward(GymnaxWrapper):
@@ -144,8 +151,10 @@ class TransformReward(GymnaxWrapper):
         self.transform_reward = transform_reward
 
     def step(self, key, state, action, params=None):
-        obs, state, reward, done, info = self._env.step(key, state, action, params)
-        return obs, state, self.transform_reward(reward), done, info
+        obs, state, reward, terminated, truncated, info = self._env.step(
+            key, state, action, params
+        )
+        return obs, state, self.transform_reward(reward), terminated, truncated, info
 
 
 class VecEnv(GymnaxWrapper):
@@ -199,7 +208,7 @@ class NormalizeVecObservation(GymnaxWrapper):
         return (obs - state.mean) / jnp.sqrt(state.var + 1e-8), state
 
     def step(self, key, state, action, params=None):
-        obs, env_state, reward, done, info = self._env.step(
+        obs, env_state, reward, terminated, truncated, info = self._env.step(
             key, state.env_state, action, params
         )
 
@@ -223,11 +232,13 @@ class NormalizeVecObservation(GymnaxWrapper):
             count=new_count,
             env_state=env_state,
         )
+        info["next_obs"] = (info["next_obs"] - state.mean) / jnp.sqrt(state.var + 1e-8)
         return (
             (obs - state.mean) / jnp.sqrt(state.var + 1e-8),
             state,
             reward,
-            done,
+            terminated,
+            truncated,
             info,
         )
 
@@ -259,9 +270,10 @@ class NormalizeVecReward(GymnaxWrapper):
         return obs, state
 
     def step(self, key, state, action, params=None):
-        obs, env_state, reward, done, info = self._env.step(
+        obs, env_state, reward, terminated, truncated, info = self._env.step(
             key, state.env_state, action, params
         )
+        done = terminated | truncated
         return_val = state.return_val * self.gamma * (1 - done) + reward
 
         batch_mean = jnp.mean(return_val, axis=0)
@@ -285,4 +297,11 @@ class NormalizeVecReward(GymnaxWrapper):
             return_val=return_val,
             env_state=env_state,
         )
-        return obs, state, reward / jnp.sqrt(state.var + 1e-8), done, info
+        return (
+            obs,
+            state,
+            reward / jnp.sqrt(state.var + 1e-8),
+            terminated,
+            truncated,
+            info,
+        )
