@@ -11,6 +11,7 @@ class Actor(nnx.Module):
         self,
         state_dim: int,
         action_dim: int,
+        hidden_dim: int,
         activation: str = "tanh",
         *,
         rngs: nnx.Rngs,
@@ -22,20 +23,20 @@ class Actor(nnx.Module):
             self.activation = nnx.tanh
         self.dense1 = nnx.Linear(
             state_dim,
-            256,
+            hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             rngs=rngs,
         )
         self.dense2 = nnx.Linear(
-            256,
-            256,
+            hidden_dim,
+            hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             rngs=rngs,
         )
         self.dense3 = nnx.Linear(
-            256,
+            hidden_dim,
             self.action_dim,
             kernel_init=orthogonal(0.01),
             bias_init=constant(0.0),
@@ -56,27 +57,34 @@ class Actor(nnx.Module):
 
 
 class Critic(nnx.Module):
-    def __init__(self, state_dim: int, activation: str = "tanh", *, rngs: nnx.Rngs):
+    def __init__(
+        self,
+        state_dim: int,
+        hidden_dim: int,
+        activation: str = "tanh",
+        *,
+        rngs: nnx.Rngs,
+    ):
         if activation == "relu":
             self.activation = nnx.relu
         else:
             self.activation = nnx.tanh
         self.dense1 = nnx.Linear(
             state_dim,
-            256,
+            hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             rngs=rngs,
         )
         self.dense2 = nnx.Linear(
-            256,
-            256,
+            hidden_dim,
+            hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             rngs=rngs,
         )
         self.dense3 = nnx.Linear(
-            256,
+            hidden_dim,
             1,
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
@@ -97,14 +105,15 @@ class ActorCritic(nnx.Module):
         self,
         state_dim: int,
         action_dim: int,
+        hidden_dim: int,
         activation: str = "tanh",
         *,
         rngs: nnx.Rngs,
     ):
         self.action_dim = action_dim
         self.activation = activation
-        self.actor = Actor(state_dim, action_dim, activation, rngs=rngs)
-        self.critic = Critic(state_dim, activation, rngs=rngs)
+        self.actor = Actor(state_dim, action_dim, hidden_dim, activation, rngs=rngs)
+        self.critic = Critic(state_dim, hidden_dim, activation, rngs=rngs)
 
     def __call__(self, x):
         pi = self.actor(x)

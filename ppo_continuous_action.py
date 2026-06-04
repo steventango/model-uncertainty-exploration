@@ -58,6 +58,7 @@ def make_train(config):
         network = ActorCritic(
             env.observation_space(env_params).shape[0],
             env.action_space(env_params).shape[0],
+            config["HIDDEN_DIM"],
             activation=config["ACTIVATION"],
             rngs=rngs,
         )
@@ -280,6 +281,7 @@ if __name__ == "__main__":
         "ENT_COEF": 0.0,
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.5,
+        "HIDDEN_DIM": 64,
         "ACTIVATION": "tanh",
         "ENV_NAME": "Pendulum-v1",
         "ANNEAL_LR": False,
