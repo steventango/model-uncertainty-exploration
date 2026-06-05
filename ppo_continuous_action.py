@@ -28,7 +28,7 @@ class Transition(NamedTuple):
     info: jnp.ndarray
 
 
-def make_rollout(config, env, env_params):
+def make_rollout(config, env, env_params, training=True):
     def _rollout(runner_state):
         # COLLECT TRAJECTORIES
         def _env_step(runner_state, unused):
@@ -36,7 +36,12 @@ def make_rollout(config, env, env_params):
             network, _, normalize_vec_obs, normalize_vec_reward = train_state
             # SELECT ACTION
             rng, _rng = jax.random.split(rng)
-            pi, value = network(last_obs)
+            if config["NORMALIZE_ENV"] and not training:
+                normalize_vec_obs.eval()
+                network_last_obs = normalize_vec_obs(last_obs)
+            else:
+                network_last_obs = last_obs
+            pi, value = network(network_last_obs)
             action = pi.sample(seed=_rng)
             log_prob = pi.log_prob(action)
 
@@ -46,15 +51,17 @@ def make_rollout(config, env, env_params):
             obsv, env_state, reward, terminated, truncated, info = env.step(
                 rng_step, env_state, action, env_params
             )
-            next_obs = info.pop("next_obs")
+            next_obs = info["next_obs"]
 
             if config["NORMALIZE_ENV"]:
-                normalize_vec_obs.train()
-                obsv = normalize_vec_obs(obsv)
+                if training:
+                    normalize_vec_obs.train()
+                    obsv = normalize_vec_obs(obsv)
                 normalize_vec_obs.eval()
                 next_obs = normalize_vec_obs(next_obs)
-                normalize_vec_reward.train()
-                reward = normalize_vec_reward(reward, terminated, truncated)
+                if training:
+                    normalize_vec_reward.train()
+                    reward = normalize_vec_reward(reward, terminated, truncated)
 
             _, next_value = network(next_obs)
 
@@ -102,7 +109,7 @@ def make_train(env, config):
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
-            _rollout = make_rollout(config, env, env_params)
+            _rollout = make_rollout(config, env, env_params, training=True)
             runner_state, traj_batch = _rollout(runner_state)
 
             # CALCULATE ADVANTAGE
@@ -275,6 +282,8 @@ if __name__ == "__main__":
     rollout_config = config.copy()
     rollout_config["NUM_ENVS"] = 1
     rollout_config["NUM_STEPS"] = 200
+    rollout_config["DATASET_SIZE"] = 10000
+
     rng = jax.random.PRNGKey(30)
 
     env, env_params = gymnax.make(rollout_config["ENV_NAME"])
@@ -325,15 +334,29 @@ if __name__ == "__main__":
     reset_rng = jax.random.split(_rng, rollout_config["NUM_ENVS"])
     obsv, env_state = env.reset(reset_rng, env_params)
 
-    if config["NORMALIZE_ENV"]:
-        normalize_vec_obs.train()
-        obsv = normalize_vec_obs(obsv)
-
     # ROLLOUT
     rng, _rng = jax.random.split(rng)
     runner_state = (train_state, env_state, obsv, _rng)
-    _rollout = make_rollout(rollout_config, env, env_params)
+    _rollout = make_rollout(rollout_config, env, env_params, training=False)
     runner_state, traj_batch = _rollout(runner_state)
 
-    train_jit = jax.jit(make_train(env, config))
+    # INIT DATASET
+    dataset = jax.tree_util.tree_map(
+        lambda x: jnp.zeros((rollout_config["DATASET_SIZE"],) + x.shape[2:], dtype=x.dtype), traj_batch
+    )
+    pointer = 0
+
+    # UPDATE DATASET
+    traj_batch = jax.tree_util.tree_map(
+        lambda x: x.reshape((-1,) + x.shape[2:]), traj_batch
+    )
+    dataset = jax.tree_util.tree_map(
+        lambda old, new: jax.lax.dynamic_update_slice_in_dim(
+            old, new, pointer, axis=0
+        ),
+        dataset,
+        traj_batch,
+    )
+    pointer += traj_batch.obs.shape[0]
+
     out = train_jit(train_state, rng)
