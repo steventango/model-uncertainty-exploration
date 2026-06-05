@@ -316,5 +316,20 @@ if __name__ == "__main__":
     )
     train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
 
+    # INIT ENV
+    rng, _rng = jax.random.split(rng)
+    reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+    obsv, env_state = env.reset(reset_rng, env_params)
+
+    if config["NORMALIZE_ENV"]:
+        normalize_vec_obs.train()
+        obsv = normalize_vec_obs(obsv)
+
+    # ROLLOUT
+    rng, _rng = jax.random.split(rng)
+    runner_state = (train_state, env_state, obsv, _rng)
+    _rollout = make_rollout(config, env, env_params)
+    runner_state, traj_batch = _rollout(runner_state)
+
     train_jit = jax.jit(make_train(env, config))
     out = train_jit(train_state, rng)
