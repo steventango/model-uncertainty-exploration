@@ -27,6 +27,58 @@ class Transition(NamedTuple):
     info: jnp.ndarray
 
 
+def make_rollout(config, env, env_params):
+    def _rollout(runner_state):
+        # COLLECT TRAJECTORIES
+        def _env_step(runner_state, unused):
+            train_state, env_state, last_obs, rng = runner_state
+            network, _, normalize_vec_obs, normalize_vec_reward = train_state
+            # SELECT ACTION
+            rng, _rng = jax.random.split(rng)
+            pi, value = network(last_obs)
+            action = pi.sample(seed=_rng)
+            log_prob = pi.log_prob(action)
+
+            # STEP ENV
+            rng, _rng = jax.random.split(rng)
+            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+            obsv, env_state, reward, terminated, truncated, info = env.step(
+                rng_step, env_state, action, env_params
+            )
+            next_obs = info.pop("next_obs")
+
+            if config["NORMALIZE_ENV"]:
+                normalize_vec_obs.train()
+                obsv = normalize_vec_obs(obsv)
+                normalize_vec_obs.eval()
+                next_obs = normalize_vec_obs(next_obs)
+                normalize_vec_reward.train()
+                reward = normalize_vec_reward(reward, terminated, truncated)
+
+            _, next_value = network(next_obs)
+
+            transition = Transition(
+                terminated,
+                truncated,
+                action,
+                value,
+                next_value,
+                reward,
+                log_prob,
+                last_obs,
+                info,
+            )
+            runner_state = (train_state, env_state, obsv, rng)
+            return runner_state, transition
+
+        runner_state, traj_batch = nnx.scan(_env_step, length=config["NUM_STEPS"])(
+            runner_state, None
+        )
+
+        return runner_state, traj_batch
+    return _rollout
+
+
 def make_train(env, config):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
@@ -49,51 +101,8 @@ def make_train(env, config):
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
-            # COLLECT TRAJECTORIES
-            def _env_step(runner_state, unused):
-                train_state, env_state, last_obs, rng = runner_state
-                network, _, normalize_vec_obs, normalize_vec_reward = train_state
-                # SELECT ACTION
-                rng, _rng = jax.random.split(rng)
-                pi, value = network(last_obs)
-                action = pi.sample(seed=_rng)
-                log_prob = pi.log_prob(action)
-
-                # STEP ENV
-                rng, _rng = jax.random.split(rng)
-                rng_step = jax.random.split(_rng, config["NUM_ENVS"])
-                obsv, env_state, reward, terminated, truncated, info = env.step(
-                    rng_step, env_state, action, env_params
-                )
-                next_obs = info.pop("next_obs")
-
-                if config["NORMALIZE_ENV"]:
-                    normalize_vec_obs.train()
-                    obsv = normalize_vec_obs(obsv)
-                    normalize_vec_obs.eval()
-                    next_obs = normalize_vec_obs(next_obs)
-                    normalize_vec_reward.train()
-                    reward = normalize_vec_reward(reward, terminated, truncated)
-
-                _, next_value = network(next_obs)
-
-                transition = Transition(
-                    terminated,
-                    truncated,
-                    action,
-                    value,
-                    next_value,
-                    reward,
-                    log_prob,
-                    last_obs,
-                    info,
-                )
-                runner_state = (train_state, env_state, obsv, rng)
-                return runner_state, transition
-
-            runner_state, traj_batch = nnx.scan(_env_step, length=config["NUM_STEPS"])(
-                runner_state, None
-            )
+            _rollout = make_rollout(config, env, env_params)
+            runner_state, traj_batch = _rollout(runner_state)
 
             # CALCULATE ADVANTAGE
             train_state, env_state, last_obs, rng = runner_state
