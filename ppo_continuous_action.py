@@ -7,10 +7,10 @@ import optax
 from flax import nnx
 
 from networks import ActorCritic
+from normalization import NormalizeVecObs
 from wrappers import (
     ClipAction,
     LogWrapper,
-    NormalizeVecObservation,
     NormalizeVecReward,
     VecEnv,
 )
@@ -40,7 +40,6 @@ def make_train(config):
     env = ClipAction(env)
     env = VecEnv(env)
     if config["NORMALIZE_ENV"]:
-        env = NormalizeVecObservation(env)
         env = NormalizeVecReward(env, config["GAMMA"])
 
     def linear_schedule(count):
@@ -73,19 +72,26 @@ def make_train(config):
                 optax.adam(config["LR"], eps=1e-5),
             )
         optimizer = nnx.Optimizer(network, tx, wrt=nnx.Param)
-        train_state = (network, optimizer)
+        normalize_vec_obs = NormalizeVecObs(
+            jnp.zeros(env.observation_space(env_params).shape)
+        )
+        train_state = (network, optimizer, normalize_vec_obs)
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
         obsv, env_state = env.reset(reset_rng, env_params)
 
+        if config["NORMALIZE_ENV"]:
+            normalize_vec_obs.train()
+            obsv = normalize_vec_obs(obsv)
+
         # TRAIN LOOP
         def _update_step(runner_state, unused):
             # COLLECT TRAJECTORIES
             def _env_step(runner_state, unused):
                 train_state, env_state, last_obs, rng = runner_state
-                network, _ = train_state
+                network, _, normalize_vec_obs = train_state
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
                 pi, value = network(last_obs)
@@ -98,9 +104,14 @@ def make_train(config):
                 obsv, env_state, reward, terminated, truncated, info = env.step(
                     rng_step, env_state, action, env_params
                 )
-
-                # GET NEXT VALUE
                 next_obs = info.pop("next_obs")
+
+                if config["NORMALIZE_ENV"]:
+                    normalize_vec_obs.train()
+                    obsv = normalize_vec_obs(obsv)
+                    normalize_vec_obs.eval()
+                    next_obs = normalize_vec_obs(next_obs)
+
                 _, next_value = network(next_obs)
 
                 transition = Transition(
@@ -157,7 +168,7 @@ def make_train(config):
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
-                    network, optimizer = train_state
+                    network, optimizer, _ = train_state
                     traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(network, traj_batch, gae, targets):
