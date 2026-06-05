@@ -4,7 +4,10 @@ from typing import NamedTuple
 import gymnax
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import optax
+import pandas as pd
+import seaborn as sns
 from flax import nnx
 
 from model import train_model
