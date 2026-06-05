@@ -7,11 +7,10 @@ import optax
 from flax import nnx
 
 from networks import ActorCritic
-from normalization import NormalizeVecObs
+from normalization import NormalizeVecObs, NormalizeVecReward
 from wrappers import (
     ClipAction,
     LogWrapper,
-    NormalizeVecReward,
     VecEnv,
 )
 
@@ -39,8 +38,6 @@ def make_train(config):
     env = LogWrapper(env)
     env = ClipAction(env)
     env = VecEnv(env)
-    if config["NORMALIZE_ENV"]:
-        env = NormalizeVecReward(env, config["GAMMA"])
 
     def linear_schedule(count):
         frac = (
@@ -75,7 +72,10 @@ def make_train(config):
         normalize_vec_obs = NormalizeVecObs(
             jnp.zeros(env.observation_space(env_params).shape)
         )
-        train_state = (network, optimizer, normalize_vec_obs)
+        normalize_vec_reward = NormalizeVecReward(
+            jnp.zeros(config["NUM_ENVS"]), config["GAMMA"]
+        )
+        train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
@@ -91,7 +91,7 @@ def make_train(config):
             # COLLECT TRAJECTORIES
             def _env_step(runner_state, unused):
                 train_state, env_state, last_obs, rng = runner_state
-                network, _, normalize_vec_obs = train_state
+                network, _, normalize_vec_obs, normalize_vec_reward = train_state
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
                 pi, value = network(last_obs)
@@ -111,6 +111,8 @@ def make_train(config):
                     obsv = normalize_vec_obs(obsv)
                     normalize_vec_obs.eval()
                     next_obs = normalize_vec_obs(next_obs)
+                    normalize_vec_reward.train()
+                    reward = normalize_vec_reward(reward, terminated, truncated)
 
                 _, next_value = network(next_obs)
 
@@ -168,7 +170,7 @@ def make_train(config):
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
-                    network, optimizer, _ = train_state
+                    network, optimizer, _, _ = train_state
                     traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(network, traj_batch, gae, targets):
