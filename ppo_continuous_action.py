@@ -27,55 +27,16 @@ class Transition(NamedTuple):
     info: jnp.ndarray
 
 
-def make_train(config):
+def make_train(env, config):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
-    env, env_params = gymnax.make(config["ENV_NAME"])
-    env = LogWrapper(env)
-    env = ClipAction(env)
-    env = VecEnv(env)
 
-    def linear_schedule(count):
-        frac = (
-            1.0
-            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
-            / config["NUM_UPDATES"]
-        )
-        return config["LR"] * frac
-
-    def train(rng):
-        # INIT NETWORK
-        rng, _rng = jax.random.split(rng)
-        rngs = nnx.Rngs(_rng)
-        network = ActorCritic(
-            env.observation_space(env_params).shape[0],
-            env.action_space(env_params).shape[0],
-            config["HIDDEN_DIM"],
-            activation=config["ACTIVATION"],
-            rngs=rngs,
-        )
-        if config["ANNEAL_LR"]:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["LR"], eps=1e-5),
-            )
-        optimizer = nnx.Optimizer(network, tx, wrt=nnx.Param)
-        normalize_vec_obs = NormalizeVecObs(
-            jnp.zeros(env.observation_space(env_params).shape)
-        )
-        normalize_vec_reward = NormalizeVecReward(
-            jnp.zeros(config["NUM_ENVS"]), config["GAMMA"]
-        )
-        train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
+    def train(train_state, rng):
+        _, _, normalize_vec_obs, _ = train_state
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
@@ -302,5 +263,49 @@ if __name__ == "__main__":
         "DEBUG": True,
     }
     rng = jax.random.PRNGKey(30)
-    train_jit = jax.jit(make_train(config))
-    out = train_jit(rng)
+
+    env, env_params = gymnax.make(config["ENV_NAME"])
+    env = LogWrapper(env)
+    env = ClipAction(env)
+    env = VecEnv(env)
+
+    # INIT NETWORK
+    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(_rng)
+    network = ActorCritic(
+        env.observation_space(env_params).shape[0],
+        env.action_space(env_params).shape[0],
+        config["HIDDEN_DIM"],
+        activation=config["ACTIVATION"],
+        rngs=rngs,
+    )
+
+    def linear_schedule(count):
+        frac = (
+            1.0
+            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
+            / config["NUM_UPDATES"]
+        )
+        return config["LR"] * frac
+
+    if config["ANNEAL_LR"]:
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=linear_schedule, eps=1e-5),
+        )
+    else:
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(config["LR"], eps=1e-5),
+        )
+    optimizer = nnx.Optimizer(network, tx, wrt=nnx.Param)
+    normalize_vec_obs = NormalizeVecObs(
+        jnp.zeros(env.observation_space(env_params).shape)
+    )
+    normalize_vec_reward = NormalizeVecReward(
+        jnp.zeros(config["NUM_ENVS"]), config["GAMMA"]
+    )
+    train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
+
+    train_jit = jax.jit(make_train(env, config))
+    out = train_jit(train_state, rng)
