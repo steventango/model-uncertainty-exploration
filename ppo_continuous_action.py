@@ -16,6 +16,8 @@ from wrappers import (
     VecEnv,
 )
 
+os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
+
 
 class Transition(NamedTuple):
     terminated: jnp.ndarray
