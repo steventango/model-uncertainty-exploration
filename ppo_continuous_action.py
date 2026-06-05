@@ -1,3 +1,4 @@
+import os
 from typing import NamedTuple
 
 import gymnax
@@ -271,9 +272,12 @@ if __name__ == "__main__":
         "NORMALIZE_ENV": True,
         "DEBUG": True,
     }
+    rollout_config = config.copy()
+    rollout_config["NUM_ENVS"] = 1
+    rollout_config["NUM_STEPS"] = 200
     rng = jax.random.PRNGKey(30)
 
-    env, env_params = gymnax.make(config["ENV_NAME"])
+    env, env_params = gymnax.make(rollout_config["ENV_NAME"])
     env = LogWrapper(env)
     env = ClipAction(env)
     env = VecEnv(env)
@@ -318,7 +322,7 @@ if __name__ == "__main__":
 
     # INIT ENV
     rng, _rng = jax.random.split(rng)
-    reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+    reset_rng = jax.random.split(_rng, rollout_config["NUM_ENVS"])
     obsv, env_state = env.reset(reset_rng, env_params)
 
     if config["NORMALIZE_ENV"]:
@@ -328,7 +332,7 @@ if __name__ == "__main__":
     # ROLLOUT
     rng, _rng = jax.random.split(rng)
     runner_state = (train_state, env_state, obsv, _rng)
-    _rollout = make_rollout(config, env, env_params)
+    _rollout = make_rollout(rollout_config, env, env_params)
     runner_state, traj_batch = _rollout(runner_state)
 
     train_jit = jax.jit(make_train(env, config))
