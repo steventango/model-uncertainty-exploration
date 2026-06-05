@@ -85,6 +85,7 @@ def make_rollout(config, env, env_params, training=True):
         )
 
         return runner_state, traj_batch
+
     return _rollout
 
 
@@ -350,7 +351,10 @@ if __name__ == "__main__":
 
     # INIT DATASET
     dataset = jax.tree_util.tree_map(
-        lambda x: jnp.zeros((rollout_config["DATASET_SIZE"],) + x.shape[2:], dtype=x.dtype), traj_batch
+        lambda x: jnp.zeros(
+            (rollout_config["DATASET_SIZE"],) + x.shape[2:], dtype=x.dtype
+        ),
+        traj_batch,
     )
     pointer = 0
 
@@ -359,9 +363,7 @@ if __name__ == "__main__":
         lambda x: x.reshape((-1,) + x.shape[2:]), traj_batch
     )
     dataset = jax.tree_util.tree_map(
-        lambda old, new: jax.lax.dynamic_update_slice_in_dim(
-            old, new, pointer, axis=0
-        ),
+        lambda old, new: jax.lax.dynamic_update_slice_in_dim(old, new, pointer, axis=0),
         dataset,
         traj_batch,
     )
