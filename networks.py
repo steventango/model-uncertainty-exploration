@@ -119,3 +119,39 @@ class ActorCritic(nnx.Module):
         pi = self.actor(x)
         critic = self.critic(x)
         return pi, critic
+
+
+class MLP(nnx.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden_dim: int,
+        activation: str = "tanh",
+        *,
+        rngs: nnx.Rngs,
+    ):
+        if activation == "relu":
+            self.activation = nnx.relu
+        else:
+            self.activation = nnx.tanh
+        self.dense1 = nnx.Linear(
+            input_dim,
+            hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+        self.dense3 = nnx.Linear(
+            hidden_dim,
+            output_dim,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+            rngs=rngs,
+        )
+
+    def __call__(self, x):
+        x = self.dense1(x)
+        x = self.activation(x)
+        x = self.dense3(x)
+        return x

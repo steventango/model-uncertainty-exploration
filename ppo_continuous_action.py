@@ -7,7 +7,8 @@ import jax.numpy as jnp
 import optax
 from flax import nnx
 
-from networks import ActorCritic
+from model import train_model
+from networks import MLP, ActorCritic
 from normalization import NormalizeVecObs, NormalizeVecReward
 from wrappers import (
     ClipAction,
@@ -283,6 +284,13 @@ if __name__ == "__main__":
     rollout_config["NUM_ENVS"] = 1
     rollout_config["NUM_STEPS"] = 200
     rollout_config["DATASET_SIZE"] = 10000
+    model_config = {
+        "LR": 1e-3,
+        "HIDDEN_DIM": 64,
+        "ACTIVATION": "tanh",
+        "EPOCHS": 1000,
+        "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
+    }
 
     rng = jax.random.PRNGKey(30)
 
@@ -359,4 +367,46 @@ if __name__ == "__main__":
     )
     pointer += traj_batch.obs.shape[0]
 
+    # INIT MODEL
+    model = MLP(
+        env.observation_space(env_params).shape[0]
+        + env.action_space(env_params).shape[0],
+        env.observation_space(env_params).shape[0] + 2,
+        hidden_dim=model_config["HIDDEN_DIM"],
+        activation=model_config["ACTIVATION"],
+        rngs=rngs,
+    )
+    optimizer = nnx.Optimizer(model, optax.adamw(model_config["LR"]), wrt=nnx.Param)
+    metrics = nnx.MultiMetric(
+        loss=nnx.metrics.Average("loss"),
+        delta_next_state_loss=nnx.metrics.Average("delta_next_state_loss"),
+        reward_loss=nnx.metrics.Average("reward_loss"),
+        terminated_loss=nnx.metrics.Average("terminated_loss"),
+    )
+
+    # TRAIN MODEL
+    # TODO: use mask to handle variable dataset size
+    batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
+    history = train_model(
+        model,
+        optimizer,
+        metrics,
+        batch,
+        model_config["EPOCHS"],
+        pointer,
+        model_config["MINIBATCH_SIZE"],
+        rngs=rngs,
+    )
+
+    # PLOT LOSSES
+    for loss, loss_history in history.items():
+        plt.figure()
+        plt.plot(loss_history)
+        plt.xlabel("Epoch")
+        plt.ylabel(loss)
+        plt.title(f"{loss} over epochs")
+        fig_path = f"/tmp/ppo_continuous_action_{loss}.png"
+        plt.savefig(fig_path)
+        print(f"Saved {loss} curve to {fig_path}")
+        plt.close()
     out = train_jit(train_state, rng)
