@@ -94,7 +94,7 @@ def make_rollout(config, env, env_params, training=True):
     return _rollout
 
 
-def make_train(env, config):
+def make_train(env, env_params, config):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
@@ -264,50 +264,7 @@ def make_train(env, config):
 
     return train
 
-
-if __name__ == "__main__":
-    config = {
-        "LR": 3e-4,
-        "NUM_ENVS": 2048,
-        "NUM_STEPS": 10,
-        "TOTAL_TIMESTEPS": 5e7,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 32,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.0,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.5,
-        "HIDDEN_DIM": 64,
-        "ACTIVATION": "tanh",
-        "ENV_NAME": "Pendulum-v1",
-        "ANNEAL_LR": False,
-        "NORMALIZE_ENV": True,
-        "DEBUG": True,
-    }
-    rollout_config = config.copy()
-    rollout_config["NUM_ENVS"] = 1
-    rollout_config["NUM_STEPS"] = 200
-    rollout_config["DATASET_SIZE"] = 10000
-    model_config = {
-        "LR": 1e-3,
-        "HIDDEN_DIM": 64,
-        "ACTIVATION": "tanh",
-        "EPOCHS": 1000,
-        "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
-    }
-
-    rng = jax.random.PRNGKey(30)
-
-    env, env_params = gymnax.make(rollout_config["ENV_NAME"])
-    env = LogWrapper(env)
-    env = ClipAction(env)
-    env = VecEnv(env)
-
-    # INIT NETWORK
-    rng, _rng = jax.random.split(rng)
-    rngs = nnx.Rngs(_rng)
+def make_train_state(config, env, env_params, rngs):
     network = ActorCritic(
         env.observation_space(env_params).shape[0],
         env.action_space(env_params).shape[0],
@@ -342,6 +299,54 @@ if __name__ == "__main__":
         jnp.zeros(config["NUM_ENVS"]), config["GAMMA"]
     )
     train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
+    return train_state
+
+
+if __name__ == "__main__":
+    config = {
+        "LR": 3e-4,
+        "NUM_ENVS": 2048,
+        "NUM_STEPS": 10,
+        "TOTAL_TIMESTEPS": 1e7,
+        "UPDATE_EPOCHS": 4,
+        "NUM_MINIBATCHES": 32,
+        "GAMMA": 0.99,
+        "GAE_LAMBDA": 0.95,
+        "CLIP_EPS": 0.2,
+        "ENT_COEF": 0.0,
+        "VF_COEF": 0.5,
+        "MAX_GRAD_NORM": 0.5,
+        "HIDDEN_DIM": 64,
+        "ACTIVATION": "tanh",
+        "ENV_NAME": "Pendulum-v1",
+        "ANNEAL_LR": False,
+        "NORMALIZE_ENV": True,
+        "DEBUG": False,
+    }
+    rollout_config = config.copy()
+    rollout_config["NUM_ENVS"] = 1
+    rollout_config["NUM_STEPS"] = 200
+    rollout_config["DATASET_SIZE"] = 10000
+
+    model_config = {
+        "LR": 1e-3,
+        "HIDDEN_DIM": 64,
+        "ACTIVATION": "tanh",
+        "EPOCHS": 1000,
+        "MINIBATCH_SIZE": 200,
+    }
+
+    rng = jax.random.PRNGKey(30)
+
+    env, env_params = gymnax.make(rollout_config["ENV_NAME"])
+    env = LogWrapper(env)
+    env = ClipAction(env)
+    env = VecEnv(env)
+
+    # INIT NETWORK
+    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(_rng)
+    train_state = make_train_state(config, env, env_params, rngs)
 
     # INIT ENV
     rng, _rng = jax.random.split(rng)
