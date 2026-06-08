@@ -11,6 +11,7 @@ import seaborn as sns
 from flax import nnx
 
 from model import train_model
+from model_env import ModelEnvironment
 from networks import MLP, ActorCritic
 from normalization import NormalizeVecObs, NormalizeVecReward
 from wrappers import (
@@ -421,4 +422,33 @@ if __name__ == "__main__":
         plt.savefig(fig_path)
         print(f"Saved {loss} curve to {fig_path}")
         plt.close()
+
+    model_env = ModelEnvironment(env, env_params, model)
+    model_env_params = model_env.default_params
+    model_env = LogWrapper(model_env)
+    model_env = ClipAction(model_env)
+    model_env = VecEnv(model_env)
+
+    train_jit = jax.jit(make_train(model_env, model_env_params, config))
     out = train_jit(train_state, rng)
+
+    returned_episode = out["metrics"]["returned_episode"]
+    timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
+    returns = out["metrics"]["returned_episode_returns"][returned_episode]
+
+    df = pd.DataFrame(
+        {
+            "Steps": timesteps.flatten(),
+            "Returns": returns.flatten(),
+        }
+    )
+
+    plt.figure()
+    sns.lineplot(x="Steps", y="Returns", data=df)
+    plt.xlabel("Steps")
+    plt.ylabel("Returns")
+    plt.title("PPO on Model(Pendulum-v1)")
+    fig_path = "/tmp/ppo_continuous_action.png"
+    plt.savefig(fig_path)
+    print(f"Saved training curve to {fig_path}")
+    plt.close()
