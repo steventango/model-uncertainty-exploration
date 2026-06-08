@@ -328,6 +328,8 @@ if __name__ == "__main__":
     rollout_config["NUM_ENVS"] = 1
     rollout_config["NUM_STEPS"] = 200
     rollout_config["DATASET_SIZE"] = 10000
+    eval_config = rollout_config.copy()
+    eval_config["NUM_ENVS"] = 100
 
     model_config = {
         "LR": 1e-3,
@@ -343,6 +345,7 @@ if __name__ == "__main__":
     env = LogWrapper(env)
     env = ClipAction(env)
     env = VecEnv(env)
+    eval_config["NUM_STEPS"] = env_params.max_steps_in_episode
 
     # INIT NETWORK
     rng, _rng = jax.random.split(rng)
@@ -452,3 +455,23 @@ if __name__ == "__main__":
     plt.savefig(fig_path)
     print(f"Saved training curve to {fig_path}")
     plt.close()
+
+    eval_env, eval_env_params = gymnax.make(eval_config["ENV_NAME"])
+    eval_env = LogWrapper(eval_env)
+    eval_env = ClipAction(eval_env)
+    eval_env = VecEnv(eval_env)
+
+    # INIT EVAL ENV
+    rng, _rng = jax.random.split(rng)
+    reset_rng = jax.random.split(_rng, eval_config["NUM_ENVS"])
+    obsv, env_state = eval_env.reset(reset_rng, eval_env_params)
+
+    # ROLLOUT
+    rng, _rng = jax.random.split(rng)
+    eval_runner_state = (train_state, env_state, obsv, _rng)
+    _rollout = make_rollout(eval_config, eval_env, eval_env_params, training=False)
+    eval_runner_state, traj_batch = _rollout(eval_runner_state)
+    returned_episode = traj_batch.info["returned_episode"]
+    timesteps = traj_batch.info["timestep"][returned_episode]
+    returns = traj_batch.info["returned_episode_returns"][returned_episode]
+    print(f"Mean evaluation return: {returns.mean()} +/- {returns.std()}")
