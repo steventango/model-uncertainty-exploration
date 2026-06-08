@@ -72,6 +72,13 @@ def make_rollout(config, env, env_params, training=True):
 
             _, next_value = network(next_obs)
 
+            if not training:
+                action = jnp.clip(
+                    action,
+                    env.action_space(env_params).low,
+                    env.action_space(env_params).high,
+                )
+
             transition = Transition(
                 terminated,
                 truncated,
@@ -265,6 +272,7 @@ def make_train(env, env_params, config):
 
     return train
 
+
 def make_train_state(config, env, env_params, rngs):
     network = ActorCritic(
         env.observation_space(env_params).shape[0],
@@ -325,8 +333,9 @@ if __name__ == "__main__":
         "DEBUG": False,
     }
     rollout_config = config.copy()
+    rollout_config["TOTAL_TIMESTEPS"] = 1e3
     rollout_config["NUM_ENVS"] = 1
-    rollout_config["NUM_STEPS"] = 200
+    rollout_config["NUM_STEPS"] = 20
     rollout_config["DATASET_SIZE"] = 10000
     eval_config = rollout_config.copy()
     eval_config["NUM_ENVS"] = 100
@@ -336,7 +345,7 @@ if __name__ == "__main__":
         "HIDDEN_DIM": 64,
         "ACTIVATION": "tanh",
         "EPOCHS": 1000,
-        "MINIBATCH_SIZE": 200,
+        "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
     }
 
     rng = jax.random.PRNGKey(30)
@@ -357,8 +366,8 @@ if __name__ == "__main__":
     reset_rng = jax.random.split(_rng, rollout_config["NUM_ENVS"])
     obsv, env_state = env.reset(reset_rng, env_params)
 
-    # ROLLOUT
-    rng, _rng = jax.random.split(rng)
+    # MOCK ROLLOUT
+    _, _rng = jax.random.split(rng)
     runner_state = (train_state, env_state, obsv, _rng)
     _rollout = make_rollout(rollout_config, env, env_params, training=False)
     runner_state, traj_batch = _rollout(runner_state)
@@ -371,17 +380,6 @@ if __name__ == "__main__":
         traj_batch,
     )
     pointer = 0
-
-    # UPDATE DATASET
-    traj_batch = jax.tree_util.tree_map(
-        lambda x: x.reshape((-1,) + x.shape[2:]), traj_batch
-    )
-    dataset = jax.tree_util.tree_map(
-        lambda old, new: jax.lax.dynamic_update_slice_in_dim(old, new, pointer, axis=0),
-        dataset,
-        traj_batch,
-    )
-    pointer += traj_batch.obs.shape[0]
 
     # INIT MODEL
     model = MLP(
@@ -400,78 +398,148 @@ if __name__ == "__main__":
         terminated_loss=nnx.metrics.Average("terminated_loss"),
     )
 
-    # TRAIN MODEL
-    # TODO: use mask to handle variable dataset size
-    batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
-    history = train_model(
-        model,
-        optimizer,
-        metrics,
-        batch,
-        model_config["EPOCHS"],
-        pointer,
-        model_config["MINIBATCH_SIZE"],
-        rngs=rngs,
-    )
+    runner_state = (train_state, env_state, obsv, _rng)
+    real_steps = []
+    eval_returns = []
 
-    # PLOT LOSSES
-    for loss, loss_history in history.items():
-        plt.figure()
-        plt.plot(loss_history)
-        plt.xlabel("Epoch")
-        plt.ylabel(loss)
-        plt.title(f"{loss} over epochs")
-        fig_path = f"/tmp/ppo_continuous_action_{loss}.png"
+    num_rollouts = rollout_config["TOTAL_TIMESTEPS"] // rollout_config["NUM_STEPS"] // rollout_config["NUM_ENVS"]
+    for j in range(50):
+         # ROLLOUT
+        runner_state, traj_batch = _rollout(runner_state)
+
+        # UPDATE DATASET
+        traj_batch = jax.tree_util.tree_map(
+            lambda x: x.reshape((-1,) + x.shape[2:]), traj_batch
+        )
+        dataset = jax.tree_util.tree_map(
+            lambda old, new: jax.lax.dynamic_update_slice_in_dim(old, new, pointer, axis=0),
+            dataset,
+            traj_batch,
+        )
+        pointer += traj_batch.obs.shape[0]
+
+        # PLOT DATASET (OBS, ACTIONS, REWARDS)
+        n = env.observation_space(env_params).shape[0] + env.action_space(env_params).shape[0] + 1
+        fig, axs = plt.subplots(n, 1, figsize=(5 * (j + 1), 5 * n))
+        for i in range(env.observation_space(env_params).shape[0]):
+            axs[i].plot(dataset.obs[:pointer, i])
+            axs[i].set_xlabel("Timestep")
+            axs[i].set_ylabel(f"Observation {i}")
+            axs[i].set_title(f"Observation {i} over timesteps")
+        for i in range(env.action_space(env_params).shape[0]):
+            axs[env.observation_space(env_params).shape[0] + i].plot(dataset.action[:pointer, i])
+            axs[env.observation_space(env_params).shape[0] + i].set_xlabel("Timestep")
+            axs[env.observation_space(env_params).shape[0] + i].set_ylabel(f"Action {i}")
+            axs[env.observation_space(env_params).shape[0] + i].set_title(f"Action {i} over timesteps")
+        axs[-1].plot(dataset.reward[:pointer])
+        axs[-1].set_xlabel("Timestep")
+        axs[-1].set_ylabel("Reward")
+        axs[-1].set_title("Reward over timesteps")
+        fig_path = f"/tmp/dataset_{j}.png"
         plt.savefig(fig_path)
-        print(f"Saved {loss} curve to {fig_path}")
+        print(f"Saved dataset {j} curves to {fig_path}")
         plt.close()
 
-    model_env = ModelEnvironment(env, env_params, model)
-    model_env_params = model_env.default_params
-    model_env = LogWrapper(model_env)
-    model_env = ClipAction(model_env)
-    model_env = VecEnv(model_env)
+        # TRAIN MODEL
+        # TODO: use mask to handle variable dataset size
+        batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
+        history = train_model(
+            model,
+            optimizer,
+            metrics,
+            batch,
+            model_config["EPOCHS"],
+            pointer,
+            model_config["MINIBATCH_SIZE"],
+            rngs=rngs,
+        )
 
-    train_jit = jax.jit(make_train(model_env, model_env_params, config))
-    out = train_jit(train_state, rng)
+        # PLOT LOSSES
+        for loss, loss_history in history.items():
+            plt.figure()
+            plt.plot(loss_history)
+            plt.xlabel("Epoch")
+            plt.ylabel(loss)
+            plt.title(f"{loss} over epochs")
+            fig_path = f"/tmp/ppo_continuous_action_{loss}.png"
+            plt.savefig(fig_path)
+            plt.close()
 
-    returned_episode = out["metrics"]["returned_episode"]
-    timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
-    returns = out["metrics"]["returned_episode_returns"][returned_episode]
+        model_env = ModelEnvironment(env, env_params, model)
+        model_env_params = model_env.default_params
+        model_env = LogWrapper(model_env)
+        model_env = ClipAction(model_env)
+        model_env = VecEnv(model_env)
+
+        train_jit = jax.jit(make_train(model_env, model_env_params, config))
+        train_state = make_train_state(config, env, env_params, rngs)
+        rng, _rng = jax.random.split(rng)
+        out = train_jit(train_state, _rng)
+        train_state = out["runner_state"][0]
+        runner_state = (
+            train_state,
+            runner_state[1],
+            runner_state[2],
+            runner_state[3],
+        )
+
+        returned_episode = out["metrics"]["returned_episode"]
+        timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
+        returns = out["metrics"]["returned_episode_returns"][returned_episode]
+
+        df = pd.DataFrame(
+            {
+                "Steps": timesteps.flatten(),
+                "Returns": returns.flatten(),
+            }
+        )
+
+        plt.figure()
+        sns.lineplot(x="Steps", y="Returns", data=df)
+        plt.xlabel("Steps")
+        plt.ylabel("Returns")
+        plt.title("PPO on Model(Pendulum-v1)")
+        fig_path = "/tmp/ppo_continuous_action.png"
+        plt.savefig(fig_path)
+        print(f"Saved training curve to {fig_path}")
+        plt.close()
+
+        eval_env, eval_env_params = gymnax.make(eval_config["ENV_NAME"])
+        eval_env = LogWrapper(eval_env)
+        eval_env = ClipAction(eval_env)
+        eval_env = VecEnv(eval_env)
+
+        # INIT EVAL ENV
+        rng, _rng = jax.random.split(rng)
+        reset_rng = jax.random.split(_rng, eval_config["NUM_ENVS"])
+        eval_obsv, eval_env_state = eval_env.reset(reset_rng, eval_env_params)
+
+        # ROLLOUT
+        rng, _rng = jax.random.split(rng)
+        eval_runner_state = (train_state, eval_env_state, eval_obsv, _rng)
+        _eval_rollout = make_rollout(eval_config, eval_env, eval_env_params, training=False)
+        eval_runner_state, traj_batch = _eval_rollout(eval_runner_state)
+        returned_episode = traj_batch.info["returned_episode"]
+        timesteps = traj_batch.info["timestep"][returned_episode]
+        returns = traj_batch.info["returned_episode_returns"][returned_episode]
+        mean_return = returns.mean()
+        print(f"Mean evaluation return: {mean_return} +/- {returns.std()}")
+        real_steps.append(pointer)
+        eval_returns.append(mean_return)
+
+        plt.figure()
+        plt.plot(real_steps, eval_returns)
+        plt.xlabel("Steps")
+        plt.ylabel("Mean Evaluation Return")
+        plt.title("PPO on Model(Pendulum-v1) Evaluation Returns")
+        fig_path = "/tmp/ppo_continuous_action_eval_returns.png"
+        plt.savefig(fig_path)
+        print(f"Saved evaluation returns curve to {fig_path}")
 
     df = pd.DataFrame(
         {
-            "Steps": timesteps.flatten(),
-            "Returns": returns.flatten(),
+            "Steps": real_steps,
+            "Return": eval_returns,
         }
     )
-
-    plt.figure()
-    sns.lineplot(x="Steps", y="Returns", data=df)
-    plt.xlabel("Steps")
-    plt.ylabel("Returns")
-    plt.title("PPO on Model(Pendulum-v1)")
-    fig_path = "/tmp/ppo_continuous_action.png"
-    plt.savefig(fig_path)
-    print(f"Saved training curve to {fig_path}")
-    plt.close()
-
-    eval_env, eval_env_params = gymnax.make(eval_config["ENV_NAME"])
-    eval_env = LogWrapper(eval_env)
-    eval_env = ClipAction(eval_env)
-    eval_env = VecEnv(eval_env)
-
-    # INIT EVAL ENV
-    rng, _rng = jax.random.split(rng)
-    reset_rng = jax.random.split(_rng, eval_config["NUM_ENVS"])
-    obsv, env_state = eval_env.reset(reset_rng, eval_env_params)
-
-    # ROLLOUT
-    rng, _rng = jax.random.split(rng)
-    eval_runner_state = (train_state, env_state, obsv, _rng)
-    _rollout = make_rollout(eval_config, eval_env, eval_env_params, training=False)
-    eval_runner_state, traj_batch = _rollout(eval_runner_state)
-    returned_episode = traj_batch.info["returned_episode"]
-    timesteps = traj_batch.info["timestep"][returned_episode]
-    returns = traj_batch.info["returned_episode_returns"][returned_episode]
-    print(f"Mean evaluation return: {returns.mean()} +/- {returns.std()}")
+    df.to_csv("/tmp/ppo_continuous_action_eval_returns.csv", index=False)
