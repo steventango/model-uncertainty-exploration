@@ -66,6 +66,14 @@ def evaluate_validation(
         env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
     )
 
+    # Epistemic uncertainty per output dimension
+    unc_data, rng = plotting.compute_epistemic_uncertainty(model, x_data, rng)
+    unc_rand, rng = plotting.compute_epistemic_uncertainty(model, x_rand, rng)
+    unc_delta_obs = unc_data[..., :-2]
+    unc_delta_obs_rand = unc_rand[..., :-2]
+    unc_reward = unc_data[..., -2]
+    unc_reward_rand = unc_rand[..., -2]
+
     # Plot true vs predicted
     plotting.plot_true_vs_predicted(
         true_delta_obs,
@@ -76,6 +84,10 @@ def evaluate_validation(
         pred_reward,
         true_reward_rand,
         pred_reward_rand,
+        unc_delta_obs,
+        unc_delta_obs_rand,
+        unc_reward,
+        unc_reward_rand,
         env_config.delta_obs_labels,
         j,
     )

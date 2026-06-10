@@ -14,6 +14,16 @@ from env_config import (
 )
 
 
+def compute_epistemic_uncertainty(model, x_norm, rng, num_samples=10):
+    """Std of normalized model outputs across epistemic index samples."""
+    rng, subkey = jax.random.split(rng)
+    z_samples = jax.random.normal(subkey, (num_samples, model.index_dim))
+    y_samples = jax.vmap(
+        lambda z_j: jax.vmap(lambda xi: model(xi, z_j)[1])(x_norm),
+    )(z_samples)
+    return y_samples.std(axis=0), rng
+
+
 def evaluate_and_plot_uncertainty(
     model, env, env_params, env_name, rng, dataset, pointer, j
 ):
@@ -159,6 +169,23 @@ def plot_losses(history):
         plt.close()
 
 
+def _scatter_with_uncertainty(
+    ax, true_vals, pred_vals, unc_vals, label, marker, vmin, vmax
+):
+    return ax.scatter(
+        true_vals,
+        pred_vals,
+        c=unc_vals,
+        alpha=0.6,
+        s=8,
+        marker=marker,
+        cmap="viridis",
+        vmin=vmin,
+        vmax=vmax,
+        label=label,
+    )
+
+
 def plot_true_vs_predicted(
     true_delta_obs,
     pred_delta_obs,
@@ -168,6 +195,10 @@ def plot_true_vs_predicted(
     pred_reward,
     true_reward_rand,
     pred_reward_rand,
+    unc_delta_obs,
+    unc_delta_obs_rand,
+    unc_reward,
+    unc_reward_rand,
     delta_obs_labels,
     j,
 ):
@@ -179,21 +210,27 @@ def plot_true_vs_predicted(
     axs_tp = axs_tp.flatten()
 
     for i in range(obs_dim):
-        axs_tp[i].scatter(
+        unc_min = min(unc_delta_obs[:, i].min(), unc_delta_obs_rand[:, i].min())
+        unc_max = max(unc_delta_obs[:, i].max(), unc_delta_obs_rand[:, i].max())
+        sc = _scatter_with_uncertainty(
+            axs_tp[i],
             true_delta_obs[:, i],
             pred_delta_obs[:, i],
-            alpha=0.4,
-            color="blue",
-            s=5,
-            label="Training Data",
+            unc_delta_obs[:, i],
+            "Training Data",
+            "o",
+            unc_min,
+            unc_max,
         )
-        axs_tp[i].scatter(
+        _scatter_with_uncertainty(
+            axs_tp[i],
             true_delta_obs_rand[:, i],
             pred_delta_obs_rand[:, i],
-            alpha=0.4,
-            color="orange",
-            s=5,
-            label="Uniform Space",
+            unc_delta_obs_rand[:, i],
+            "Uniform Space",
+            "^",
+            unc_min,
+            unc_max,
         )
         min_val = min(
             true_delta_obs[:, i].min(),
@@ -213,20 +250,33 @@ def plot_true_vs_predicted(
         axs_tp[i].set_xlabel("True")
         axs_tp[i].set_ylabel("Predicted")
         axs_tp[i].set_title(f"Dynamics: {delta_obs_labels[i]}")
-        axs_tp[i].legend()
+        axs_tp[i].legend(loc="upper left", markerscale=2)
         axs_tp[i].grid(True, linestyle=":", alpha=0.6)
+        cbar = fig_tp.colorbar(sc, ax=axs_tp[i], shrink=0.8, pad=0.02)
+        cbar.set_label("Uncertainty (Std Dev)")
 
     reward_ax = axs_tp[obs_dim]
-    reward_ax.scatter(
-        true_reward, pred_reward, alpha=0.4, color="blue", s=5, label="Training Data"
+    unc_rew_min = min(unc_reward.min(), unc_reward_rand.min())
+    unc_rew_max = max(unc_reward.max(), unc_reward_rand.max())
+    sc_rew = _scatter_with_uncertainty(
+        reward_ax,
+        true_reward,
+        pred_reward,
+        unc_reward,
+        "Training Data",
+        "o",
+        unc_rew_min,
+        unc_rew_max,
     )
-    reward_ax.scatter(
+    _scatter_with_uncertainty(
+        reward_ax,
         true_reward_rand,
         pred_reward_rand,
-        alpha=0.4,
-        color="orange",
-        s=5,
-        label="Uniform Space",
+        unc_reward_rand,
+        "Uniform Space",
+        "^",
+        unc_rew_min,
+        unc_rew_max,
     )
     min_val = min(
         true_reward.min(),
@@ -244,14 +294,17 @@ def plot_true_vs_predicted(
     reward_ax.set_xlabel("True")
     reward_ax.set_ylabel("Predicted")
     reward_ax.set_title("Reward")
-    reward_ax.legend()
+    reward_ax.legend(loc="upper left", markerscale=2)
     reward_ax.grid(True, linestyle=":", alpha=0.6)
+    cbar_rew = fig_tp.colorbar(sc_rew, ax=reward_ax, shrink=0.8, pad=0.02)
+    cbar_rew.set_label("Uncertainty (Std Dev)")
 
     for ax in axs_tp[n_plots:]:
         ax.set_visible(False)
 
     fig_tp.suptitle(
-        f"True vs Predicted Dynamics & Rewards (Iteration {j})", fontsize=14
+        f"True vs Predicted Dynamics & Rewards with Uncertainty (Iteration {j})",
+        fontsize=14,
     )
     fig_tp_path = "/tmp/ppo_continuous_action_true_vs_pred.png"
     plt.savefig(fig_tp_path, bbox_inches="tight", dpi=150)
