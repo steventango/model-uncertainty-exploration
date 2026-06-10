@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import struct
 from gymnax.environments import environment, spaces
 
-from networks import MLP
+from networks import ENN
 
 
 @struct.dataclass
@@ -13,6 +13,7 @@ class ModelEnvState(environment.EnvState):
     obs: jnp.ndarray
     terminated: jnp.ndarray
     time: int
+    z: jnp.ndarray
 
 
 @struct.dataclass
@@ -26,11 +27,17 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self,
         env: environment.Environment,
         env_params: environment.EnvParams,
-        model: MLP,
+        model: ENN,
+        samples: int = 10,
+        alpha: float = 1.0,
+        beta: float = 0.1,
     ):
         self._real_env = env
         self._real_env_params = env_params
         self._model = model
+        self.alpha = alpha
+        self.beta = beta
+        self.samples = samples
 
     @property
     def default_params(self) -> ModelEnvParams:
@@ -47,27 +54,38 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         params: ModelEnvParams,
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         """Environment-specific step transition."""
-        x = jnp.concatenate([state.obs, action], axis=-1)
-        y = self._model(x)
+        x = jnp.concatenate([state.obs, jnp.atleast_1d(action)], axis=-1)
+        y_base, y_samples = jax.vmap(
+            self._model.__call__, in_axes=(None, 0)
+        )(x, state.z)
+        y = y_base[0]
+        r_intrinsic = y_samples.std(axis=0).mean()
+
         obs = state.obs + y[..., :-2]
         obs = jnp.clip(
             obs,
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
-        r = y[..., -2]
+        r = self.alpha * y[..., -2] + self.beta * r_intrinsic
         terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
-        state = ModelEnvState(obs=obs, terminated=terminated, time=state.time + 1)
+        state = ModelEnvState(
+            obs=obs, terminated=terminated, time=state.time + 1, z=state.z
+        )
         return obs, state, r, terminated, {}
 
     def reset_env(
         self, key: jax.Array, params: ModelEnvParams
     ) -> tuple[jax.Array, ModelEnvState]:
         """Environment-specific reset."""
-        key, _key = jax.random.split(key)
-        obs = self._real_env.observation_space(params.env_params).sample(_key)
+        key, key_obs, key_z = jax.random.split(key, 3)
+        obs = self._real_env.observation_space(params.env_params).sample(key_obs)
+        z = jax.random.normal(key_z, (self.samples, self._model.index_dim))
         state = ModelEnvState(
-            obs=obs, terminated=jnp.zeros_like(obs.shape[0], dtype=bool), time=0
+            obs=obs,
+            terminated=jnp.bool_(False),
+            time=0,
+            z=z,
         )
         return obs, state
 

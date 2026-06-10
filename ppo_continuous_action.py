@@ -12,7 +12,7 @@ from flax import nnx
 
 from model import train_model
 from model_env import ModelEnvironment
-from networks import MLP, ActorCritic
+from networks import ENN, ActorCritic
 from normalization import NormalizeVecObs, NormalizeVecReward
 from wrappers import (
     ClipAction,
@@ -343,8 +343,11 @@ if __name__ == "__main__":
     model_config = {
         "LR": 1e-3,
         "HIDDEN_DIM": 64,
+        "LEARNABLE_HIDDEN_DIM": 15,
+        "PRIOR_HIDDEN_DIM": 5,
+        "INDEX_DIM": 8,
         "ACTIVATION": "tanh",
-        "EPOCHS": 1000,
+        "EPOCHS": 10000,
         "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
     }
 
@@ -382,15 +385,23 @@ if __name__ == "__main__":
     pointer = 0
 
     # INIT MODEL
-    model = MLP(
+    in_features = (
         env.observation_space(env_params).shape[0]
-        + env.action_space(env_params).shape[0],
-        env.observation_space(env_params).shape[0] + 2,
-        hidden_dim=model_config["HIDDEN_DIM"],
-        activation=model_config["ACTIVATION"],
+        + env.action_space(env_params).shape[0]
+    )
+    out_features = env.observation_space(env_params).shape[0] + 2
+    model = ENN(
+        in_features,
+        model_config["HIDDEN_DIM"],
+        model_config["LEARNABLE_HIDDEN_DIM"],
+        model_config["PRIOR_HIDDEN_DIM"],
+        out_features,
+        model_config["INDEX_DIM"],
         rngs=rngs,
     )
-    optimizer = nnx.Optimizer(model, optax.adamw(model_config["LR"]), wrt=nnx.Param)
+    tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
+    not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
+    optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
     metrics = nnx.MultiMetric(
         loss=nnx.metrics.Average("loss"),
         delta_next_state_loss=nnx.metrics.Average("delta_next_state_loss"),

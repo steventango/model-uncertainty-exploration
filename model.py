@@ -2,26 +2,51 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
+from jax.scipy.stats import norm
 
-from networks import MLP
+from networks import ENN
 
 
-def loss_fn(model: MLP, batch, rngs: nnx.Rngs | None = None):
+def loss_fn(model: ENN, batch, rngs: nnx.Rngs):
+    sigma = 1.0
     x = jnp.concatenate([batch.obs, batch.action], axis=-1)
-    logits = model(x)
+    z = jax.random.normal(rngs(), shape=(model.index_dim,))
+    _, logits = jax.vmap(model.__call__, in_axes=(0, None))(x, z)
+
+    delta_next_state_c = jax.random.normal(
+        rngs(), shape=(batch.obs.shape[0], model.index_dim)
+    )
+    delta_next_state_c = delta_next_state_c / jnp.linalg.norm(
+        delta_next_state_c, axis=-1, keepdims=True
+    )
 
     delta_next_state = batch.info["next_obs"] - batch.obs
-    delta_next_state_loss = (logits[..., :-2] - delta_next_state) ** 2
+    delta_next_state_target = delta_next_state + sigma * (delta_next_state_c * z).sum(
+        axis=-1, keepdims=True
+    )
+    delta_next_state_loss = (logits[..., :-2] - delta_next_state_target) ** 2
     delta_next_state_loss = delta_next_state_loss.mean()
 
-    reward_loss = (logits[..., -2] - batch.reward) ** 2
+    reward_c = jax.random.normal(rngs(), shape=(batch.obs.shape[0], model.index_dim))
+    reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
+    reward_target = batch.reward + sigma * (reward_c * z).sum(axis=-1)
+    reward_loss = (logits[..., -2] - reward_target) ** 2
     reward_loss = reward_loss.mean()
 
+    terminated_c = jax.random.normal(
+        rngs(), shape=(batch.obs.shape[0], model.index_dim)
+    )
+    terminated_c = terminated_c / jnp.linalg.norm(
+        terminated_c, axis=-1, keepdims=True
+    )
+    p = 0.5
+    mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
+    terminated_target = batch.terminated.astype(jnp.float32)
     terminated_pred = logits[..., -1]
     terminated_loss = optax.sigmoid_binary_cross_entropy(
-        terminated_pred, batch.terminated.astype(jnp.float32)
+        terminated_pred, terminated_target
     )
-    terminated_loss = terminated_loss.mean()
+    terminated_loss = (terminated_loss * mask).sum() / jnp.maximum(mask.sum(), 1.0)
 
     loss = delta_next_state_loss + reward_loss + terminated_loss
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
@@ -29,7 +54,7 @@ def loss_fn(model: MLP, batch, rngs: nnx.Rngs | None = None):
 
 @nnx.jit
 def train_step(
-    model: MLP,
+    model: ENN,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
@@ -59,7 +84,7 @@ def _train_step(
 
 @nnx.jit
 def eval_step(
-    model: MLP,
+    model: ENN,
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
@@ -97,7 +122,7 @@ def make_train_epoch(minibatch_size: int, num_minibatches: int):
 
 
 def train_model(
-    model: MLP,
+    model: ENN,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     batch,

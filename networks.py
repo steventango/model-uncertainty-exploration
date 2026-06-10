@@ -124,34 +124,144 @@ class ActorCritic(nnx.Module):
 class MLP(nnx.Module):
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int,
-        hidden_dim: int,
-        activation: str = "tanh",
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        rngs: nnx.Rngs,
+        zero_out_init: bool = False,
+    ):
+        self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
+        self.linear2 = nnx.Linear(hidden_features, hidden_features, rngs=rngs)
+        if zero_out_init:
+            self.linear3 = nnx.Linear(
+                hidden_features,
+                out_features,
+                rngs=rngs,
+                kernel_init=nnx.initializers.zeros,
+            )
+        else:
+            self.linear3 = nnx.Linear(hidden_features, out_features, rngs=rngs)
+
+    def __call__(self, x, rngs: nnx.Rngs | None = None):
+        x = nnx.tanh(self.linear1(x))
+        features = nnx.tanh(self.linear2(x))
+        y = self.linear3(features)
+        return y, features
+
+
+class ProjectedMLP(nnx.Module):
+    def __init__(
+        self, in_features: int, hidden_features: int, out_features: int, rngs: nnx.Rngs
+    ):
+        self.mlp = MLP(
+            in_features=in_features,
+            hidden_features=hidden_features,
+            out_features=out_features,
+            rngs=rngs,
+            zero_out_init=True,
+        )
+
+    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        xz = jnp.concatenate([x, z], axis=-1)
+        y, _ = self.mlp(xz, rngs=rngs)
+        y1 = y.reshape(-1, z.shape[-1])
+        return (y1 * z).sum(axis=-1)
+
+
+class MLPEnsemble(nnx.Module):
+    def __init__(
+        self,
+        num_models: int,
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        rngs: nnx.Rngs,
+    ):
+        keys = jax.random.split(rngs.params(), num_models)
+
+        @nnx.vmap
+        def create_model(key):
+            return MLP(
+                in_features, hidden_features, out_features, rngs=nnx.Rngs(params=key)
+            )
+
+        self.models = create_model(keys)
+
+    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        graphdef, states = nnx.split(self.models)
+
+        def forward(state, inputs):
+            model = nnx.merge(graphdef, state)
+            y, _ = model(inputs, rngs=rngs)
+            return y
+
+        y = jax.vmap(forward, in_axes=(0, None))(states, x)
+        return jnp.einsum("no,n->o", y, z)
+
+
+class EpiNet(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        learnable_hidden_features: int,
+        prior_hidden_features: int,
+        base_features: int,
+        out_features: int,
+        index_dim: int,
         *,
         rngs: nnx.Rngs,
     ):
-        if activation == "relu":
-            self.activation = nnx.relu
-        else:
-            self.activation = nnx.tanh
-        self.dense1 = nnx.Linear(
-            input_dim,
-            hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
+        self.learnable = ProjectedMLP(
+            in_features=in_features + base_features + index_dim,
+            hidden_features=learnable_hidden_features,
+            out_features=out_features * index_dim,
             rngs=rngs,
         )
-        self.dense3 = nnx.Linear(
-            hidden_dim,
-            output_dim,
-            kernel_init=orthogonal(1.0),
-            bias_init=constant(0.0),
+        self.prior = MLPEnsemble(
+            num_models=index_dim,
+            in_features=in_features,
+            hidden_features=prior_hidden_features,
+            out_features=out_features,
             rngs=rngs,
         )
+        self.prior_scale = 1.0
 
-    def __call__(self, x):
-        x = self.dense1(x)
-        x = self.activation(x)
-        x = self.dense3(x)
-        return x
+    def __call__(self, phi, x, z, rngs: nnx.Rngs | None = None):
+        return self.learnable(
+            phi, z, rngs=rngs
+        ) + self.prior_scale * jax.lax.stop_gradient(self.prior(x, z, rngs=rngs))
+
+
+class ENN(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: int,
+        learnable_hidden_features: int,
+        prior_hidden_features: int,
+        out_features: int,
+        index_dim: int,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.base = MLP(
+            in_features=in_features,
+            hidden_features=hidden_features,
+            out_features=out_features,
+            rngs=rngs,
+        )
+        self.epinet = EpiNet(
+            in_features=in_features,
+            learnable_hidden_features=learnable_hidden_features,
+            prior_hidden_features=prior_hidden_features,
+            base_features=hidden_features,
+            out_features=out_features,
+            index_dim=index_dim,
+            rngs=rngs,
+        )
+        self.index_dim = index_dim
+
+    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        y, features = self.base(x, rngs=rngs)
+        phi = jnp.concatenate([x, features], axis=-1)
+        return y, y + self.epinet(jax.lax.stop_gradient(phi), x, z, rngs=rngs)
