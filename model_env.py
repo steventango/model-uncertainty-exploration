@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import struct
 from gymnax.environments import environment, spaces
 
-from networks import ENN
+from model import DynamicsModel
 
 
 @struct.dataclass
@@ -27,7 +27,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self,
         env: environment.Environment,
         env_params: environment.EnvParams,
-        model: ENN,
+        model: DynamicsModel,
         samples: int = 10,
         alpha: float = 1.0,
         beta: float = 0.1,
@@ -55,19 +55,22 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         """Environment-specific step transition."""
         x = jnp.concatenate([state.obs, jnp.atleast_1d(action)], axis=-1)
+        x = self._model.normalize_input(x)
         y_base, y_samples = jax.vmap(self._model.__call__, in_axes=(None, 0))(
             x, state.z
         )
         y = y_base[0]
         r_intrinsic = y_samples.std(axis=0).mean()
 
-        obs = state.obs + y[..., :-2]
+        delta_obs = self._model.denormalize_delta_obs(y[..., :-2])
+        obs = state.obs + delta_obs
         obs = jnp.clip(
             obs,
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
-        r = self.alpha * y[..., -2] + self.beta * r_intrinsic
+        r_exploit = self._model.denormalize_reward(y[..., -2])
+        r = self.alpha * r_exploit + self.beta * r_intrinsic
         terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
         state = ModelEnvState(
             obs=obs, terminated=terminated, time=state.time + 1, z=state.z

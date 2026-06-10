@@ -9,7 +9,7 @@ import optax
 import pandas as pd
 
 import evaluation
-from model import train_model
+from model import DynamicsModel, train_model
 from model_env import ModelEnvironment
 from networks import ENN
 import plotting
@@ -111,7 +111,8 @@ def main():
         + env.action_space(env_params).shape[0]
     )
     out_features = env.observation_space(env_params).shape[0] + 2
-    model = ENN(
+    obs_dim = env.observation_space(env_params).shape[0]
+    enn = ENN(
         in_features,
         model_config["HIDDEN_DIM"],
         model_config["LEARNABLE_HIDDEN_DIM"],
@@ -120,6 +121,7 @@ def main():
         model_config["INDEX_DIM"],
         rngs=rngs,
     )
+    model = DynamicsModel(enn, in_features, obs_dim)
     tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
     not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
     optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
@@ -237,7 +239,9 @@ def main():
         )
 
         # Train model-env eval policy
-        model_env_eval = ModelEnvironment(env, env_params, model, alpha=1.0, beta=0.0)
+        model_env_eval = ModelEnvironment(
+            env, env_params, model, alpha=1.0, beta=0.0
+        )
         model_env_eval_params = model_env_eval.default_params
         model_env_eval = LogWrapper(model_env_eval)
         model_env_eval = ClipAction(model_env_eval)

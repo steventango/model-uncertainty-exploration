@@ -39,19 +39,23 @@ def evaluate_and_plot_uncertainty(model, env, env_params, rng, dataset, pointer,
     for idx, act in enumerate(actions):
         action_flat = jnp.full_like(theta_dot_flat[:, None], act)
         x_grid = jnp.concatenate([obs_grid, action_flat], axis=-1)
+        x_grid_norm = model.normalize_input(x_grid)
 
-        # 1. Epistemic Uncertainty
+        # 1. Epistemic Uncertainty (std of normalized model outputs)
         y_samples = jax.vmap(
-            lambda z_j: jax.vmap(lambda xi: model(xi, z_j)[1])(x_grid),
+            lambda z_j: jax.vmap(lambda xi: model(xi, z_j)[1])(x_grid_norm),
         )(z_samples)
         std_y = y_samples.std(axis=0).mean(axis=-1)
         unc_grids.append(std_y.reshape(num_grid, num_grid))
 
         # 2. Mean Predictions (using the base network output)
         dummy_z = jnp.zeros(model.index_dim)
-        _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_grid, dummy_z)
-        pred_rew_grids.append(mean_y[..., -2].reshape(num_grid, num_grid))
-        pred_dyn_grids.append(mean_y[..., 2].reshape(num_grid, num_grid))
+        _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_grid_norm, dummy_z)
+        pred_delta = model.denormalize_delta_obs(mean_y[..., :-2])
+        pred_rew_grids.append(
+            model.denormalize_reward(mean_y[..., -2]).reshape(num_grid, num_grid)
+        )
+        pred_dyn_grids.append(pred_delta[..., 2].reshape(num_grid, num_grid))
 
         # 3. True Physics and Rewards (from the env, the single source of truth)
         theta_flat = theta_grid.flatten()

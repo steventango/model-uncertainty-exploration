@@ -7,9 +7,57 @@ from jax.scipy.stats import norm
 from networks import ENN
 
 
-def loss_fn(model: ENN, batch, rngs: nnx.Rngs):
+class DynamicsModel(nnx.Module):
+    """ENN with dataset normalization stats for inputs and targets."""
+
+    def __init__(self, enn: ENN, in_features: int, obs_dim: int, eps: float = 1e-8):
+        self.enn = enn
+        self.eps = eps
+        self.input_mean = nnx.Variable(jnp.zeros(in_features))
+        self.input_std = nnx.Variable(jnp.ones(in_features))
+        self.delta_obs_mean = nnx.Variable(jnp.zeros(obs_dim))
+        self.delta_obs_std = nnx.Variable(jnp.ones(obs_dim))
+        self.reward_mean = nnx.Variable(jnp.zeros(()))
+        self.reward_std = nnx.Variable(jnp.ones(()))
+
+    @property
+    def index_dim(self):
+        return self.enn.index_dim
+
+    def update_stats(self, batch):
+        x = jnp.concatenate([batch.obs, batch.action], axis=-1)
+        delta_obs = batch.info["next_obs"] - batch.obs
+
+        self.input_mean[...] = jnp.mean(x, axis=0)
+        self.input_std[...] = jnp.maximum(jnp.std(x, axis=0), self.eps)
+        self.delta_obs_mean[...] = jnp.mean(delta_obs, axis=0)
+        self.delta_obs_std[...] = jnp.maximum(jnp.std(delta_obs, axis=0), self.eps)
+        self.reward_mean[...] = jnp.mean(batch.reward, axis=0)
+        self.reward_std[...] = jnp.maximum(jnp.std(batch.reward, axis=0), self.eps)
+
+    def normalize_input(self, x):
+        return (x - self.input_mean) / self.input_std
+
+    def normalize_delta_obs(self, delta):
+        return (delta - self.delta_obs_mean) / self.delta_obs_std
+
+    def normalize_reward(self, reward):
+        return (reward - self.reward_mean) / self.reward_std
+
+    def denormalize_delta_obs(self, delta_norm):
+        return delta_norm * self.delta_obs_std + self.delta_obs_mean
+
+    def denormalize_reward(self, reward_norm):
+        return reward_norm * self.reward_std + self.reward_mean
+
+    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        return self.enn(x, z, rngs=rngs)
+
+
+def loss_fn(model: DynamicsModel, batch, rngs: nnx.Rngs):
     sigma = 1.0
     x = jnp.concatenate([batch.obs, batch.action], axis=-1)
+    x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     _, logits = jax.vmap(model.__call__, in_axes=(0, None))(x, z)
 
@@ -21,6 +69,7 @@ def loss_fn(model: ENN, batch, rngs: nnx.Rngs):
     )
 
     delta_next_state = batch.info["next_obs"] - batch.obs
+    delta_next_state = model.normalize_delta_obs(delta_next_state)
     delta_next_state_target = delta_next_state + sigma * (delta_next_state_c * z).sum(
         axis=-1, keepdims=True
     )
@@ -29,7 +78,9 @@ def loss_fn(model: ENN, batch, rngs: nnx.Rngs):
 
     reward_c = jax.random.normal(rngs(), shape=(batch.obs.shape[0], model.index_dim))
     reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
-    reward_target = batch.reward + sigma * (reward_c * z).sum(axis=-1)
+    reward_target = model.normalize_reward(batch.reward) + sigma * (
+        reward_c * z
+    ).sum(axis=-1)
     reward_loss = (logits[..., -2] - reward_target) ** 2
     reward_loss = reward_loss.mean()
 
@@ -52,7 +103,7 @@ def loss_fn(model: ENN, batch, rngs: nnx.Rngs):
 
 @nnx.jit
 def train_step(
-    model: ENN,
+    model: DynamicsModel,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
@@ -82,7 +133,7 @@ def _train_step(
 
 @nnx.jit
 def eval_step(
-    model: ENN,
+    model: DynamicsModel,
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
@@ -120,7 +171,7 @@ def make_train_epoch(minibatch_size: int, num_minibatches: int):
 
 
 def train_model(
-    model: ENN,
+    model: DynamicsModel,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     batch,
@@ -130,6 +181,7 @@ def train_model(
     rngs: nnx.Rngs,
 ):
     """Train the model."""
+    model.update_stats(batch)
     num_minibatches = batch_size // minibatch_size
     train_epoch = make_train_epoch(minibatch_size, num_minibatches)
     train_state = (model, optimizer, metrics, batch, rngs)

@@ -44,10 +44,11 @@ def evaluate_validation(
 
     # Training data predictions (mean model, i.e. zero epistemic index)
     x_data = jnp.concatenate([batch.obs, batch.action], axis=-1)
+    x_data = model.normalize_input(x_data)
     dummy_z = jnp.zeros(model.index_dim)
     _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_data, dummy_z)
-    pred_delta_obs = mean_y[..., :-2]
-    pred_reward = mean_y[..., -2]
+    pred_delta_obs = model.denormalize_delta_obs(mean_y[..., :-2])
+    pred_reward = model.denormalize_reward(mean_y[..., -2])
 
     true_delta_obs = batch.info["next_obs"] - batch.obs
     true_reward = batch.reward
@@ -63,10 +64,11 @@ def evaluate_validation(
 
     rand_obs = jnp.stack([jnp.cos(rand_theta), jnp.sin(rand_theta), rand_tdot], axis=-1)
     x_rand = jnp.concatenate([rand_obs, rand_act], axis=-1)
+    x_rand = model.normalize_input(x_rand)
 
     _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
-    pred_delta_obs_rand = mean_y_rand[..., :-2]
-    pred_reward_rand = mean_y_rand[..., -2]
+    pred_delta_obs_rand = model.denormalize_delta_obs(mean_y_rand[..., :-2])
+    pred_reward_rand = model.denormalize_reward(mean_y_rand[..., -2])
 
     true_delta_obs_rand = ground_truth.true_delta_obs(
         env, env_params, rand_theta, rand_tdot, rand_act[:, 0]
@@ -89,9 +91,10 @@ def evaluate_validation(
     )
 
     # Evaluate MAE on validation set (mean model)
-    _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x, dummy_z)
-    pred_delta_obs_val = mean_y_val[..., :-2]
-    pred_reward_val = mean_y_val[..., -2]
+    val_x_norm = model.normalize_input(val_x)
+    _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x_norm, dummy_z)
+    pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., :-2])
+    pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
 
     dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
     rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
