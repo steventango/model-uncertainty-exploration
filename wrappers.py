@@ -122,7 +122,11 @@ class ClipAction(GymnaxWrapper):
         self.high = high
 
     def step(self, key, state, action, params=None):
-        action = jnp.clip(action, self._env.action_space(params).low, self._env.action_space(params).high)
+        action = jnp.clip(
+            action,
+            self._env.action_space(params).low,
+            self._env.action_space(params).high,
+        )
         return self._env.step(key, state, action, params)
 
 

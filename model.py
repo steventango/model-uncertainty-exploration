@@ -36,9 +36,7 @@ def loss_fn(model: ENN, batch, rngs: nnx.Rngs):
     terminated_c = jax.random.normal(
         rngs(), shape=(batch.obs.shape[0], model.index_dim)
     )
-    terminated_c = terminated_c / jnp.linalg.norm(
-        terminated_c, axis=-1, keepdims=True
-    )
+    terminated_c = terminated_c / jnp.linalg.norm(terminated_c, axis=-1, keepdims=True)
     p = 0.5
     mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
     terminated_target = batch.terminated.astype(jnp.float32)

@@ -55,9 +55,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         """Environment-specific step transition."""
         x = jnp.concatenate([state.obs, jnp.atleast_1d(action)], axis=-1)
-        y_base, y_samples = jax.vmap(
-            self._model.__call__, in_axes=(None, 0)
-        )(x, state.z)
+        y_base, y_samples = jax.vmap(self._model.__call__, in_axes=(None, 0))(
+            x, state.z
+        )
         y = y_base[0]
         r_intrinsic = y_samples.std(axis=0).mean()
 

@@ -38,7 +38,9 @@ class NormalizeVecObs(nnx.Module):
 
 
 class NormalizeVecReward(nnx.Module):
-    def __init__(self, reward, gamma, use_running_average: bool = False, eps: float = 1e-8):
+    def __init__(
+        self, reward, gamma, use_running_average: bool = False, eps: float = 1e-8
+    ):
         super().__init__()
         self.use_running_average = use_running_average
         self.eps = eps
