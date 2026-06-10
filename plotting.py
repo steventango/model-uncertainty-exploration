@@ -4,26 +4,29 @@ import jax
 import jax.numpy as jnp
 import pandas as pd
 import ground_truth
+from env_config import (
+    action_title,
+    action_visit_mask,
+    get_env_config,
+    grid_coords,
+    obs_from_coords,
+    visited_coords_from_obs,
+)
 
 
-def evaluate_and_plot_uncertainty(model, env, env_params, rng, dataset, pointer, j):
-    # Generate grid over Pendulum state space
+def evaluate_and_plot_uncertainty(
+    model, env, env_params, env_name, rng, dataset, pointer, j
+):
+    env_config = get_env_config(env_name)
     num_grid = 100
-    thetas = jnp.linspace(-jnp.pi, jnp.pi, num_grid)
-    theta_dots = jnp.linspace(-8.0, 8.0, num_grid)
-    theta_grid, theta_dot_grid = jnp.meshgrid(thetas, theta_dots)
+    s1_axis, s2_axis = grid_coords(env_name, env_params, num_grid)
+    s1_grid, s2_grid = jnp.meshgrid(s1_axis, s2_axis)
 
-    # Pendulum observation format: [cos(theta), sin(theta), theta_dot]
-    cos_theta = jnp.cos(theta_grid)
-    sin_theta = jnp.sin(theta_grid)
+    s1_flat = s1_grid.flatten()
+    s2_flat = s2_grid.flatten()
+    obs_grid = obs_from_coords(env_name, s1_flat, s2_flat)
 
-    # Flatten for model evaluation
-    cos_theta_flat = cos_theta.flatten()
-    sin_theta_flat = sin_theta.flatten()
-    theta_dot_flat = theta_dot_grid.flatten()
-    obs_grid = jnp.stack([cos_theta_flat, sin_theta_flat, theta_dot_flat], axis=-1)
-
-    actions = [-2.0, 0.0, 2.0]
+    actions = list(env_config.representative_actions)
 
     S_samples = 10
     rng, subkey = jax.random.split(rng)
@@ -36,8 +39,10 @@ def evaluate_and_plot_uncertainty(model, env, env_params, rng, dataset, pointer,
     true_dyn_grids = []
     pred_dyn_grids = []
 
+    dyn_dim = env_config.dynamics_dim
+
     for idx, act in enumerate(actions):
-        action_flat = jnp.full_like(theta_dot_flat[:, None], act)
+        action_flat = jnp.full((obs_grid.shape[0], 1), act)
         x_grid = jnp.concatenate([obs_grid, action_flat], axis=-1)
         x_grid_norm = model.normalize_input(x_grid)
 
@@ -55,30 +60,35 @@ def evaluate_and_plot_uncertainty(model, env, env_params, rng, dataset, pointer,
         pred_rew_grids.append(
             model.denormalize_reward(mean_y[..., -2]).reshape(num_grid, num_grid)
         )
-        pred_dyn_grids.append(pred_delta[..., 2].reshape(num_grid, num_grid))
+        pred_dyn_grids.append(
+            pred_delta[..., dyn_dim].reshape(num_grid, num_grid)
+        )
 
         # 3. True Physics and Rewards (from the env, the single source of truth)
-        theta_flat = theta_grid.flatten()
-        act_flat = jnp.full_like(theta_flat, act)
+        act_flat = jnp.full_like(s1_flat, act)
         true_delta = ground_truth.true_delta_obs(
-            env, env_params, theta_flat, theta_dot_flat, act_flat
+            env, env_params, env_name, s1_flat, s2_flat, act_flat
         )
-        true_dyn_grids.append(true_delta[:, 2].reshape(num_grid, num_grid))
+        true_dyn_grids.append(
+            true_delta[:, dyn_dim].reshape(num_grid, num_grid)
+        )
 
         true_reward = ground_truth.true_reward(
-            env, env_params, theta_flat, theta_dot_flat, act_flat
+            env, env_params, env_name, s1_flat, s2_flat, act_flat
         )
         true_rew_grids.append(true_reward.reshape(num_grid, num_grid))
 
     plot_uncertainty(
-        thetas,
-        theta_dots,
+        env_config,
+        s1_axis,
+        s2_axis,
         unc_grids,
         pred_rew_grids,
         pred_dyn_grids,
         true_dyn_grids,
         true_rew_grids,
         actions,
+        env_name,
         pointer,
         dataset,
         j,
@@ -158,17 +168,17 @@ def plot_true_vs_predicted(
     pred_reward,
     true_reward_rand,
     pred_reward_rand,
+    delta_obs_labels,
     j,
 ):
-    fig_tp, axs_tp = plt.subplots(2, 2, figsize=(12, 10))
+    obs_dim = true_delta_obs.shape[1]
+    n_plots = obs_dim + 1
+    n_cols = 2
+    n_rows = (n_plots + 1) // 2
+    fig_tp, axs_tp = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
     axs_tp = axs_tp.flatten()
 
-    labels = [
-        r"$\Delta \cos(\theta)$",
-        r"$\Delta \sin(\theta)$",
-        r"$\Delta \dot{\theta}$",
-    ]
-    for i in range(3):
+    for i in range(obs_dim):
         axs_tp[i].scatter(
             true_delta_obs[:, i],
             pred_delta_obs[:, i],
@@ -202,14 +212,15 @@ def plot_true_vs_predicted(
         )
         axs_tp[i].set_xlabel("True")
         axs_tp[i].set_ylabel("Predicted")
-        axs_tp[i].set_title(f"Dynamics: {labels[i]}")
+        axs_tp[i].set_title(f"Dynamics: {delta_obs_labels[i]}")
         axs_tp[i].legend()
         axs_tp[i].grid(True, linestyle=":", alpha=0.6)
 
-    axs_tp[3].scatter(
+    reward_ax = axs_tp[obs_dim]
+    reward_ax.scatter(
         true_reward, pred_reward, alpha=0.4, color="blue", s=5, label="Training Data"
     )
-    axs_tp[3].scatter(
+    reward_ax.scatter(
         true_reward_rand,
         pred_reward_rand,
         alpha=0.4,
@@ -229,12 +240,15 @@ def plot_true_vs_predicted(
         true_reward_rand.max(),
         pred_reward_rand.max(),
     )
-    axs_tp[3].plot([min_val, max_val], [min_val, max_val], "r--", label="Perfect Match")
-    axs_tp[3].set_xlabel("True")
-    axs_tp[3].set_ylabel("Predicted")
-    axs_tp[3].set_title("Reward")
-    axs_tp[3].legend()
-    axs_tp[3].grid(True, linestyle=":", alpha=0.6)
+    reward_ax.plot([min_val, max_val], [min_val, max_val], "r--", label="Perfect Match")
+    reward_ax.set_xlabel("True")
+    reward_ax.set_ylabel("Predicted")
+    reward_ax.set_title("Reward")
+    reward_ax.legend()
+    reward_ax.grid(True, linestyle=":", alpha=0.6)
+
+    for ax in axs_tp[n_plots:]:
+        ax.set_visible(False)
 
     fig_tp.suptitle(
         f"True vs Predicted Dynamics & Rewards (Iteration {j})", fontsize=14
@@ -246,14 +260,16 @@ def plot_true_vs_predicted(
 
 
 def plot_uncertainty(
-    thetas,
-    theta_dots,
+    env_config,
+    s1_axis,
+    s2_axis,
     unc_grids,
     pred_rew_grids,
     pred_dyn_grids,
     true_dyn_grids,
     true_rew_grids,
     actions,
+    env_name,
     pointer,
     dataset,
     j,
@@ -289,37 +305,29 @@ def plot_uncertainty(
     # Plot 7x3 grid
     fig, axs = plt.subplots(7, 3, figsize=(20, 35), sharex=True, sharey=True)
 
+    y_label = env_config.y_label
+    x_label = env_config.x_label
+    dynamics_label = env_config.dynamics_label
+
     for idx, act in enumerate(actions):
         # Row 1: Epistemic Uncertainty
         ax_unc = axs[0, idx]
         cf_unc = ax_unc.contourf(
-            thetas, theta_dots, unc_grids[idx], levels=unc_levels, cmap="viridis"
+            s1_axis, s2_axis, unc_grids[idx], levels=unc_levels, cmap="viridis"
         )
         if idx == 0:
-            ax_unc.set_ylabel("Theta Dot (rad/s)\n[Epistemic Uncertainty]")
-        if act == -2.0:
-            label_title = r"Action $u \approx -2.0$ (binned $u \leq -0.67$)"
-        elif act == 0.0:
-            label_title = r"Action $u \approx 0.0$ (binned $-0.67 < u < 0.67$)"
-        else:  # act == 2.0
-            label_title = r"Action $u \approx 2.0$ (binned $u \geq 0.67$)"
-        ax_unc.set_title(label_title)
+            ax_unc.set_ylabel(f"{y_label}\n[Epistemic Uncertainty]")
+        ax_unc.set_title(action_title(env_name, act))
 
         # Overlay training data points on the uncertainty plot
         if pointer > 0:
             visited_obs = dataset.obs[:pointer]
-            visited_actions = dataset.action[:pointer, 0]
-            if act == -2.0:
-                mask = visited_actions <= -0.67
-            elif act == 0.0:
-                mask = (visited_actions > -0.67) & (visited_actions < 0.67)
-            else:  # act == 2.0
-                mask = visited_actions >= 0.67
-            visited_thetas = jnp.arctan2(visited_obs[mask, 1], visited_obs[mask, 0])
-            visited_theta_dots = visited_obs[mask, 2]
+            visited_actions = dataset.action[:pointer]
+            mask = action_visit_mask(env_name, visited_actions, act)
+            visited_s1, visited_s2 = visited_coords_from_obs(env_name, visited_obs[mask])
             ax_unc.scatter(
-                visited_thetas,
-                visited_theta_dots,
+                visited_s1,
+                visited_s2,
                 color="red",
                 alpha=0.3,
                 s=2,
@@ -331,51 +339,51 @@ def plot_uncertainty(
         # Row 2: True Reward
         ax_true_rew = axs[1, idx]
         cf_true_rew = ax_true_rew.contourf(
-            thetas, theta_dots, true_rew_grids[idx], levels=rew_levels, cmap="inferno"
+            s1_axis, s2_axis, true_rew_grids[idx], levels=rew_levels, cmap="inferno"
         )
         if idx == 0:
-            ax_true_rew.set_ylabel("Theta Dot (rad/s)\n[True Reward]")
+            ax_true_rew.set_ylabel(f"{y_label}\n[True Reward]")
 
         # Row 3: Predicted Reward
         ax_pred_rew = axs[2, idx]
         cf_pred_rew = ax_pred_rew.contourf(
-            thetas, theta_dots, pred_rew_grids[idx], levels=rew_levels, cmap="inferno"
+            s1_axis, s2_axis, pred_rew_grids[idx], levels=rew_levels, cmap="inferno"
         )
         if idx == 0:
-            ax_pred_rew.set_ylabel("Theta Dot (rad/s)\n[Predicted Reward]")
+            ax_pred_rew.set_ylabel(f"{y_label}\n[Predicted Reward]")
 
         # Row 4: Reward Prediction Error
         ax_rew_err = axs[3, idx]
         cf_rew_err = ax_rew_err.contourf(
-            thetas, theta_dots, rew_err_grids[idx], levels=rew_err_levels, cmap="Reds"
+            s1_axis, s2_axis, rew_err_grids[idx], levels=rew_err_levels, cmap="Reds"
         )
         if idx == 0:
-            ax_rew_err.set_ylabel("Theta Dot (rad/s)\n[Reward Error]")
+            ax_rew_err.set_ylabel(f"{y_label}\n[Reward Error]")
 
-        # Row 5: True Dynamics (delta theta_dot)
+        # Row 5: True Dynamics
         ax_true_dyn = axs[4, idx]
         cf_true_dyn = ax_true_dyn.contourf(
-            thetas, theta_dots, true_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
+            s1_axis, s2_axis, true_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
         )
         if idx == 0:
-            ax_true_dyn.set_ylabel("Theta Dot (rad/s)\n[True Delta Theta Dot]")
+            ax_true_dyn.set_ylabel(f"{y_label}\n[True {dynamics_label}]")
 
-        # Row 6: Predicted Dynamics (Mean delta theta_dot)
+        # Row 6: Predicted Dynamics
         ax_pred_dyn = axs[5, idx]
         cf_pred_dyn = ax_pred_dyn.contourf(
-            thetas, theta_dots, pred_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
+            s1_axis, s2_axis, pred_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
         )
         if idx == 0:
-            ax_pred_dyn.set_ylabel("Theta Dot (rad/s)\n[Predicted Delta Theta Dot]")
+            ax_pred_dyn.set_ylabel(f"{y_label}\n[Predicted {dynamics_label}]")
 
         # Row 7: Dynamics Prediction Error
         ax_dyn_err = axs[6, idx]
         cf_dyn_err = ax_dyn_err.contourf(
-            thetas, theta_dots, dyn_err_grids[idx], levels=dyn_err_levels, cmap="Reds"
+            s1_axis, s2_axis, dyn_err_grids[idx], levels=dyn_err_levels, cmap="Reds"
         )
         if idx == 0:
-            ax_dyn_err.set_ylabel("Theta Dot (rad/s)\n[Dynamics Error]")
-        ax_dyn_err.set_xlabel("Theta (rad)")
+            ax_dyn_err.set_ylabel(f"{y_label}\n[Dynamics Error]")
+        ax_dyn_err.set_xlabel(x_label)
 
         # Add shared colorbars to the right of the rows
         if idx == 2:
@@ -390,7 +398,7 @@ def plot_uncertainty(
             ).set_label("Reward Abs Error")
             fig.colorbar(
                 cf_true_dyn, ax=axs[4:6, :], shrink=0.8, pad=0.02, location="right"
-            ).set_label("Delta Theta Dot Scale")
+            ).set_label(f"{dynamics_label} Scale")
             fig.colorbar(
                 cf_dyn_err, ax=axs[6, :], shrink=0.8, pad=0.02, location="right"
             ).set_label("Dynamics Abs Error")
@@ -424,11 +432,11 @@ def plot_training_curve(timesteps, returns, title, fig_path):
     plt.close()
 
 
-def plot_eval_returns(real_steps, eval_returns, fig_path):
+def plot_eval_returns(real_steps, eval_returns, env_name, fig_path):
     plt.figure()
     plt.plot(real_steps, eval_returns)
     plt.xlabel("Steps")
     plt.ylabel("Mean Evaluation Return")
-    plt.title("PPO on Model(Pendulum-v1) Evaluation Returns")
+    plt.title(f"PPO on Model({env_name}) Evaluation Returns")
     plt.savefig(fig_path)
     plt.close()

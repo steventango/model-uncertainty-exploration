@@ -2,27 +2,20 @@ import jax
 import jax.numpy as jnp
 import plotting
 import ground_truth
+from env_config import get_env_config, sample_validation_batch
 
 
-def generate_validation_data(env, env_params, num_val=1000):
+def generate_validation_data(env, env_params, env_name, num_val=1000):
     val_rng = jax.random.PRNGKey(42)
-    val_rng, val_subkey_theta, val_subkey_tdot, val_subkey_act = jax.random.split(
-        val_rng, 4
+    val_rng, val_x, _, val_s1, val_s2, val_act = sample_validation_batch(
+        val_rng, env_name, env_params, num_val
     )
-    val_theta = jax.random.uniform(
-        val_subkey_theta, (num_val,), minval=-jnp.pi, maxval=jnp.pi
-    )
-    val_tdot = jax.random.uniform(val_subkey_tdot, (num_val,), minval=-8.0, maxval=8.0)
-    val_act = jax.random.uniform(val_subkey_act, (num_val, 1), minval=-2.0, maxval=2.0)
-
-    val_obs = jnp.stack([jnp.cos(val_theta), jnp.sin(val_theta), val_tdot], axis=-1)
-    val_x = jnp.concatenate([val_obs, val_act], axis=-1)
 
     val_true_delta_obs = ground_truth.true_delta_obs(
-        env, env_params, val_theta, val_tdot, val_act[:, 0]
+        env, env_params, env_name, val_s1, val_s2, val_act[:, 0]
     )
     val_true_reward = ground_truth.true_reward(
-        env, env_params, val_theta, val_tdot, val_act[:, 0]
+        env, env_params, env_name, val_s1, val_s2, val_act[:, 0]
     )
 
     return val_x, val_true_delta_obs, val_true_reward
@@ -32,6 +25,7 @@ def evaluate_validation(
     model,
     env,
     env_params,
+    env_name,
     val_x,
     val_true_delta_obs,
     val_true_reward,
@@ -41,6 +35,7 @@ def evaluate_validation(
     j,
 ):
     batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
+    env_config = get_env_config(env_name)
 
     # Training data predictions (mean model, i.e. zero epistemic index)
     x_data = jnp.concatenate([batch.obs, batch.action], axis=-1)
@@ -55,15 +50,9 @@ def evaluate_validation(
 
     # Uniformly sampled state-space validation points
     num_rand = 1000
-    rng, subkey_theta, subkey_tdot, subkey_act = jax.random.split(rng, 4)
-    rand_theta = jax.random.uniform(
-        subkey_theta, (num_rand,), minval=-jnp.pi, maxval=jnp.pi
+    rng, x_rand, _, rand_s1, rand_s2, rand_act = sample_validation_batch(
+        rng, env_name, env_params, num_rand
     )
-    rand_tdot = jax.random.uniform(subkey_tdot, (num_rand,), minval=-8.0, maxval=8.0)
-    rand_act = jax.random.uniform(subkey_act, (num_rand, 1), minval=-2.0, maxval=2.0)
-
-    rand_obs = jnp.stack([jnp.cos(rand_theta), jnp.sin(rand_theta), rand_tdot], axis=-1)
-    x_rand = jnp.concatenate([rand_obs, rand_act], axis=-1)
     x_rand = model.normalize_input(x_rand)
 
     _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
@@ -71,10 +60,10 @@ def evaluate_validation(
     pred_reward_rand = model.denormalize_reward(mean_y_rand[..., -2])
 
     true_delta_obs_rand = ground_truth.true_delta_obs(
-        env, env_params, rand_theta, rand_tdot, rand_act[:, 0]
+        env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
     )
     true_reward_rand = ground_truth.true_reward(
-        env, env_params, rand_theta, rand_tdot, rand_act[:, 0]
+        env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
     )
 
     # Plot true vs predicted
@@ -87,6 +76,7 @@ def evaluate_validation(
         pred_reward,
         true_reward_rand,
         pred_reward_rand,
+        env_config.delta_obs_labels,
         j,
     )
 

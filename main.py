@@ -9,6 +9,7 @@ import optax
 import pandas as pd
 
 import evaluation
+from env_config import SUPPORTED_ENVS
 from model import DynamicsModel, train_model
 from model_env import ModelEnvironment
 from networks import ENN
@@ -27,6 +28,13 @@ def main():
     parser.add_argument(
         "--output_csv", type=str, default="/tmp/metrics.csv", help="Output metrics path"
     )
+    parser.add_argument(
+        "--env",
+        type=str,
+        default="Pendulum-v1",
+        choices=SUPPORTED_ENVS,
+        help="Gymnax environment name",
+    )
     args = parser.parse_args()
 
     config = {
@@ -44,19 +52,26 @@ def main():
         "MAX_GRAD_NORM": 0.5,
         "HIDDEN_DIM": 64,
         "ACTIVATION": "tanh",
-        "ENV_NAME": "Pendulum-v1",
+        "ENV_NAME": args.env,
         "ANNEAL_LR": False,
         "NORMALIZE_ENV": True,
         "DEBUG": False,
     }
     rollout_config = config.copy()
-    rollout_config["TOTAL_TIMESTEPS"] = 1e3
     rollout_config["NUM_ENVS"] = 1
-    rollout_config["NUM_STEPS"] = 20
     rollout_config["DATASET_SIZE"] = 10000
     eval_config = rollout_config.copy()
     eval_config["NUM_ENVS"] = 100
 
+    rng = jax.random.key(30)
+
+    base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
+    env = LogWrapper(base_env)
+    env = ClipAction(env)
+    env = VecEnv(env)
+    rollout_config["TOTAL_TIMESTEPS"] = env_params.max_steps_in_episode * 10
+    rollout_config["NUM_STEPS"] = env_params.max_steps_in_episode // 10
+    eval_config["NUM_STEPS"] = env_params.max_steps_in_episode
     model_config = {
         "LR": 1e-3,
         "HIDDEN_DIM": 64,
@@ -68,16 +83,9 @@ def main():
         "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
     }
 
-    rng = jax.random.PRNGKey(30)
-
-    base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
-    env = LogWrapper(base_env)
-    env = ClipAction(env)
-    env = VecEnv(env)
-    eval_config["NUM_STEPS"] = env_params.max_steps_in_episode
-
+    env_name = rollout_config["ENV_NAME"]
     val_x, val_true_delta_obs, val_true_reward = validation.generate_validation_data(
-        base_env, env_params
+        base_env, env_params, env_name
     )
 
     # INIT NETWORK
@@ -186,6 +194,7 @@ def main():
                 model,
                 base_env,
                 env_params,
+                env_name,
                 val_x,
                 val_true_delta_obs,
                 val_true_reward,
@@ -197,9 +206,9 @@ def main():
             dyn_maes.append(dyn_mae)
             rew_maes.append(rew_mae)
 
-        # PLOT UNCERTAINTY & MEAN PREDICTIONS (heatmap over pendulum state space)
+        # PLOT UNCERTAINTY & MEAN PREDICTIONS (heatmap over state space)
         rng = plotting.evaluate_and_plot_uncertainty(
-            model, base_env, env_params, rng, dataset, pointer, j
+            model, base_env, env_params, env_name, rng, dataset, pointer, j
         )
 
         # Train model-env explore policy
@@ -234,7 +243,7 @@ def main():
         plotting.plot_training_curve(
             timesteps,
             returns,
-            "PPO(explore) on Model(Pendulum-v1)",
+            f"PPO(explore) on Model({env_name})",
             "/tmp/ppo_explore_continuous_action.png",
         )
 
@@ -262,7 +271,7 @@ def main():
         plotting.plot_training_curve(
             timesteps,
             returns,
-            "PPO(eval) on Model(Pendulum-v1)",
+            f"PPO(eval) on Model({env_name})",
             "/tmp/ppo_eval_continuous_action.png",
         )
 
@@ -274,7 +283,10 @@ def main():
         eval_returns.append(mean_return)
 
         plotting.plot_eval_returns(
-            real_steps, eval_returns, "/tmp/ppo_continuous_action_eval_returns.png"
+            real_steps,
+            eval_returns,
+            env_name,
+            "/tmp/ppo_continuous_action_eval_returns.png",
         )
 
     # Save validation errors to CSV
