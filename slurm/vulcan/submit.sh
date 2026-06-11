@@ -1,7 +1,7 @@
 #!/bin/bash
 # Submit the classic-control grid on Vulcan.
 #
-# Grid: 5 seeds x 5 envs x {(a=1,b=0),(a=0,b=1)} x {mean,sample} = 100 array tasks.
+# Grid: 10 seeds x 5 envs x {(a=1,b=0),(a=0,b=1)} x {mean,sample} = 200 array tasks.
 # Each task requests 1 full L40S GPU (--gres=gpu:l40s:1) for 3 hours.
 set -euo pipefail
 
@@ -47,7 +47,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     python3 - <<'PY'
 combos = []
 envs = ["Pendulum-v1", "MountainCar-v0", "MountainCarContinuous-v0", "CartPole-v1", "Acrobot-v1"]
-seeds = list(range(5))
+seeds = list(range(10))
 explore = [(1.0, 0.0), (0.0, 1.0)]
 modes = ["mean", "sample"]
 for seed in seeds:
@@ -63,6 +63,6 @@ PY
 fi
 
 job_id="$(sbatch "${SBATCH_ARGS[@]}" | awk '{print $NF}')"
-echo "Submitted array job ${job_id} (100 tasks, 1 full L40S x 3h each)"
+echo "Submitted array job ${job_id} (200 tasks, 1 full L40S x 3h each)"
 echo "Monitor: squeue -u \$USER -j ${job_id}"
 echo "Logs:    /scratch/\$USER/logs/mue-classic-${job_id}_*.out"

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
 #SBATCH --gres=gpu:l40s:1
-#SBATCH --array=0-99
+#SBATCH --array=0-199
 #SBATCH --output=/scratch/%u/logs/mue-classic-%A_%a.out
 #SBATCH --error=/scratch/%u/logs/mue-classic-%A_%a.err
 
@@ -41,7 +41,7 @@ ENVS=(
     CartPole-v1
     Acrobot-v1
 )
-SEEDS=(0 1 2 3 4)
+SEEDS=(0 1 2 3 4 5 6 7 8 9)
 EXPLORE_ALPHAS=(1.0 0.0)
 EXPLORE_BETAS=(0.0 1.0)
 PREDICT_MODES=(mean sample)
