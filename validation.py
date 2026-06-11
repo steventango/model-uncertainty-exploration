@@ -43,6 +43,7 @@ def evaluate_validation(
     pointer,
     rng,
     j,
+    run_dir,
 ):
     batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
     env_config = get_env_config(env_name)
@@ -113,6 +114,7 @@ def evaluate_validation(
         unc_terminated_rand,
         env_config.delta_obs_labels,
         j,
+        run_dir,
     )
 
     # Evaluate MAE on validation set (mean model)

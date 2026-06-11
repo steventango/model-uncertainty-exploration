@@ -28,9 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--alpha", type=float, default=0.0, help="Exploit weight")
     parser.add_argument("--beta", type=float, default=1.0, help="Explore weight")
-    parser.add_argument(
-        "--output_csv", type=str, default="/tmp/metrics.csv", help="Output metrics path"
-    )
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument(
         "--env",
         type=str,
@@ -64,6 +62,7 @@ def main():
         "ENV_NAME": args.env,
         "ANNEAL_LR": False,
         "NORMALIZE_ENV": True,
+        "SEED": args.seed,
         "DEBUG": False,
     }
     rollout_config = config.copy()
@@ -72,7 +71,7 @@ def main():
     eval_config = rollout_config.copy()
     eval_config["NUM_ENVS"] = 100
 
-    rng = jax.random.key(30)
+    rng = jax.random.key(config["SEED"])
 
     base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
     action_space = base_env.action_space(env_params)
@@ -225,12 +224,13 @@ def main():
                 pointer,
                 rng,
                 j,
+                log_dir,
             )
             logger.log_validation_metrics(dyn_mae, rew_mae, term_bce, term_f1, j)
 
         # PLOT UNCERTAINTY & MEAN PREDICTIONS (heatmap over state space)
         rng = plotting.evaluate_and_plot_uncertainty(
-            model, base_env, env_params, env_name, rng, dataset, pointer, j
+            model, base_env, env_params, env_name, rng, dataset, pointer, j, log_dir
         )
 
         # Train model-env explore policy

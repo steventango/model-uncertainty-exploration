@@ -1,3 +1,5 @@
+import os
+
 import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
@@ -24,7 +26,7 @@ def compute_epistemic_uncertainty(model, x_norm, rng, num_samples=10):
 
 
 def evaluate_and_plot_uncertainty(
-    model, env, env_params, env_name, rng, dataset, pointer, j
+    model, env, env_params, env_name, rng, dataset, pointer, j, run_dir
 ):
     env_config = get_env_config(env_name)
     num_grid = 100
@@ -109,6 +111,7 @@ def evaluate_and_plot_uncertainty(
         pointer,
         dataset,
         j,
+        run_dir,
         discrete=is_discrete(env, env_params),
     )
     return rng
@@ -159,6 +162,7 @@ def plot_true_vs_predicted(
     unc_terminated_rand,
     delta_obs_labels,
     j,
+    run_dir,
 ):
     obs_dim = true_delta_obs.shape[1]
     n_plots = obs_dim + 2
@@ -298,7 +302,8 @@ def plot_true_vs_predicted(
         f"True vs Predicted Dynamics, Rewards & Termination with Uncertainty (Iteration {j})",
         fontsize=14,
     )
-    fig_tp_path = "/tmp/ppo_continuous_action_true_vs_pred.png"
+    os.makedirs(run_dir, exist_ok=True)
+    fig_tp_path = os.path.join(run_dir, f"true_vs_pred_{j:04d}.png")
     plt.savefig(fig_tp_path, bbox_inches="tight", dpi=150)
     print(f"Saved true vs predicted validation plot to {fig_tp_path}")
     plt.close()
@@ -320,6 +325,7 @@ def plot_uncertainty(
     pointer,
     dataset,
     j,
+    run_dir,
     *,
     discrete: bool,
 ):
@@ -490,7 +496,8 @@ def plot_uncertainty(
         fontsize=16,
         y=0.98,
     )
-    fig_path = "/tmp/ppo_continuous_action_uncertainty.png"
+    os.makedirs(run_dir, exist_ok=True)
+    fig_path = os.path.join(run_dir, f"uncertainty_{j:04d}.png")
     plt.savefig(fig_path, bbox_inches="tight", dpi=150)
     print(
         f"Saved action-dependent uncertainty, comparison and error plots to {fig_path}"
