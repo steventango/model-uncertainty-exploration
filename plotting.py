@@ -9,6 +9,7 @@ from env_config import (
     action_visit_mask,
     get_env_config,
     grid_coords,
+    is_discrete,
     obs_from_coords,
     visited_coords_from_obs,
 )
@@ -48,12 +49,14 @@ def evaluate_and_plot_uncertainty(
     pred_rew_grids = []
     true_dyn_grids = []
     pred_dyn_grids = []
+    true_term_grids = []
+    pred_term_grids = []
 
     dyn_dim = env_config.dynamics_dim
 
     for idx, act in enumerate(actions):
         action_flat = jnp.full((obs_grid.shape[0], 1), act)
-        x_grid = jnp.concatenate([obs_grid, action_flat], axis=-1)
+        x_grid = model.build_input(obs_grid, action_flat)
         x_grid_norm = model.normalize_input(x_grid)
 
         # 1. Epistemic Uncertainty (std of normalized model outputs)
@@ -70,8 +73,9 @@ def evaluate_and_plot_uncertainty(
         pred_rew_grids.append(
             model.denormalize_reward(mean_y[..., -2]).reshape(num_grid, num_grid)
         )
-        pred_dyn_grids.append(
-            pred_delta[..., dyn_dim].reshape(num_grid, num_grid)
+        pred_dyn_grids.append(pred_delta[..., dyn_dim].reshape(num_grid, num_grid))
+        pred_term_grids.append(
+            jax.nn.sigmoid(mean_y[..., -1]).reshape(num_grid, num_grid)
         )
 
         # 3. True Physics and Rewards (from the env, the single source of truth)
@@ -79,14 +83,17 @@ def evaluate_and_plot_uncertainty(
         true_delta = ground_truth.true_delta_obs(
             env, env_params, env_name, s1_flat, s2_flat, act_flat
         )
-        true_dyn_grids.append(
-            true_delta[:, dyn_dim].reshape(num_grid, num_grid)
-        )
+        true_dyn_grids.append(true_delta[:, dyn_dim].reshape(num_grid, num_grid))
 
         true_reward = ground_truth.true_reward(
             env, env_params, env_name, s1_flat, s2_flat, act_flat
         )
         true_rew_grids.append(true_reward.reshape(num_grid, num_grid))
+
+        true_term = ground_truth.true_terminated(
+            env, env_params, env_name, s1_flat, s2_flat, act_flat
+        )
+        true_term_grids.append(true_term.reshape(num_grid, num_grid))
 
     plot_uncertainty(
         env_config,
@@ -97,41 +104,50 @@ def evaluate_and_plot_uncertainty(
         pred_dyn_grids,
         true_dyn_grids,
         true_rew_grids,
+        true_term_grids,
+        pred_term_grids,
         actions,
         env_name,
         pointer,
         dataset,
         j,
+        discrete=is_discrete(env, env_params),
     )
     return rng
 
 
-def plot_dataset(dataset, pointer, env, env_params, rollout_config, j):
-    n = (
-        env.observation_space(env_params).shape[0]
-        + env.action_space(env_params).shape[0]
-        + 1
-    )
+def plot_dataset(dataset, pointer, env_name, rollout_config, j, *, discrete: bool):
+    env_config = get_env_config(env_name)
+    obs_dim = dataset.obs.shape[1]
+    action_plot_dims = 1 if discrete else dataset.action.shape[1]
+    n = obs_dim + action_plot_dims + 1
     fig_width = min(3 * (j + 1), 50)
     fig, axs = plt.subplots(n, 1, figsize=(fig_width, 3 * n))
 
     # Observational dimensions
-    for i in range(env.observation_space(env_params).shape[0]):
+    for i in range(obs_dim):
         axs[i].plot(dataset.obs[:pointer, i])
         axs[i].set_xlabel("Timestep")
         axs[i].set_ylabel(f"Observation {i}")
         axs[i].set_title(f"Observation {i} over timesteps")
 
     # Action dimensions
-    for i in range(env.action_space(env_params).shape[0]):
-        axs[env.observation_space(env_params).shape[0] + i].plot(
-            dataset.action[:pointer, i]
-        )
-        axs[env.observation_space(env_params).shape[0] + i].set_xlabel("Timestep")
-        axs[env.observation_space(env_params).shape[0] + i].set_ylabel(f"Action {i}")
-        axs[env.observation_space(env_params).shape[0] + i].set_title(
-            f"Action {i} over timesteps"
-        )
+    if discrete:
+        act_data = jnp.asarray(dataset.action[:pointer]).reshape(-1)
+        action_ax = axs[obs_dim]
+        action_ax.plot(act_data, drawstyle="steps-post")
+        action_ax.set_xlabel("Timestep")
+        action_ax.set_ylabel("Action index")
+        action_ax.set_title("Discrete action over timesteps")
+        ticks = [int(a) for a in env_config.representative_actions]
+        action_ax.set_yticks(ticks)
+        action_ax.set_ylim(min(ticks) - 0.25, max(ticks) + 0.25)
+    else:
+        for i in range(dataset.action.shape[1]):
+            axs[obs_dim + i].plot(dataset.action[:pointer, i])
+            axs[obs_dim + i].set_xlabel("Timestep")
+            axs[obs_dim + i].set_ylabel(f"Action {i}")
+            axs[obs_dim + i].set_title(f"Action {i} over timesteps")
 
     axs[-1].plot(dataset.reward[:pointer])
     axs[-1].set_xlabel("Timestep")
@@ -170,7 +186,14 @@ def plot_losses(history):
 
 
 def _scatter_with_uncertainty(
-    ax, true_vals, pred_vals, unc_vals, label, marker, vmin, vmax
+    ax,
+    true_vals,
+    pred_vals,
+    unc_vals,
+    label,
+    marker,
+    vmin,
+    vmax,
 ):
     return ax.scatter(
         true_vals,
@@ -195,15 +218,21 @@ def plot_true_vs_predicted(
     pred_reward,
     true_reward_rand,
     pred_reward_rand,
+    true_terminated,
+    pred_terminated,
+    true_terminated_rand,
+    pred_terminated_rand,
     unc_delta_obs,
     unc_delta_obs_rand,
     unc_reward,
     unc_reward_rand,
+    unc_terminated,
+    unc_terminated_rand,
     delta_obs_labels,
     j,
 ):
     obs_dim = true_delta_obs.shape[1]
-    n_plots = obs_dim + 1
+    n_plots = obs_dim + 2
     n_cols = 2
     n_rows = (n_plots + 1) // 2
     fig_tp, axs_tp = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
@@ -299,11 +328,45 @@ def plot_true_vs_predicted(
     cbar_rew = fig_tp.colorbar(sc_rew, ax=reward_ax, shrink=0.8, pad=0.02)
     cbar_rew.set_label("Uncertainty (Std Dev)")
 
+    term_ax = axs_tp[obs_dim + 1]
+    unc_term_min = min(unc_terminated.min(), unc_terminated_rand.min())
+    unc_term_max = max(unc_terminated.max(), unc_terminated_rand.max())
+    sc_term = _scatter_with_uncertainty(
+        term_ax,
+        true_terminated,
+        pred_terminated,
+        unc_terminated,
+        "Training Data",
+        "o",
+        unc_term_min,
+        unc_term_max,
+    )
+    _scatter_with_uncertainty(
+        term_ax,
+        true_terminated_rand,
+        pred_terminated_rand,
+        unc_terminated_rand,
+        "Uniform Space",
+        "^",
+        unc_term_min,
+        unc_term_max,
+    )
+    term_ax.plot([0, 1], [0, 1], "r--", label="Perfect Match")
+    term_ax.set_xlim(-0.05, 1.05)
+    term_ax.set_ylim(-0.05, 1.05)
+    term_ax.set_xlabel("True")
+    term_ax.set_ylabel("Predicted")
+    term_ax.set_title("Termination (probability)")
+    term_ax.legend(loc="upper left", markerscale=2)
+    term_ax.grid(True, linestyle=":", alpha=0.6)
+    cbar_term = fig_tp.colorbar(sc_term, ax=term_ax, shrink=0.8, pad=0.02)
+    cbar_term.set_label("Uncertainty (Std Dev)")
+
     for ax in axs_tp[n_plots:]:
         ax.set_visible(False)
 
     fig_tp.suptitle(
-        f"True vs Predicted Dynamics & Rewards with Uncertainty (Iteration {j})",
+        f"True vs Predicted Dynamics, Rewards & Termination with Uncertainty (Iteration {j})",
         fontsize=14,
     )
     fig_tp_path = "/tmp/ppo_continuous_action_true_vs_pred.png"
@@ -321,11 +384,15 @@ def plot_uncertainty(
     pred_dyn_grids,
     true_dyn_grids,
     true_rew_grids,
+    true_term_grids,
+    pred_term_grids,
     actions,
     env_name,
     pointer,
     dataset,
     j,
+    *,
+    discrete: bool,
 ):
     # Calculate global color scales across all subplots
     unc_min, unc_max = min(g.min() for g in unc_grids), max(g.max() for g in unc_grids)
@@ -343,6 +410,11 @@ def plot_uncertainty(
     rew_err_max = max(g.max() for g in rew_err_grids)
     rew_err_levels = jnp.linspace(0.0, rew_err_max, 50) if rew_err_max > 0.0 else 50
 
+    term_levels = jnp.linspace(0.0, 1.0, 50)
+    term_err_grids = [jnp.abs(t - p) for t, p in zip(true_term_grids, pred_term_grids)]
+    term_err_max = max(g.max() for g in term_err_grids)
+    term_err_levels = jnp.linspace(0.0, term_err_max, 50) if term_err_max > 0.0 else 50
+
     dyn_min = min(
         min(g.min() for g in true_dyn_grids), min(g.min() for g in pred_dyn_grids)
     )
@@ -355,29 +427,34 @@ def plot_uncertainty(
     dyn_err_max = max(g.max() for g in dyn_err_grids)
     dyn_err_levels = jnp.linspace(0.0, dyn_err_max, 50) if dyn_err_max > 0.0 else 50
 
-    # Plot 7x3 grid
-    fig, axs = plt.subplots(7, 3, figsize=(20, 35), sharex=True, sharey=True)
+    n_cols = len(actions)
+    fig, axs = plt.subplots(
+        10, n_cols, figsize=(6.5 * n_cols, 50), sharex=True, sharey=True
+    )
+    if n_cols == 1:
+        axs = axs.reshape(10, 1)
 
     y_label = env_config.y_label
     x_label = env_config.x_label
     dynamics_label = env_config.dynamics_label
 
     for idx, act in enumerate(actions):
-        # Row 1: Epistemic Uncertainty
+        # Row 0: Epistemic Uncertainty
         ax_unc = axs[0, idx]
         cf_unc = ax_unc.contourf(
             s1_axis, s2_axis, unc_grids[idx], levels=unc_levels, cmap="viridis"
         )
         if idx == 0:
             ax_unc.set_ylabel(f"{y_label}\n[Epistemic Uncertainty]")
-        ax_unc.set_title(action_title(env_name, act))
+        ax_unc.set_title(action_title(env_name, act, discrete=discrete))
 
-        # Overlay training data points on the uncertainty plot
         if pointer > 0:
             visited_obs = dataset.obs[:pointer]
             visited_actions = dataset.action[:pointer]
-            mask = action_visit_mask(env_name, visited_actions, act)
-            visited_s1, visited_s2 = visited_coords_from_obs(env_name, visited_obs[mask])
+            mask = action_visit_mask(env_name, visited_actions, act, discrete=discrete)
+            visited_s1, visited_s2 = visited_coords_from_obs(
+                env_name, visited_obs[mask]
+            )
             ax_unc.scatter(
                 visited_s1,
                 visited_s2,
@@ -389,7 +466,7 @@ def plot_uncertainty(
             if idx == 0:
                 ax_unc.legend()
 
-        # Row 2: True Reward
+        # Rows 1-3: Reward
         ax_true_rew = axs[1, idx]
         cf_true_rew = ax_true_rew.contourf(
             s1_axis, s2_axis, true_rew_grids[idx], levels=rew_levels, cmap="inferno"
@@ -397,7 +474,6 @@ def plot_uncertainty(
         if idx == 0:
             ax_true_rew.set_ylabel(f"{y_label}\n[True Reward]")
 
-        # Row 3: Predicted Reward
         ax_pred_rew = axs[2, idx]
         cf_pred_rew = ax_pred_rew.contourf(
             s1_axis, s2_axis, pred_rew_grids[idx], levels=rew_levels, cmap="inferno"
@@ -405,7 +481,6 @@ def plot_uncertainty(
         if idx == 0:
             ax_pred_rew.set_ylabel(f"{y_label}\n[Predicted Reward]")
 
-        # Row 4: Reward Prediction Error
         ax_rew_err = axs[3, idx]
         cf_rew_err = ax_rew_err.contourf(
             s1_axis, s2_axis, rew_err_grids[idx], levels=rew_err_levels, cmap="Reds"
@@ -413,24 +488,44 @@ def plot_uncertainty(
         if idx == 0:
             ax_rew_err.set_ylabel(f"{y_label}\n[Reward Error]")
 
-        # Row 5: True Dynamics
-        ax_true_dyn = axs[4, idx]
+        # Rows 4-6: Termination
+        ax_true_term = axs[4, idx]
+        cf_true_term = ax_true_term.contourf(
+            s1_axis, s2_axis, true_term_grids[idx], levels=term_levels, cmap="inferno"
+        )
+        if idx == 0:
+            ax_true_term.set_ylabel(f"{y_label}\n[True Termination]")
+
+        ax_pred_term = axs[5, idx]
+        cf_pred_term = ax_pred_term.contourf(
+            s1_axis, s2_axis, pred_term_grids[idx], levels=term_levels, cmap="inferno"
+        )
+        if idx == 0:
+            ax_pred_term.set_ylabel(f"{y_label}\n[Predicted Termination]")
+
+        ax_term_err = axs[6, idx]
+        cf_term_err = ax_term_err.contourf(
+            s1_axis, s2_axis, term_err_grids[idx], levels=term_err_levels, cmap="Reds"
+        )
+        if idx == 0:
+            ax_term_err.set_ylabel(f"{y_label}\n[Termination Error]")
+
+        # Rows 7-9: Dynamics
+        ax_true_dyn = axs[7, idx]
         cf_true_dyn = ax_true_dyn.contourf(
             s1_axis, s2_axis, true_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
         )
         if idx == 0:
             ax_true_dyn.set_ylabel(f"{y_label}\n[True {dynamics_label}]")
 
-        # Row 6: Predicted Dynamics
-        ax_pred_dyn = axs[5, idx]
+        ax_pred_dyn = axs[8, idx]
         cf_pred_dyn = ax_pred_dyn.contourf(
             s1_axis, s2_axis, pred_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
         )
         if idx == 0:
             ax_pred_dyn.set_ylabel(f"{y_label}\n[Predicted {dynamics_label}]")
 
-        # Row 7: Dynamics Prediction Error
-        ax_dyn_err = axs[6, idx]
+        ax_dyn_err = axs[9, idx]
         cf_dyn_err = ax_dyn_err.contourf(
             s1_axis, s2_axis, dyn_err_grids[idx], levels=dyn_err_levels, cmap="Reds"
         )
@@ -438,8 +533,7 @@ def plot_uncertainty(
             ax_dyn_err.set_ylabel(f"{y_label}\n[Dynamics Error]")
         ax_dyn_err.set_xlabel(x_label)
 
-        # Add shared colorbars to the right of the rows
-        if idx == 2:
+        if idx == n_cols - 1:
             fig.colorbar(
                 cf_unc, ax=axs[0, :], shrink=0.8, pad=0.02, location="right"
             ).set_label("Uncertainty (Std Dev)")
@@ -450,10 +544,16 @@ def plot_uncertainty(
                 cf_rew_err, ax=axs[3, :], shrink=0.8, pad=0.02, location="right"
             ).set_label("Reward Abs Error")
             fig.colorbar(
-                cf_true_dyn, ax=axs[4:6, :], shrink=0.8, pad=0.02, location="right"
+                cf_true_term, ax=axs[4:6, :], shrink=0.8, pad=0.02, location="right"
+            ).set_label("Termination Prob.")
+            fig.colorbar(
+                cf_term_err, ax=axs[6, :], shrink=0.8, pad=0.02, location="right"
+            ).set_label("Termination Abs Error")
+            fig.colorbar(
+                cf_true_dyn, ax=axs[7:9, :], shrink=0.8, pad=0.02, location="right"
             ).set_label(f"{dynamics_label} Scale")
             fig.colorbar(
-                cf_dyn_err, ax=axs[6, :], shrink=0.8, pad=0.02, location="right"
+                cf_dyn_err, ax=axs[9, :], shrink=0.8, pad=0.02, location="right"
             ).set_label("Dynamics Abs Error")
 
     fig.suptitle(

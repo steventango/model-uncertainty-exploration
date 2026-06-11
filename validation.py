@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import optax
 import plotting
 import ground_truth
 from env_config import get_env_config, sample_validation_batch
@@ -7,8 +8,8 @@ from env_config import get_env_config, sample_validation_batch
 
 def generate_validation_data(env, env_params, env_name, num_val=1000):
     val_rng = jax.random.PRNGKey(42)
-    val_rng, val_x, _, val_s1, val_s2, val_act = sample_validation_batch(
-        val_rng, env_name, env_params, num_val
+    val_rng, val_obs, val_s1, val_s2, val_act = sample_validation_batch(
+        val_rng, env, env_params, env_name, num_val
     )
 
     val_true_delta_obs = ground_truth.true_delta_obs(
@@ -17,8 +18,15 @@ def generate_validation_data(env, env_params, env_name, num_val=1000):
     val_true_reward = ground_truth.true_reward(
         env, env_params, env_name, val_s1, val_s2, val_act[:, 0]
     )
+    val_true_terminated = ground_truth.true_terminated(
+        env, env_params, env_name, val_s1, val_s2, val_act[:, 0]
+    )
 
-    return val_x, val_true_delta_obs, val_true_reward
+    return val_obs, val_act, val_true_delta_obs, val_true_reward, val_true_terminated
+
+
+def _model_inputs(model, obs, action):
+    return model.normalize_input(model.build_input(obs, action))
 
 
 def evaluate_validation(
@@ -26,9 +34,11 @@ def evaluate_validation(
     env,
     env_params,
     env_name,
-    val_x,
+    val_obs,
+    val_act,
     val_true_delta_obs,
     val_true_reward,
+    val_true_terminated,
     dataset,
     pointer,
     rng,
@@ -38,31 +48,36 @@ def evaluate_validation(
     env_config = get_env_config(env_name)
 
     # Training data predictions (mean model, i.e. zero epistemic index)
-    x_data = jnp.concatenate([batch.obs, batch.action], axis=-1)
-    x_data = model.normalize_input(x_data)
+    x_data = _model_inputs(model, batch.obs, batch.action)
     dummy_z = jnp.zeros(model.index_dim)
     _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_data, dummy_z)
     pred_delta_obs = model.denormalize_delta_obs(mean_y[..., :-2])
     pred_reward = model.denormalize_reward(mean_y[..., -2])
+    pred_terminated = jax.nn.sigmoid(mean_y[..., -1])
 
     true_delta_obs = batch.info["next_obs"] - batch.obs
     true_reward = batch.reward
+    true_terminated = batch.terminated.astype(jnp.float32)
 
     # Uniformly sampled state-space validation points
     num_rand = 1000
-    rng, x_rand, _, rand_s1, rand_s2, rand_act = sample_validation_batch(
-        rng, env_name, env_params, num_rand
+    rng, rand_obs, rand_s1, rand_s2, rand_act = sample_validation_batch(
+        rng, env, env_params, env_name, num_rand
     )
-    x_rand = model.normalize_input(x_rand)
+    x_rand = _model_inputs(model, rand_obs, rand_act)
 
     _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
     pred_delta_obs_rand = model.denormalize_delta_obs(mean_y_rand[..., :-2])
     pred_reward_rand = model.denormalize_reward(mean_y_rand[..., -2])
+    pred_terminated_rand = jax.nn.sigmoid(mean_y_rand[..., -1])
 
     true_delta_obs_rand = ground_truth.true_delta_obs(
         env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
     )
     true_reward_rand = ground_truth.true_reward(
+        env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
+    )
+    true_terminated_rand = ground_truth.true_terminated(
         env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
     )
 
@@ -73,6 +88,8 @@ def evaluate_validation(
     unc_delta_obs_rand = unc_rand[..., :-2]
     unc_reward = unc_data[..., -2]
     unc_reward_rand = unc_rand[..., -2]
+    unc_terminated = unc_data[..., -1]
+    unc_terminated_rand = unc_rand[..., -1]
 
     # Plot true vs predicted
     plotting.plot_true_vs_predicted(
@@ -84,22 +101,36 @@ def evaluate_validation(
         pred_reward,
         true_reward_rand,
         pred_reward_rand,
+        true_terminated,
+        pred_terminated,
+        true_terminated_rand,
+        pred_terminated_rand,
         unc_delta_obs,
         unc_delta_obs_rand,
         unc_reward,
         unc_reward_rand,
+        unc_terminated,
+        unc_terminated_rand,
         env_config.delta_obs_labels,
         j,
     )
 
     # Evaluate MAE on validation set (mean model)
-    val_x_norm = model.normalize_input(val_x)
+    val_x_norm = _model_inputs(model, val_obs, val_act)
     _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x_norm, dummy_z)
     pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., :-2])
     pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
+    pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., -1])
 
     dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
     rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
-    print(f"Iteration {j}: Dynamics MAE = {dyn_mae:.4f}, Reward MAE = {rew_mae:.4f}")
+    term_mae = jnp.mean(jnp.abs(val_true_terminated - pred_terminated_val))
+    term_bce = jnp.mean(
+        optax.sigmoid_binary_cross_entropy(mean_y_val[..., -1], val_true_terminated)
+    )
+    print(
+        f"Iteration {j}: Dynamics MAE = {dyn_mae:.4f}, Reward MAE = {rew_mae:.4f}, "
+        f"Termination MAE = {term_mae:.4f}, Termination BCE = {term_bce:.4f}"
+    )
 
-    return dyn_mae, rew_mae, rng
+    return dyn_mae, rew_mae, term_mae, rng

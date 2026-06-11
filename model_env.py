@@ -54,8 +54,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         params: ModelEnvParams,
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         """Environment-specific step transition."""
-        x = jnp.concatenate([state.obs, jnp.atleast_1d(action)], axis=-1)
-        x = self._model.normalize_input(x)
+        x = self._model.single_input(state.obs, action)
         y_base, y_samples = jax.vmap(self._model.__call__, in_axes=(None, 0))(
             x, state.z
         )
@@ -81,8 +80,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self, key: jax.Array, params: ModelEnvParams
     ) -> tuple[jax.Array, ModelEnvState]:
         """Environment-specific reset."""
-        key, key_obs, key_z = jax.random.split(key, 3)
-        obs = self._real_env.observation_space(params.env_params).sample(key_obs)
+        key, key_reset, key_z = jax.random.split(key, 3)
+        # TODO: do this without real env reset
+        obs, _ = self._real_env.reset_env(key_reset, params.env_params)
         z = jax.random.normal(key_z, (self.samples, self._model.index_dim))
         state = ModelEnvState(
             obs=obs,

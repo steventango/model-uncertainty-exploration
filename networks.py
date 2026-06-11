@@ -13,10 +13,12 @@ class Actor(nnx.Module):
         action_dim: int,
         hidden_dim: int,
         activation: str = "tanh",
+        discrete: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
         self.action_dim = action_dim
+        self.discrete = discrete
         if activation == "relu":
             self.activation = nnx.relu
         else:
@@ -42,7 +44,8 @@ class Actor(nnx.Module):
             bias_init=constant(0.0),
             rngs=rngs,
         )
-        self.log_std = nnx.Param(jnp.zeros(self.action_dim))
+        if not discrete:
+            self.log_std = nnx.Param(jnp.zeros(self.action_dim))
 
     def __call__(self, x: jax.Array):
         actor_mean = self.dense1(x)
@@ -50,10 +53,11 @@ class Actor(nnx.Module):
         actor_mean = self.dense2(actor_mean)
         actor_mean = self.activation(actor_mean)
         actor_mean = self.dense3(actor_mean)
-        pi = distrax.MultivariateNormalDiag(
+        if self.discrete:
+            return distrax.Categorical(logits=actor_mean)
+        return distrax.MultivariateNormalDiag(
             actor_mean, jnp.exp(self.log_std.get_value())
         )
-        return pi
 
 
 class Critic(nnx.Module):
@@ -107,12 +111,16 @@ class ActorCritic(nnx.Module):
         action_dim: int,
         hidden_dim: int,
         activation: str = "tanh",
+        discrete: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
         self.action_dim = action_dim
+        self.discrete = discrete
         self.activation = activation
-        self.actor = Actor(state_dim, action_dim, hidden_dim, activation, rngs=rngs)
+        self.actor = Actor(
+            state_dim, action_dim, hidden_dim, activation, discrete, rngs=rngs
+        )
         self.critic = Critic(state_dim, hidden_dim, activation, rngs=rngs)
 
     def __call__(self, x):

@@ -10,8 +10,17 @@ from networks import ENN
 class DynamicsModel(nnx.Module):
     """ENN with dataset normalization stats for inputs and targets."""
 
-    def __init__(self, enn: ENN, in_features: int, obs_dim: int, eps: float = 1e-8):
+    def __init__(
+        self,
+        enn: ENN,
+        in_features: int,
+        obs_dim: int,
+        act_dim: int | None = None,
+        eps: float = 1e-8,
+    ):
         self.enn = enn
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
         self.eps = eps
         self.input_mean = nnx.Variable(jnp.zeros(in_features))
         self.input_std = nnx.Variable(jnp.ones(in_features))
@@ -24,12 +33,40 @@ class DynamicsModel(nnx.Module):
     def index_dim(self):
         return self.enn.index_dim
 
+    def encode_action(self, action):
+        """action: (batch, a_dim); discrete uses a_dim=1 index column."""
+        if self.act_dim is not None:
+            return jax.nn.one_hot(action[:, 0], self.act_dim)
+        return action
+
+    def build_input(self, obs, action):
+        """obs: (batch, obs_dim), action: (batch, a_dim)."""
+        return jnp.concatenate([obs, self.encode_action(action)], axis=-1)
+
+    def single_input(self, obs, action):
+        obs = jnp.asarray(obs)
+        if obs.ndim == 1:
+            obs = obs[None]
+        action = jnp.atleast_2d(jnp.asarray(action))
+        x = self.normalize_input(self.build_input(obs, action))
+        return jnp.reshape(x, (-1,))
+
     def update_stats(self, batch):
-        x = jnp.concatenate([batch.obs, batch.action], axis=-1)
         delta_obs = batch.info["next_obs"] - batch.obs
 
-        self.input_mean[...] = jnp.mean(x, axis=0)
-        self.input_std[...] = jnp.maximum(jnp.std(x, axis=0), self.eps)
+        self.input_mean[: self.obs_dim] = jnp.mean(batch.obs, axis=0)
+        self.input_std[: self.obs_dim] = jnp.maximum(
+            jnp.std(batch.obs, axis=0), self.eps
+        )
+        if self.act_dim is None:
+            self.input_mean[self.obs_dim :] = jnp.mean(batch.action, axis=0)
+            self.input_std[self.obs_dim :] = jnp.maximum(
+                jnp.std(batch.action, axis=0), self.eps
+            )
+        else:
+            self.input_mean[self.obs_dim :] = 0.0
+            self.input_std[self.obs_dim :] = 1.0
+
         self.delta_obs_mean[...] = jnp.mean(delta_obs, axis=0)
         self.delta_obs_std[...] = jnp.maximum(jnp.std(delta_obs, axis=0), self.eps)
         self.reward_mean[...] = jnp.mean(batch.reward, axis=0)
@@ -56,7 +93,7 @@ class DynamicsModel(nnx.Module):
 
 def loss_fn(model: DynamicsModel, batch, rngs: nnx.Rngs):
     sigma = 1.0
-    x = jnp.concatenate([batch.obs, batch.action], axis=-1)
+    x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     _, logits = jax.vmap(model.__call__, in_axes=(0, None))(x, z)

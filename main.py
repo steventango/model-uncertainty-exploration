@@ -3,12 +3,14 @@ import os
 
 from flax import nnx
 import gymnax
+from gymnax.environments import spaces
 import jax
 import jax.numpy as jnp
 import optax
 import pandas as pd
 
 import evaluation
+from data import collate_rollout
 from env_config import SUPPORTED_ENVS
 from model import DynamicsModel, train_model
 from model_env import ModelEnvironment
@@ -66,8 +68,12 @@ def main():
     rng = jax.random.key(30)
 
     base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
+    action_space = base_env.action_space(env_params)
+    discrete = isinstance(action_space, spaces.Discrete)
+    action_dim = action_space.n if discrete else action_space.shape[0]
     env = LogWrapper(base_env)
-    env = ClipAction(env)
+    if not discrete:
+        env = ClipAction(env)
     env = VecEnv(env)
     rollout_config["TOTAL_TIMESTEPS"] = env_params.max_steps_in_episode * 10
     rollout_config["NUM_STEPS"] = env_params.max_steps_in_episode // 10
@@ -84,9 +90,13 @@ def main():
     }
 
     env_name = rollout_config["ENV_NAME"]
-    val_x, val_true_delta_obs, val_true_reward = validation.generate_validation_data(
-        base_env, env_params, env_name
-    )
+    (
+        val_obs,
+        val_act,
+        val_true_delta_obs,
+        val_true_reward,
+        val_true_terminated,
+    ) = validation.generate_validation_data(base_env, env_params, env_name)
 
     # INIT NETWORK
     rng, _rng = jax.random.split(rng)
@@ -103,23 +113,21 @@ def main():
     runner_state = (train_state, env_state, obsv, _rng)
     _rollout = make_rollout(rollout_config, env, env_params, training=False)
     runner_state, traj_batch = _rollout(runner_state)
+    sample = collate_rollout(traj_batch)
 
     # INIT DATASET
     dataset = jax.tree_util.tree_map(
         lambda x: jnp.zeros(
-            (rollout_config["DATASET_SIZE"],) + x.shape[2:], dtype=x.dtype
+            (rollout_config["DATASET_SIZE"],) + x.shape[1:], dtype=x.dtype
         ),
-        traj_batch,
+        sample,
     )
     pointer = 0
 
     # INIT MODEL
-    in_features = (
-        env.observation_space(env_params).shape[0]
-        + env.action_space(env_params).shape[0]
-    )
-    out_features = env.observation_space(env_params).shape[0] + 2
     obs_dim = env.observation_space(env_params).shape[0]
+    in_features = obs_dim + action_dim
+    out_features = obs_dim + 2
     enn = ENN(
         in_features,
         model_config["HIDDEN_DIM"],
@@ -129,7 +137,9 @@ def main():
         model_config["INDEX_DIM"],
         rngs=rngs,
     )
-    model = DynamicsModel(enn, in_features, obs_dim)
+    model = DynamicsModel(
+        enn, in_features, obs_dim, act_dim=action_space.n if discrete else None
+    )
     tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
     not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
     optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
@@ -156,9 +166,7 @@ def main():
         runner_state, traj_batch = _rollout(runner_state)
 
         # UPDATE DATASET
-        traj_batch = jax.tree_util.tree_map(
-            lambda x: x.reshape((-1,) + x.shape[2:]), traj_batch
-        )
+        traj_batch = collate_rollout(traj_batch)
         dataset = jax.tree_util.tree_map(
             lambda old, new: jax.lax.dynamic_update_slice_in_dim(
                 old, new, pointer, axis=0
@@ -169,7 +177,9 @@ def main():
         pointer += traj_batch.obs.shape[0]
 
         # PLOT DATASET (OBS, ACTIONS, REWARDS)
-        plotting.plot_dataset(dataset, pointer, env, env_params, rollout_config, j)
+        plotting.plot_dataset(
+            dataset, pointer, env_name, rollout_config, j, discrete=discrete
+        )
 
         batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
 
@@ -190,14 +200,16 @@ def main():
 
         # PLOT TRUE VS PREDICTED DYNAMICS & REWARDS
         if pointer > 0:
-            dyn_mae, rew_mae, rng = validation.evaluate_validation(
+            dyn_mae, rew_mae, term_mae, rng = validation.evaluate_validation(
                 model,
                 base_env,
                 env_params,
                 env_name,
-                val_x,
+                val_obs,
+                val_act,
                 val_true_delta_obs,
                 val_true_reward,
+                val_true_terminated,
                 dataset,
                 pointer,
                 rng,
@@ -217,7 +229,8 @@ def main():
         )
         model_env_explore_params = model_env_explore.default_params
         model_env_explore = LogWrapper(model_env_explore)
-        model_env_explore = ClipAction(model_env_explore)
+        if not discrete:
+            model_env_explore = ClipAction(model_env_explore)
         model_env_explore = VecEnv(model_env_explore)
 
         train_jit = nnx.jit(
@@ -248,12 +261,11 @@ def main():
         )
 
         # Train model-env eval policy
-        model_env_eval = ModelEnvironment(
-            env, env_params, model, alpha=1.0, beta=0.0
-        )
+        model_env_eval = ModelEnvironment(env, env_params, model, alpha=1.0, beta=0.0)
         model_env_eval_params = model_env_eval.default_params
         model_env_eval = LogWrapper(model_env_eval)
-        model_env_eval = ClipAction(model_env_eval)
+        if not discrete:
+            model_env_eval = ClipAction(model_env_eval)
         model_env_eval = VecEnv(model_env_eval)
 
         train_jit = nnx.jit(make_train(model_env_eval, model_env_eval_params, config))

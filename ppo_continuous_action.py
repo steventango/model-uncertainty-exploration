@@ -5,6 +5,8 @@ import jax
 import jax.numpy as jnp
 import optax
 
+from gymnax.environments import spaces
+
 from networks import ActorCritic
 from normalization import NormalizeVecObs, NormalizeVecReward
 
@@ -22,6 +24,8 @@ class Transition(NamedTuple):
 
 
 def make_rollout(config, env, env_params, training=True):
+    discrete = isinstance(env.action_space(env_params), spaces.Discrete)
+
     def _rollout(runner_state):
         # COLLECT TRAJECTORIES
         def _env_step(runner_state, unused):
@@ -58,7 +62,7 @@ def make_rollout(config, env, env_params, training=True):
 
             _, next_value = network(next_obs)
 
-            if not training:
+            if not discrete and not training:
                 action = jnp.clip(
                     action,
                     env.action_space(env_params).low,
@@ -260,11 +264,15 @@ def make_train(env, env_params, config):
 
 
 def make_train_state(config, env, env_params, rngs):
+    action_space = env.action_space(env_params)
+    discrete = isinstance(action_space, spaces.Discrete)
+    action_dim = action_space.n if discrete else action_space.shape[0]
     network = ActorCritic(
         env.observation_space(env_params).shape[0],
-        env.action_space(env_params).shape[0],
+        action_dim,
         config["HIDDEN_DIM"],
         activation=config["ACTIVATION"],
+        discrete=discrete,
         rngs=rngs,
     )
 
