@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -31,13 +31,19 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         samples: int = 10,
         alpha: float = 1.0,
         beta: float = 0.1,
+        prediction_mode: Literal["mean", "sample"] = "mean",
     ):
+        if prediction_mode not in ("mean", "sample"):
+            raise ValueError(
+                f"prediction_mode must be 'mean' or 'sample', got {prediction_mode!r}"
+            )
         self._real_env = env
         self._real_env_params = env_params
         self._model = model
         self.alpha = alpha
         self.beta = beta
         self.samples = samples
+        self.prediction_mode = prediction_mode
 
     @property
     def default_params(self) -> ModelEnvParams:
@@ -58,7 +64,10 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         y_base, y_samples = jax.vmap(self._model.__call__, in_axes=(None, 0))(
             x, state.z
         )
-        y = y_base[0]
+        if self.prediction_mode == "mean":
+            y = y_base[0]
+        else:
+            y = y_samples[0]
         r_intrinsic = y_samples.std(axis=0).mean()
 
         delta_obs = self._model.denormalize_delta_obs(y[..., :-2])

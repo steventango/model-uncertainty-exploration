@@ -42,6 +42,13 @@ def main():
         default=None,
         help="TensorBoard log directory (default: runs/{env}_{timestamp})",
     )
+    parser.add_argument(
+        "--model_env_mode",
+        type=str,
+        default="mean",
+        choices=["mean", "sample"],
+        help="Model env transition mode: mean (base net) or sample (epinet at z[0])",
+    )
     args = parser.parse_args()
 
     config = {
@@ -235,7 +242,12 @@ def main():
 
         # Train model-env explore policy
         model_env_explore = ModelEnvironment(
-            env, env_params, model, alpha=args.alpha, beta=args.beta
+            env,
+            env_params,
+            model,
+            alpha=args.alpha,
+            beta=args.beta,
+            prediction_mode=args.model_env_mode,
         )
         model_env_explore_params = model_env_explore.default_params
         model_env_explore = LogWrapper(model_env_explore)
@@ -266,7 +278,14 @@ def main():
         logger.log_ppo_returns(timesteps, returns, "ppo/explore_return")
 
         # Train model-env eval policy
-        model_env_eval = ModelEnvironment(env, env_params, model, alpha=1.0, beta=0.0)
+        model_env_eval = ModelEnvironment(
+            env,
+            env_params,
+            model,
+            alpha=1.0,
+            beta=0.0,
+            prediction_mode=args.model_env_mode,
+        )
         model_env_eval_params = model_env_eval.default_params
         model_env_eval = LogWrapper(model_env_eval)
         if not discrete:
