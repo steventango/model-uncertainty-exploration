@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 from pathlib import Path
 
 import gymnax
+
+JOB_NAME = "mue-classic"
 
 ENVS = [
     "Pendulum-v1",
@@ -72,13 +76,71 @@ def is_complete(run_dir: Path, env_name: str) -> bool:
     return (run_dir / f"uncertainty_{last_iter:04d}.png").is_file()
 
 
-def incomplete_task_ids(repo_root: Path) -> list[int]:
-    incomplete = []
+def _parse_squeue_array_line(line: str) -> int | None:
+    """Parse array task id from squeue %i output (e.g. '5216383_184')."""
+    line = line.strip()
+    if not line or line == "N/A":
+        return None
+    for sep in ("_", "."):
+        if sep in line:
+            suffix = line.rsplit(sep, 1)[-1]
+            if suffix.isdigit():
+                return int(suffix)
+    return None
+
+
+def active_task_ids(
+    *,
+    user: str | None = None,
+    job_name: str = JOB_NAME,
+) -> set[int]:
+    """Array task ids currently queued or running in SLURM."""
+    # %i = jobid_taskid for array jobs. (%a is account, not array index.)
+    cmd = [
+        "squeue",
+        "-u",
+        user or os.environ.get("USER", ""),
+        "-n",
+        job_name,
+        "-h",
+        "-o",
+        "%i",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return set()
+
+    active: set[int] = set()
+    for line in result.stdout.splitlines():
+        task_id = _parse_squeue_array_line(line)
+        if task_id is not None:
+            active.add(task_id)
+    return active
+
+
+def tasks_to_submit(
+    repo_root: Path,
+    *,
+    skip_active: bool = True,
+    user: str | None = None,
+) -> tuple[list[int], int, int]:
+    active = active_task_ids(user=user) if skip_active else set()
+    complete = 0
+    in_progress = 0
+    to_submit: list[int] = []
+
     for task_id in range(NUM_TASKS):
         task = decode_task(task_id)
-        if not is_complete(log_dir(repo_root, task), str(task["env"])):
-            incomplete.append(task_id)
-    return incomplete
+        if is_complete(log_dir(repo_root, task), str(task["env"])):
+            complete += 1
+            continue
+        if task_id in active:
+            in_progress += 1
+            continue
+        to_submit.append(task_id)
+
+    return to_submit, complete, in_progress
 
 
 def main() -> None:
@@ -94,20 +156,28 @@ def main() -> None:
         default="array",
         help="array: comma-separated task ids; summary: human-readable counts",
     )
+    parser.add_argument(
+        "--include-active",
+        action="store_true",
+        help="submit tasks even if they are already queued/running in SLURM",
+    )
     args = parser.parse_args()
 
-    incomplete = incomplete_task_ids(args.repo_root)
-    complete = NUM_TASKS - len(incomplete)
+    to_submit, complete, in_progress = tasks_to_submit(
+        args.repo_root,
+        skip_active=not args.include_active,
+    )
 
     if args.format == "array":
-        print(",".join(str(task_id) for task_id in incomplete))
+        print(",".join(str(task_id) for task_id in to_submit))
         return
 
     print(f"Complete: {complete}/{NUM_TASKS}")
-    print(f"Incomplete: {len(incomplete)}/{NUM_TASKS}")
-    if incomplete:
-        preview = incomplete[:8]
-        suffix = "..." if len(incomplete) > len(preview) else ""
+    print(f"In progress (skipped): {in_progress}/{NUM_TASKS}")
+    print(f"To submit: {len(to_submit)}/{NUM_TASKS}")
+    if to_submit:
+        preview = to_submit[:8]
+        suffix = "..." if len(to_submit) > len(preview) else ""
         print(f"Would submit task ids: {preview}{suffix}")
 
 
