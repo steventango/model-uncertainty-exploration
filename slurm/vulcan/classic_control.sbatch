@@ -25,8 +25,7 @@ if [[ ! -d .venv ]]; then
     exit 1
 fi
 
-cp -R .venv "$SLURM_TMPDIR/venv"
-VENV="$SLURM_TMPDIR/venv/bin/python"
+VENV="${REPO_ROOT}/.venv/bin/python"
 
 export MPLBACKEND=Agg
 export OMP_NUM_THREADS=1
