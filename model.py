@@ -115,9 +115,9 @@ def loss_fn(model: DynamicsModel, batch, rngs: nnx.Rngs):
 
     reward_c = jax.random.normal(rngs(), shape=(batch.obs.shape[0], model.index_dim))
     reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
-    reward_target = model.normalize_reward(batch.reward) + sigma * (
-        reward_c * z
-    ).sum(axis=-1)
+    reward_target = model.normalize_reward(batch.reward) + sigma * (reward_c * z).sum(
+        axis=-1
+    )
     reward_loss = (logits[..., -2] - reward_target) ** 2
     reward_loss = reward_loss.mean()
 
