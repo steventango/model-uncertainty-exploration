@@ -2,6 +2,12 @@ import numpy as np
 from tensorboardX import SummaryWriter
 
 
+def _subsample_indices(size: int, max_points: int) -> np.ndarray:
+    if size <= max_points:
+        return np.arange(size)
+    return np.linspace(0, size - 1, max_points, dtype=int)
+
+
 def _coerce_hparam(value):
     if value is None:
         return "null"
@@ -44,21 +50,50 @@ class ExperimentLogger:
         self._log_time_series("dataset/terminated", batch.terminated, start_step)
         self._log_time_series("dataset/truncated", batch.truncated, start_step)
 
-    def log_loss_history(self, history, iteration):
+    def log_loss_history(self, history, iteration, max_points: int = 10):
         num_epochs = next(iter(history.values())).shape[0]
-        for epoch in range(num_epochs):
-            step = iteration * num_epochs + epoch
+        epoch_indices = _subsample_indices(num_epochs, max_points)
+        base_step = iteration * num_epochs
+        for epoch in epoch_indices:
+            step = base_step + int(epoch)
             for loss_name, loss_history in history.items():
                 self._writer.add_scalar(
                     f"model/{loss_name}", float(loss_history[epoch]), step
                 )
 
-    def log_ppo_returns(self, timesteps, returns, tag):
-        for step, value in zip(
-            np.asarray(timesteps).flatten(),
-            np.asarray(returns).flatten(),
-            strict=True,
-        ):
+    def log_ppo_returns(
+        self,
+        metrics,
+        tag,
+        outer: int,
+        num_envs: int,
+        num_steps: int,
+        ppo_timesteps: int,
+        max_points: int = 10,
+    ):
+        """Log mean episodic return per PPO update, averaged over completed envs."""
+        done = np.asarray(metrics["returned_episode"])
+        returns = np.asarray(metrics["returned_episode_returns"], dtype=np.float64)
+        update_steps = []
+        mean_returns = []
+        env_steps_per_update = num_steps * num_envs
+        for update_idx in range(done.shape[0]):
+            mask = done[update_idx]
+            if not mask.any():
+                continue
+            update_steps.append(
+                outer * ppo_timesteps + update_idx * env_steps_per_update
+            )
+            mean_returns.append(returns[update_idx][mask].mean())
+        if not mean_returns:
+            return
+        update_steps = np.asarray(update_steps)
+        mean_returns = np.asarray(mean_returns)
+        if mean_returns.size > max_points:
+            idx = _subsample_indices(mean_returns.size, max_points)
+            update_steps = update_steps[idx]
+            mean_returns = mean_returns[idx]
+        for step, value in zip(update_steps, mean_returns, strict=True):
             self._writer.add_scalar(tag, float(value), int(step))
 
     def log_eval_return(self, dataset_size, mean_return):

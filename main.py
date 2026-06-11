@@ -273,11 +273,14 @@ def main():
             runner_state[3],
         )
 
-        returned_episode = out["metrics"]["returned_episode"]
-        timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
-        returns = out["metrics"]["returned_episode_returns"][returned_episode]
-
-        logger.log_ppo_returns(timesteps, returns, "ppo/explore_return")
+        logger.log_ppo_returns(
+            out["metrics"],
+            "ppo/explore_return",
+            j,
+            config["NUM_ENVS"],
+            config["NUM_STEPS"],
+            int(config["TOTAL_TIMESTEPS"]),
+        )
 
         # Train model-env eval policy
         model_env_eval = ModelEnvironment(
@@ -302,11 +305,14 @@ def main():
         out = train_jit(eval_train_state, _rng)
         eval_train_state = out["runner_state"][0]
 
-        returned_episode = out["metrics"]["returned_episode"]
-        timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
-        returns = out["metrics"]["returned_episode_returns"][returned_episode]
-
-        logger.log_ppo_returns(timesteps, returns, "ppo/eval_return")
+        logger.log_ppo_returns(
+            out["metrics"],
+            "ppo/eval_return",
+            j,
+            config["NUM_ENVS"],
+            config["NUM_STEPS"],
+            int(config["TOTAL_TIMESTEPS"]),
+        )
 
         rng, _rng = jax.random.split(rng)
         mean_return = evaluation.evaluate_policy(
