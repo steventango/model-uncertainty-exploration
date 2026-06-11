@@ -217,7 +217,8 @@ def main():
 
         # PLOT TRUE VS PREDICTED DYNAMICS & REWARDS
         if pointer > 0:
-            dyn_mae, rew_mae, term_bce, term_f1, rng = validation.evaluate_validation(
+            rng, _rng = jax.random.split(rng)
+            dyn_mae, rew_mae, term_bce, term_f1, _ = validation.evaluate_validation(
                 model,
                 base_env,
                 env_params,
@@ -229,15 +230,16 @@ def main():
                 val_true_terminated,
                 dataset,
                 pointer,
-                rng,
+                _rng,
                 j,
                 log_dir,
             )
             logger.log_validation_metrics(dyn_mae, rew_mae, term_bce, term_f1, j)
 
         # PLOT UNCERTAINTY & MEAN PREDICTIONS (heatmap over state space)
-        rng = plotting.evaluate_and_plot_uncertainty(
-            model, base_env, env_params, env_name, rng, dataset, pointer, j, log_dir
+        rng, _rng = jax.random.split(rng)
+        plotting.evaluate_and_plot_uncertainty(
+            model, base_env, env_params, env_name, _rng, dataset, pointer, j, log_dir
         )
 
         # Train model-env explore policy
