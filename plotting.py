@@ -15,6 +15,28 @@ from env_config import (
 )
 
 
+def _contour_levels(vmin, vmax, n=50):
+    """Strictly increasing levels for matplotlib.contourf."""
+    vmin, vmax = float(vmin), float(vmax)
+    if not jnp.isfinite(vmin) or not jnp.isfinite(vmax):
+        return jnp.linspace(0.0, 1.0, n)
+    span = vmax - vmin
+    tol = 1e-10 * max(abs(vmin), abs(vmax), 1.0)
+    if span <= tol:
+        mid = vmin
+        pad = max(0.5, abs(mid) * 0.1) if mid != 0.0 else 0.5
+        return jnp.linspace(mid - pad, mid + pad, n)
+    return jnp.linspace(vmin, vmax, n)
+
+
+def _contour_levels_from_zero(vmax, n=50):
+    """Strictly increasing levels from 0 for error contours."""
+    vmax = float(vmax)
+    if not jnp.isfinite(vmax) or vmax <= 0.0:
+        return jnp.linspace(0.0, 1.0, n)
+    return jnp.linspace(0.0, vmax, n)
+
+
 def compute_epistemic_uncertainty(model, x_norm, rng, num_samples=10):
     """Std of normalized model outputs across epistemic index samples."""
     rng, subkey = jax.random.split(rng)
@@ -331,7 +353,7 @@ def plot_uncertainty(
 ):
     # Calculate global color scales across all subplots
     unc_min, unc_max = min(g.min() for g in unc_grids), max(g.max() for g in unc_grids)
-    unc_levels = jnp.linspace(unc_min, unc_max, 50) if unc_max > unc_min else 50
+    unc_levels = _contour_levels(unc_min, unc_max)
 
     rew_min = min(
         min(g.min() for g in true_rew_grids), min(g.min() for g in pred_rew_grids)
@@ -339,16 +361,16 @@ def plot_uncertainty(
     rew_max = max(
         max(g.max() for g in true_rew_grids), max(g.max() for g in pred_rew_grids)
     )
-    rew_levels = jnp.linspace(rew_min, rew_max, 50) if rew_max > rew_min else 50
+    rew_levels = _contour_levels(rew_min, rew_max)
 
     rew_err_grids = [jnp.abs(t - p) for t, p in zip(true_rew_grids, pred_rew_grids)]
     rew_err_max = max(g.max() for g in rew_err_grids)
-    rew_err_levels = jnp.linspace(0.0, rew_err_max, 50) if rew_err_max > 0.0 else 50
+    rew_err_levels = _contour_levels_from_zero(rew_err_max)
 
     term_levels = jnp.linspace(0.0, 1.0, 50)
     term_err_grids = [jnp.abs(t - p) for t, p in zip(true_term_grids, pred_term_grids)]
     term_err_max = max(g.max() for g in term_err_grids)
-    term_err_levels = jnp.linspace(0.0, term_err_max, 50) if term_err_max > 0.0 else 50
+    term_err_levels = _contour_levels_from_zero(term_err_max)
 
     dyn_min = min(
         min(g.min() for g in true_dyn_grids), min(g.min() for g in pred_dyn_grids)
@@ -356,11 +378,11 @@ def plot_uncertainty(
     dyn_max = max(
         max(g.max() for g in true_dyn_grids), max(g.max() for g in pred_dyn_grids)
     )
-    dyn_levels = jnp.linspace(dyn_min, dyn_max, 50) if dyn_max > dyn_min else 50
+    dyn_levels = _contour_levels(dyn_min, dyn_max)
 
     dyn_err_grids = [jnp.abs(t - p) for t, p in zip(true_dyn_grids, pred_dyn_grids)]
     dyn_err_max = max(g.max() for g in dyn_err_grids)
-    dyn_err_levels = jnp.linspace(0.0, dyn_err_max, 50) if dyn_err_max > 0.0 else 50
+    dyn_err_levels = _contour_levels_from_zero(dyn_err_max)
 
     n_cols = len(actions)
     fig, axs = plt.subplots(
