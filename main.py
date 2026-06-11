@@ -133,7 +133,7 @@ def main():
     # MOCK ROLLOUT
     _, _rng = jax.random.split(rng)
     runner_state = (train_state, env_state, obsv, _rng)
-    _rollout = make_rollout(rollout_config, env, env_params, training=False)
+    _rollout = nnx.jit(make_rollout(rollout_config, env, env_params, training=False))
     runner_state, traj_batch = _rollout(runner_state)
     sample = collate_rollout(traj_batch)
 
@@ -196,7 +196,7 @@ def main():
         },
     )
 
-    _eval_rollout = make_rollout(eval_config, env, env_params, training=False)
+    _eval_rollout = nnx.jit(make_rollout(eval_config, env, env_params, training=False))
 
     model_env_explore = ModelEnvironment(
         env,
