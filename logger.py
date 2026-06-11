@@ -102,12 +102,12 @@ class ExperimentLogger:
         )
         self._track_summary_metric("eval/mean_return", mean_return)
 
-    def log_validation_metrics(
-        self, dyn_mae, rew_mae, term_bce, term_f1, iteration
-    ):
+    def log_validation_metrics(self, dyn_mae, rew_mae, term_bce, term_f1, iteration):
         self._writer.add_scalar("validation/dynamics_mae", float(dyn_mae), iteration)
         self._writer.add_scalar("validation/reward_mae", float(rew_mae), iteration)
-        self._writer.add_scalar("validation/termination_bce", float(term_bce), iteration)
+        self._writer.add_scalar(
+            "validation/termination_bce", float(term_bce), iteration
+        )
         self._writer.add_scalar("validation/termination_f1", float(term_f1), iteration)
         self._track_summary_metric("validation/dynamics_mae", dyn_mae)
         self._track_summary_metric("validation/reward_mae", rew_mae)

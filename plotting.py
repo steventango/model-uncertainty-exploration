@@ -432,7 +432,7 @@ def plot_uncertainty(
             ax_true_rew.set_ylabel(f"{y_label}\n[True Reward]")
 
         ax_pred_rew = axs[2, idx]
-        cf_pred_rew = ax_pred_rew.contourf(
+        ax_pred_rew.contourf(
             s1_axis, s2_axis, pred_rew_grids[idx], levels=rew_levels, cmap="inferno"
         )
         if idx == 0:
@@ -454,7 +454,7 @@ def plot_uncertainty(
             ax_true_term.set_ylabel(f"{y_label}\n[True Termination]")
 
         ax_pred_term = axs[5, idx]
-        cf_pred_term = ax_pred_term.contourf(
+        ax_pred_term.contourf(
             s1_axis, s2_axis, pred_term_grids[idx], levels=term_levels, cmap="inferno"
         )
         if idx == 0:
@@ -476,7 +476,7 @@ def plot_uncertainty(
             ax_true_dyn.set_ylabel(f"{y_label}\n[True {dynamics_label}]")
 
         ax_pred_dyn = axs[8, idx]
-        cf_pred_dyn = ax_pred_dyn.contourf(
+        ax_pred_dyn.contourf(
             s1_axis, s2_axis, pred_dyn_grids[idx], levels=dyn_levels, cmap="coolwarm"
         )
         if idx == 0:

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import jax
@@ -16,10 +17,14 @@ class ModelEnvState(environment.EnvState):
     z: jnp.ndarray
 
 
-@struct.dataclass
-class ModelEnvParams(environment.EnvParams):
-    env_params: environment.EnvParams = environment.EnvParams()
-    max_steps_in_episode: int = 1
+@dataclass
+class ModelEnvParams:
+    env_params: environment.EnvParams
+    max_steps_in_episode: int
+    model: DynamicsModel | None = None
+
+    def with_model(self, model: DynamicsModel) -> "ModelEnvParams":
+        return replace(self, model=model)
 
 
 class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
@@ -27,7 +32,6 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self,
         env: environment.Environment,
         env_params: environment.EnvParams,
-        model: DynamicsModel,
         samples: int = 10,
         alpha: float = 1.0,
         beta: float = 0.1,
@@ -39,7 +43,6 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             )
         self._real_env = env
         self._real_env_params = env_params
-        self._model = model
         self.alpha = alpha
         self.beta = beta
         self.samples = samples
@@ -52,6 +55,50 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             max_steps_in_episode=self._real_env_params.max_steps_in_episode,
         )
 
+    def step(
+        self,
+        key: jax.Array,
+        state: ModelEnvState,
+        action: int | float | jax.Array,
+        params: ModelEnvParams | None = None,
+    ) -> tuple[
+        jax.Array, ModelEnvState, jax.Array, jax.Array, jax.Array, dict[Any, Any]
+    ]:
+        """Performs step transitions in the environment."""
+        if params is None:
+            params = self.default_params
+
+        # Step
+        key_step, key_reset = jax.random.split(key)
+        obs_st, state_st, reward, terminated, info = self.step_env(
+            key_step, state, action, params
+        )
+        truncated = state_st.time >= params.max_steps_in_episode
+        done = terminated | truncated
+        obs_re, state_re = self.reset_env(key_reset, params)
+
+        # Auto-reset environment based on termination
+        state = jax.tree.map(
+            lambda x, y: jax.lax.select(done, x, y), state_re, state_st
+        )
+        obs = jax.lax.select(done, obs_re, obs_st)
+
+        info = {**info, "next_obs": obs_st}
+
+        return obs, state, reward, terminated, truncated, info
+
+    def reset(
+        self, key: jax.Array, params: ModelEnvParams | None = None
+    ) -> tuple[jax.Array, ModelEnvState]:
+        """Performs resetting of environment."""
+        if params is None:
+            params = self.default_params
+
+        # Reset
+        obs, state = self.reset_env(key, params)
+
+        return obs, state
+
     def step_env(
         self,
         key: jax.Array,
@@ -59,25 +106,24 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         action: int | float | jax.Array,
         params: ModelEnvParams,
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
-        """Environment-specific step transition."""
-        x = self._model.single_input(state.obs, action)
-        y_base, y_samples = jax.vmap(self._model.__call__, in_axes=(None, 0))(
-            x, state.z
-        )
+        del key
+        model = params.model
+        x = model.single_input(state.obs, action)
+        y_base, y_samples = jax.vmap(model.__call__, in_axes=(None, 0))(x, state.z)
         if self.prediction_mode == "mean":
             y = y_base[0]
         else:
             y = y_samples[0]
         r_intrinsic = y_samples.std(axis=0).mean()
 
-        delta_obs = self._model.denormalize_delta_obs(y[..., :-2])
+        delta_obs = model.denormalize_delta_obs(y[..., :-2])
         obs = state.obs + delta_obs
         obs = jnp.clip(
             obs,
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
-        r_exploit = self._model.denormalize_reward(y[..., -2])
+        r_exploit = model.denormalize_reward(y[..., -2])
         r = self.alpha * r_exploit + self.beta * r_intrinsic
         terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
         state = ModelEnvState(
@@ -88,11 +134,10 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
     def reset_env(
         self, key: jax.Array, params: ModelEnvParams
     ) -> tuple[jax.Array, ModelEnvState]:
-        """Environment-specific reset."""
+        model = params.model
         key, key_reset, key_z = jax.random.split(key, 3)
-        # TODO: do this without real env reset
         obs, _ = self._real_env.reset_env(key_reset, params.env_params)
-        z = jax.random.normal(key_z, (self.samples, self._model.index_dim))
+        z = jax.random.normal(key_z, (self.samples, model.index_dim))
         state = ModelEnvState(
             obs=obs,
             terminated=jnp.bool_(False),

@@ -24,6 +24,13 @@ from wrappers import ClipAction, LogWrapper, VecEnv
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
 
 
+def _wrap_env(env, discrete):
+    wrapped = LogWrapper(env)
+    if not discrete:
+        wrapped = ClipAction(wrapped)
+    return VecEnv(wrapped)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--alpha", type=float, default=0.0, help="Exploit weight")
@@ -89,10 +96,7 @@ def main():
     action_space = base_env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
-    env = LogWrapper(base_env)
-    if not discrete:
-        env = ClipAction(env)
-    env = VecEnv(env)
+    env = _wrap_env(base_env, discrete)
     rollout_config["TOTAL_TIMESTEPS"] = env_params.max_steps_in_episode * 10
     rollout_config["NUM_STEPS"] = env_params.max_steps_in_episode // 10
     eval_config["NUM_STEPS"] = env_params.max_steps_in_episode
@@ -185,9 +189,40 @@ def main():
         rollout=rollout_config,
         eval=eval_config,
         model=model_config,
-        run={"num_rollouts": num_rollouts, "discrete": discrete, "action_dim": action_dim},
+        run={
+            "num_rollouts": num_rollouts,
+            "discrete": discrete,
+            "action_dim": action_dim,
+        },
     )
 
+    _eval_rollout = make_rollout(eval_config, env, env_params, training=False)
+
+    model_env_explore = ModelEnvironment(
+        env,
+        env_params,
+        alpha=args.alpha,
+        beta=args.beta,
+        prediction_mode=args.model_env_mode,
+    )
+    model_env_explore = _wrap_env(model_env_explore, discrete)
+    model_env_explore_params = model_env_explore.default_params
+    model_env_explore_params = model_env_explore_params.with_model(model)
+    train_jit_explore = nnx.jit(
+        make_train(model_env_explore, model_env_explore_params, config)
+    )
+
+    model_env_eval = ModelEnvironment(
+        env,
+        env_params,
+        alpha=1.0,
+        beta=0.0,
+        prediction_mode=args.model_env_mode,
+    )
+    model_env_eval = _wrap_env(model_env_eval, discrete)
+    model_env_eval_params = model_env_eval.default_params
+    model_env_eval_params = model_env_eval_params.with_model(model)
+    train_jit_eval = nnx.jit(make_train(model_env_eval, model_env_eval_params, config))
     for j in range(num_rollouts):
         # ROLLOUT
         runner_state, traj_batch = _rollout(runner_state)
@@ -256,31 +291,14 @@ def main():
             )
 
         # Train model-env explore policy
-        model_env_explore = ModelEnvironment(
-            env,
-            env_params,
-            model,
-            alpha=args.alpha,
-            beta=args.beta,
-            prediction_mode=args.model_env_mode,
-        )
-        model_env_explore_params = model_env_explore.default_params
-        model_env_explore = LogWrapper(model_env_explore)
-        if not discrete:
-            model_env_explore = ClipAction(model_env_explore)
-        model_env_explore = VecEnv(model_env_explore)
-
-        train_jit = nnx.jit(
-            make_train(model_env_explore, model_env_explore_params, config)
-        )
-        train_state = make_train_state(
+        explore_train_state = make_train_state(
             config, model_env_explore, model_env_explore_params, rngs
         )
         rng, _rng = jax.random.split(rng)
-        out = train_jit(train_state, _rng)
-        train_state = out["runner_state"][0]
+        out = train_jit_explore(explore_train_state, _rng)
+        explore_train_state = out["runner_state"][0]
         runner_state = (
-            train_state,
+            explore_train_state,
             runner_state[1],
             runner_state[2],
             runner_state[3],
@@ -296,26 +314,11 @@ def main():
         )
 
         # Train model-env eval policy
-        model_env_eval = ModelEnvironment(
-            env,
-            env_params,
-            model,
-            alpha=1.0,
-            beta=0.0,
-            prediction_mode=args.model_env_mode,
-        )
-        model_env_eval_params = model_env_eval.default_params
-        model_env_eval = LogWrapper(model_env_eval)
-        if not discrete:
-            model_env_eval = ClipAction(model_env_eval)
-        model_env_eval = VecEnv(model_env_eval)
-
-        train_jit = nnx.jit(make_train(model_env_eval, model_env_eval_params, config))
         eval_train_state = make_train_state(
             config, model_env_eval, model_env_eval_params, rngs
         )
         rng, _rng = jax.random.split(rng)
-        out = train_jit(eval_train_state, _rng)
+        out = train_jit_eval(eval_train_state, _rng)
         eval_train_state = out["runner_state"][0]
 
         logger.log_ppo_returns(
@@ -329,7 +332,12 @@ def main():
 
         rng, _rng = jax.random.split(rng)
         mean_return = evaluation.evaluate_policy(
-            eval_config, env, env_params, eval_train_state, _rng, make_rollout
+            eval_config,
+            env,
+            env_params,
+            eval_train_state,
+            _rng,
+            rollout_fn=_eval_rollout,
         )
         logger.log_eval_return(pointer, mean_return)
 
