@@ -131,21 +131,19 @@ class MLP(nnx.Module):
         zero_out_init: bool = False,
     ):
         self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
-        self.linear2 = nnx.Linear(hidden_features, hidden_features, rngs=rngs)
         if zero_out_init:
-            self.linear3 = nnx.Linear(
+            self.linear2 = nnx.Linear(
                 hidden_features,
                 out_features,
                 rngs=rngs,
                 kernel_init=nnx.initializers.zeros,
             )
         else:
-            self.linear3 = nnx.Linear(hidden_features, out_features, rngs=rngs)
+            self.linear2 = nnx.Linear(hidden_features, out_features, rngs=rngs)
 
     def __call__(self, x, rngs: nnx.Rngs | None = None):
-        x = nnx.tanh(self.linear1(x))
-        features = nnx.tanh(self.linear2(x))
-        y = self.linear3(features)
+        features = nnx.tanh(self.linear1(x))
+        y = self.linear2(features)
         return y, features
 
 
