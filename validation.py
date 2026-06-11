@@ -44,78 +44,81 @@ def evaluate_validation(
     rng,
     j,
     run_dir,
+    *,
+    plot=False,
 ):
-    batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
-    env_config = get_env_config(env_name)
-
-    # Training data predictions (mean model, i.e. zero epistemic index)
-    x_data = _model_inputs(model, batch.obs, batch.action)
     dummy_z = jnp.zeros(model.index_dim)
-    _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_data, dummy_z)
-    pred_delta_obs = model.denormalize_delta_obs(mean_y[..., :-2])
-    pred_reward = model.denormalize_reward(mean_y[..., -2])
-    pred_terminated = jax.nn.sigmoid(mean_y[..., -1])
 
-    true_delta_obs = batch.info["next_obs"] - batch.obs
-    true_reward = batch.reward
-    true_terminated = batch.terminated.astype(jnp.float32)
+    if plot:
+        batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
+        env_config = get_env_config(env_name)
 
-    # Uniformly sampled state-space validation points
-    num_rand = 1000
-    rng, rand_obs, rand_s1, rand_s2, rand_act = sample_validation_batch(
-        rng, env, env_params, env_name, num_rand
-    )
-    x_rand = _model_inputs(model, rand_obs, rand_act)
+        # Training data predictions (mean model, i.e. zero epistemic index)
+        x_data = _model_inputs(model, batch.obs, batch.action)
+        _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_data, dummy_z)
+        pred_delta_obs = model.denormalize_delta_obs(mean_y[..., :-2])
+        pred_reward = model.denormalize_reward(mean_y[..., -2])
+        pred_terminated = jax.nn.sigmoid(mean_y[..., -1])
 
-    _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
-    pred_delta_obs_rand = model.denormalize_delta_obs(mean_y_rand[..., :-2])
-    pred_reward_rand = model.denormalize_reward(mean_y_rand[..., -2])
-    pred_terminated_rand = jax.nn.sigmoid(mean_y_rand[..., -1])
+        true_delta_obs = batch.info["next_obs"] - batch.obs
+        true_reward = batch.reward
+        true_terminated = batch.terminated.astype(jnp.float32)
 
-    true_delta_obs_rand = ground_truth.true_delta_obs(
-        env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
-    )
-    true_reward_rand = ground_truth.true_reward(
-        env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
-    )
-    true_terminated_rand = ground_truth.true_terminated(
-        env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
-    )
+        # Uniformly sampled state-space validation points
+        num_rand = 1000
+        rng, rand_obs, rand_s1, rand_s2, rand_act = sample_validation_batch(
+            rng, env, env_params, env_name, num_rand
+        )
+        x_rand = _model_inputs(model, rand_obs, rand_act)
 
-    # Epistemic uncertainty per output dimension
-    unc_data, rng = plotting.compute_epistemic_uncertainty(model, x_data, rng)
-    unc_rand, rng = plotting.compute_epistemic_uncertainty(model, x_rand, rng)
-    unc_delta_obs = unc_data[..., :-2]
-    unc_delta_obs_rand = unc_rand[..., :-2]
-    unc_reward = unc_data[..., -2]
-    unc_reward_rand = unc_rand[..., -2]
-    unc_terminated = unc_data[..., -1]
-    unc_terminated_rand = unc_rand[..., -1]
+        _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
+        pred_delta_obs_rand = model.denormalize_delta_obs(mean_y_rand[..., :-2])
+        pred_reward_rand = model.denormalize_reward(mean_y_rand[..., -2])
+        pred_terminated_rand = jax.nn.sigmoid(mean_y_rand[..., -1])
 
-    # Plot true vs predicted
-    plotting.plot_true_vs_predicted(
-        true_delta_obs,
-        pred_delta_obs,
-        true_delta_obs_rand,
-        pred_delta_obs_rand,
-        true_reward,
-        pred_reward,
-        true_reward_rand,
-        pred_reward_rand,
-        true_terminated,
-        pred_terminated,
-        true_terminated_rand,
-        pred_terminated_rand,
-        unc_delta_obs,
-        unc_delta_obs_rand,
-        unc_reward,
-        unc_reward_rand,
-        unc_terminated,
-        unc_terminated_rand,
-        env_config.delta_obs_labels,
-        j,
-        run_dir,
-    )
+        true_delta_obs_rand = ground_truth.true_delta_obs(
+            env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
+        )
+        true_reward_rand = ground_truth.true_reward(
+            env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
+        )
+        true_terminated_rand = ground_truth.true_terminated(
+            env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
+        )
+
+        # Epistemic uncertainty per output dimension
+        unc_data, rng = plotting.compute_epistemic_uncertainty(model, x_data, rng)
+        unc_rand, rng = plotting.compute_epistemic_uncertainty(model, x_rand, rng)
+        unc_delta_obs = unc_data[..., :-2]
+        unc_delta_obs_rand = unc_rand[..., :-2]
+        unc_reward = unc_data[..., -2]
+        unc_reward_rand = unc_rand[..., -2]
+        unc_terminated = unc_data[..., -1]
+        unc_terminated_rand = unc_rand[..., -1]
+
+        plotting.plot_true_vs_predicted(
+            true_delta_obs,
+            pred_delta_obs,
+            true_delta_obs_rand,
+            pred_delta_obs_rand,
+            true_reward,
+            pred_reward,
+            true_reward_rand,
+            pred_reward_rand,
+            true_terminated,
+            pred_terminated,
+            true_terminated_rand,
+            pred_terminated_rand,
+            unc_delta_obs,
+            unc_delta_obs_rand,
+            unc_reward,
+            unc_reward_rand,
+            unc_terminated,
+            unc_terminated_rand,
+            env_config.delta_obs_labels,
+            j,
+            run_dir,
+        )
 
     # Evaluate MAE on validation set (mean model)
     val_x_norm = _model_inputs(model, val_obs, val_act)

@@ -49,6 +49,11 @@ def main():
         choices=["mean", "sample"],
         help="Model env transition mode: mean (base net) or sample (epinet at z[0])",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug plots (true vs predicted, uncertainty heatmaps)",
+    )
     args = parser.parse_args()
 
     config = {
@@ -70,7 +75,7 @@ def main():
         "ANNEAL_LR": False,
         "NORMALIZE_ENV": True,
         "SEED": args.seed,
-        "DEBUG": False,
+        "DEBUG": args.debug,
     }
     rollout_config = config.copy()
     rollout_config["NUM_ENVS"] = 1
@@ -215,7 +220,6 @@ def main():
 
         logger.log_loss_history(history, j)
 
-        # PLOT TRUE VS PREDICTED DYNAMICS & REWARDS
         if pointer > 0:
             rng, _rng = jax.random.split(rng)
             dyn_mae, rew_mae, term_bce, term_f1, _ = validation.evaluate_validation(
@@ -233,14 +237,23 @@ def main():
                 _rng,
                 j,
                 log_dir,
+                plot=config["DEBUG"],
             )
             logger.log_validation_metrics(dyn_mae, rew_mae, term_bce, term_f1, j)
 
-        # PLOT UNCERTAINTY & MEAN PREDICTIONS (heatmap over state space)
-        rng, _rng = jax.random.split(rng)
-        plotting.evaluate_and_plot_uncertainty(
-            model, base_env, env_params, env_name, _rng, dataset, pointer, j, log_dir
-        )
+        if config["DEBUG"]:
+            rng, _rng = jax.random.split(rng)
+            plotting.evaluate_and_plot_uncertainty(
+                model,
+                base_env,
+                env_params,
+                env_name,
+                _rng,
+                dataset,
+                pointer,
+                j,
+                log_dir,
+            )
 
         # Train model-env explore policy
         model_env_explore = ModelEnvironment(
