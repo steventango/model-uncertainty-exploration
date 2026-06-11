@@ -1,8 +1,6 @@
 import matplotlib.pyplot as plt
-import seaborn as sns
 import jax
 import jax.numpy as jnp
-import pandas as pd
 import ground_truth
 from env_config import (
     action_title,
@@ -114,75 +112,6 @@ def evaluate_and_plot_uncertainty(
         discrete=is_discrete(env, env_params),
     )
     return rng
-
-
-def plot_dataset(dataset, pointer, env_name, rollout_config, j, *, discrete: bool):
-    env_config = get_env_config(env_name)
-    obs_dim = dataset.obs.shape[1]
-    action_plot_dims = 1 if discrete else dataset.action.shape[1]
-    n = obs_dim + action_plot_dims + 1
-    fig_width = min(3 * (j + 1), 50)
-    fig, axs = plt.subplots(n, 1, figsize=(fig_width, 3 * n))
-
-    # Observational dimensions
-    for i in range(obs_dim):
-        axs[i].plot(dataset.obs[:pointer, i])
-        axs[i].set_xlabel("Timestep")
-        axs[i].set_ylabel(f"Observation {i}")
-        axs[i].set_title(f"Observation {i} over timesteps")
-
-    # Action dimensions
-    if discrete:
-        act_data = jnp.asarray(dataset.action[:pointer]).reshape(-1)
-        action_ax = axs[obs_dim]
-        action_ax.plot(act_data, drawstyle="steps-post")
-        action_ax.set_xlabel("Timestep")
-        action_ax.set_ylabel("Action index")
-        action_ax.set_title("Discrete action over timesteps")
-        ticks = [int(a) for a in env_config.representative_actions]
-        action_ax.set_yticks(ticks)
-        action_ax.set_ylim(min(ticks) - 0.25, max(ticks) + 0.25)
-    else:
-        for i in range(dataset.action.shape[1]):
-            axs[obs_dim + i].plot(dataset.action[:pointer, i])
-            axs[obs_dim + i].set_xlabel("Timestep")
-            axs[obs_dim + i].set_ylabel(f"Action {i}")
-            axs[obs_dim + i].set_title(f"Action {i} over timesteps")
-
-    axs[-1].plot(dataset.reward[:pointer])
-    axs[-1].set_xlabel("Timestep")
-    axs[-1].set_ylabel("Reward")
-    axs[-1].set_title("Reward over timesteps")
-
-    # add vertical line when terminated | truncated
-    done = dataset.terminated[:pointer] | dataset.truncated[:pointer]
-    done_indices = jnp.where(done)[0]
-    for idx in done_indices:
-        for ax in axs:
-            ax.axvline(x=idx, color="red", linestyle="--", alpha=0.5)
-
-    for idx in range(
-        0, pointer, rollout_config["NUM_STEPS"] * rollout_config["NUM_ENVS"]
-    ):
-        for ax in axs:
-            ax.axvline(x=idx, color="blue", linestyle="--", alpha=0.5)
-
-    fig_path = "/tmp/dataset.png"
-    plt.savefig(fig_path)
-    print(f"Saved dataset {j} curves to {fig_path}")
-    plt.close()
-
-
-def plot_losses(history):
-    for loss, loss_history in history.items():
-        plt.figure()
-        plt.plot(loss_history)
-        plt.xlabel("Epoch")
-        plt.ylabel(loss)
-        plt.title(f"{loss} over epochs")
-        fig_path = f"/tmp/ppo_continuous_action_{loss}.png"
-        plt.savefig(fig_path)
-        plt.close()
 
 
 def _scatter_with_uncertainty(
@@ -566,30 +495,4 @@ def plot_uncertainty(
     print(
         f"Saved action-dependent uncertainty, comparison and error plots to {fig_path}"
     )
-    plt.close()
-
-
-def plot_training_curve(timesteps, returns, title, fig_path):
-    df = pd.DataFrame(
-        {
-            "Steps": timesteps.flatten(),
-            "Returns": returns.flatten(),
-        }
-    )
-    plt.figure()
-    sns.lineplot(x="Steps", y="Returns", data=df)
-    plt.xlabel("Steps")
-    plt.ylabel("Returns")
-    plt.title(title)
-    plt.savefig(fig_path)
-    plt.close()
-
-
-def plot_eval_returns(real_steps, eval_returns, env_name, fig_path):
-    plt.figure()
-    plt.plot(real_steps, eval_returns)
-    plt.xlabel("Steps")
-    plt.ylabel("Mean Evaluation Return")
-    plt.title(f"PPO on Model({env_name}) Evaluation Returns")
-    plt.savefig(fig_path)
     plt.close()

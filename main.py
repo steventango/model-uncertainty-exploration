@@ -1,5 +1,6 @@
 import argparse
 import os
+from datetime import datetime
 
 from flax import nnx
 import gymnax
@@ -7,11 +8,11 @@ from gymnax.environments import spaces
 import jax
 import jax.numpy as jnp
 import optax
-import pandas as pd
 
 import evaluation
 from data import collate_rollout
 from env_config import SUPPORTED_ENVS
+from logger import ExperimentLogger
 from model import DynamicsModel, train_model
 from model_env import ModelEnvironment
 from networks import ENN
@@ -36,6 +37,12 @@ def main():
         default="Pendulum-v1",
         choices=SUPPORTED_ENVS,
         help="Gymnax environment name",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default=None,
+        help="TensorBoard log directory (default: runs/{env}_{timestamp})",
     )
     args = parser.parse_args()
 
@@ -151,16 +158,25 @@ def main():
     )
 
     runner_state = (train_state, env_state, obsv, _rng)
-    real_steps = []
-    eval_returns = []
-    dyn_maes = []
-    rew_maes = []
 
+    log_dir = args.log_dir or (
+        f"runs/{env_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    logger = ExperimentLogger(log_dir)
     num_rollouts = int(
         rollout_config["TOTAL_TIMESTEPS"]
         // rollout_config["NUM_STEPS"]
         // rollout_config["NUM_ENVS"]
     )
+    logger.log_hparams(
+        args=vars(args),
+        ppo=config,
+        rollout=rollout_config,
+        eval=eval_config,
+        model=model_config,
+        run={"num_rollouts": num_rollouts, "discrete": discrete, "action_dim": action_dim},
+    )
+
     for j in range(num_rollouts):
         # ROLLOUT
         runner_state, traj_batch = _rollout(runner_state)
@@ -174,12 +190,8 @@ def main():
             dataset,
             traj_batch,
         )
+        logger.log_dataset(traj_batch, pointer)
         pointer += traj_batch.obs.shape[0]
-
-        # PLOT DATASET (OBS, ACTIONS, REWARDS)
-        plotting.plot_dataset(
-            dataset, pointer, env_name, rollout_config, j, discrete=discrete
-        )
 
         batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
 
@@ -195,12 +207,11 @@ def main():
             rngs=rngs,
         )
 
-        # PLOT LOSSES
-        plotting.plot_losses(history)
+        logger.log_loss_history(history, j)
 
         # PLOT TRUE VS PREDICTED DYNAMICS & REWARDS
         if pointer > 0:
-            dyn_mae, rew_mae, term_mae, rng = validation.evaluate_validation(
+            dyn_mae, rew_mae, term_bce, term_f1, rng = validation.evaluate_validation(
                 model,
                 base_env,
                 env_params,
@@ -215,8 +226,7 @@ def main():
                 rng,
                 j,
             )
-            dyn_maes.append(dyn_mae)
-            rew_maes.append(rew_mae)
+            logger.log_validation_metrics(dyn_mae, rew_mae, term_bce, term_f1, j)
 
         # PLOT UNCERTAINTY & MEAN PREDICTIONS (heatmap over state space)
         rng = plotting.evaluate_and_plot_uncertainty(
@@ -253,12 +263,7 @@ def main():
         timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
         returns = out["metrics"]["returned_episode_returns"][returned_episode]
 
-        plotting.plot_training_curve(
-            timesteps,
-            returns,
-            f"PPO(explore) on Model({env_name})",
-            "/tmp/ppo_explore_continuous_action.png",
-        )
+        logger.log_ppo_returns(timesteps, returns, "ppo/explore_return")
 
         # Train model-env eval policy
         model_env_eval = ModelEnvironment(env, env_params, model, alpha=1.0, beta=0.0)
@@ -280,37 +285,15 @@ def main():
         timesteps = out["metrics"]["timestep"][returned_episode] * config["NUM_ENVS"]
         returns = out["metrics"]["returned_episode_returns"][returned_episode]
 
-        plotting.plot_training_curve(
-            timesteps,
-            returns,
-            f"PPO(eval) on Model({env_name})",
-            "/tmp/ppo_eval_continuous_action.png",
-        )
+        logger.log_ppo_returns(timesteps, returns, "ppo/eval_return")
 
         rng, _rng = jax.random.split(rng)
         mean_return = evaluation.evaluate_policy(
             eval_config, env, env_params, eval_train_state, _rng, make_rollout
         )
-        real_steps.append(pointer)
-        eval_returns.append(mean_return)
+        logger.log_eval_return(pointer, mean_return)
 
-        plotting.plot_eval_returns(
-            real_steps,
-            eval_returns,
-            env_name,
-            "/tmp/ppo_continuous_action_eval_returns.png",
-        )
-
-    # Save validation errors to CSV
-    df_metrics = pd.DataFrame(
-        {
-            "Iteration": list(range(len(dyn_maes))),
-            "Dynamics_MAE": dyn_maes,
-            "Reward_MAE": rew_maes,
-        }
-    )
-    df_metrics.to_csv(args.output_csv, index=False)
-    print(f"Saved metrics to {args.output_csv}")
+    logger.close()
 
 
 if __name__ == "__main__":
