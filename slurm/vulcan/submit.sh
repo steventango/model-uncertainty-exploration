@@ -1,7 +1,7 @@
 #!/bin/bash
 # Submit the classic-control grid on Vulcan.
 #
-# Grid: 10 seeds x 5 envs x {(a=1,b=0),(a=0,b=1)} x {mean,sample} = 200 array tasks.
+# Grid: task ids 0-199 = exploit/explore (unchanged); 200-299 = a1b1. Total 300 tasks.
 # Each task requests 1 full L40S GPU (--gres=gpu:l40s:1) for 3 hours.
 # Skips completed tasks and any array tasks already queued/running (squeue -n mue-classic).
 set -euo pipefail

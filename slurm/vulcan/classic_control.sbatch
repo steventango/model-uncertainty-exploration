@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
 #SBATCH --gres=gpu:l40s:1
-#SBATCH --array=0-199
+#SBATCH --array=0-299
 #SBATCH --output=/scratch/%u/logs/mue-classic-%A_%a.out
 #SBATCH --error=/scratch/%u/logs/mue-classic-%A_%a.err
 
@@ -42,26 +42,38 @@ ENVS=(
     Acrobot-v1
 )
 SEEDS=(0 1 2 3 4 5 6 7 8 9)
-EXPLORE_ALPHAS=(1.0 0.0)
-EXPLORE_BETAS=(0.0 1.0)
+LEGACY_ALPHAS=(1.0 0.0)
+LEGACY_BETAS=(0.0 1.0)
 PREDICT_MODES=(mean sample)
 
-COMBO_PER_SEED=20   # 5 envs x 2 explore x 2 predict
-COMBO_PER_ENV=4     # 2 explore x 2 predict
+LEGACY_NUM_TASKS=200
+COMBO_PER_SEED_LEGACY=20   # 5 envs x 2 reward weights x 2 predict
+COMBO_PER_ENV_LEGACY=4     # 2 reward weights x 2 predict
+COMBO_PER_SEED_BOTH=10     # 5 envs x 2 predict
 
 task_id="${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID not set}"
 
-seed=$((task_id / COMBO_PER_SEED))
-rem=$((task_id % COMBO_PER_SEED))
-env_idx=$((rem / COMBO_PER_ENV))
-rem2=$((rem % COMBO_PER_ENV))
-explore_idx=$((rem2 / 2))
-predict_idx=$((rem2 % 2))
+if (( task_id < LEGACY_NUM_TASKS )); then
+    seed=$((task_id / COMBO_PER_SEED_LEGACY))
+    rem=$((task_id % COMBO_PER_SEED_LEGACY))
+    env_idx=$((rem / COMBO_PER_ENV_LEGACY))
+    rem2=$((rem % COMBO_PER_ENV_LEGACY))
+    reward_idx=$((rem2 / 2))
+    predict_idx=$((rem2 % 2))
+    ALPHA="${LEGACY_ALPHAS[$reward_idx]}"
+    BETA="${LEGACY_BETAS[$reward_idx]}"
+else
+    sub=$((task_id - LEGACY_NUM_TASKS))
+    seed=$((sub / COMBO_PER_SEED_BOTH))
+    rem=$((sub % COMBO_PER_SEED_BOTH))
+    env_idx=$((rem / 2))
+    predict_idx=$((rem % 2))
+    ALPHA=1.0
+    BETA=1.0
+fi
 
 ENV="${ENVS[$env_idx]}"
 SEED="${SEEDS[$seed]}"
-ALPHA="${EXPLORE_ALPHAS[$explore_idx]}"
-BETA="${EXPLORE_BETAS[$explore_idx]}"
 MODE="${PREDICT_MODES[$predict_idx]}"
 
 alpha_tag="${ALPHA/./p}"

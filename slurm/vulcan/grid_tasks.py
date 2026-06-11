@@ -20,28 +20,43 @@ ENVS = [
     "Acrobot-v1",
 ]
 SEEDS = list(range(10))
-EXPLORE_ALPHAS = [1.0, 0.0]
-EXPLORE_BETAS = [0.0, 1.0]
 PREDICT_MODES = ["mean", "sample"]
 
-COMBO_PER_SEED = 20
-COMBO_PER_ENV = 4
-NUM_TASKS = len(SEEDS) * len(ENVS) * len(EXPLORE_ALPHAS) * len(PREDICT_MODES)
+# Task ids 0-199 keep the original exploit/explore grid layout.
+LEGACY_REWARD_WEIGHTS = [(1.0, 0.0), (0.0, 1.0)]
+LEGACY_COMBO_PER_ENV = len(LEGACY_REWARD_WEIGHTS) * len(PREDICT_MODES)
+LEGACY_COMBO_PER_SEED = len(ENVS) * LEGACY_COMBO_PER_ENV
+LEGACY_NUM_TASKS = len(SEEDS) * LEGACY_COMBO_PER_SEED
+
+# Task ids 200-299 append a1b1 without shifting the legacy mapping.
+BOTH_COMBO_PER_SEED = len(ENVS) * len(PREDICT_MODES)
+BOTH_NUM_TASKS = len(SEEDS) * BOTH_COMBO_PER_SEED
+
+NUM_TASKS = LEGACY_NUM_TASKS + BOTH_NUM_TASKS
 
 
 def decode_task(task_id: int) -> dict[str, str | int | float]:
-    seed = task_id // COMBO_PER_SEED
-    rem = task_id % COMBO_PER_SEED
-    env_idx = rem // COMBO_PER_ENV
-    rem2 = rem % COMBO_PER_ENV
-    explore_idx = rem2 // 2
-    predict_idx = rem2 % 2
+    if task_id < LEGACY_NUM_TASKS:
+        seed = task_id // LEGACY_COMBO_PER_SEED
+        rem = task_id % LEGACY_COMBO_PER_SEED
+        env_idx = rem // LEGACY_COMBO_PER_ENV
+        rem2 = rem % LEGACY_COMBO_PER_ENV
+        reward_idx = rem2 // len(PREDICT_MODES)
+        predict_idx = rem2 % len(PREDICT_MODES)
+        alpha, beta = LEGACY_REWARD_WEIGHTS[reward_idx]
+    else:
+        sub = task_id - LEGACY_NUM_TASKS
+        seed = sub // BOTH_COMBO_PER_SEED
+        rem = sub % BOTH_COMBO_PER_SEED
+        env_idx = rem // len(PREDICT_MODES)
+        predict_idx = rem % len(PREDICT_MODES)
+        alpha, beta = 1.0, 1.0
     return {
         "task_id": task_id,
         "seed": SEEDS[seed],
         "env": ENVS[env_idx],
-        "alpha": EXPLORE_ALPHAS[explore_idx],
-        "beta": EXPLORE_BETAS[explore_idx],
+        "alpha": alpha,
+        "beta": beta,
         "mode": PREDICT_MODES[predict_idx],
     }
 
