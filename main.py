@@ -17,7 +17,7 @@ from model import DynamicsModel, train_model
 from model_env import ModelEnvironment
 from networks import ENN
 import plotting
-from ppo_continuous_action import make_rollout, make_train, make_train_state
+from ppo import make_rollout, make_train, make_train_state
 import validation
 from wrappers import ClipAction, LogWrapper, VecEnv
 
