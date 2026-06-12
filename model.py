@@ -1,8 +1,10 @@
+from functools import partial
+
+from flax import nnx
 import jax
 import jax.numpy as jnp
-import optax
-from flax import nnx
 from jax.scipy.stats import norm
+import optax
 
 from networks import ENN
 
@@ -51,26 +53,37 @@ class DynamicsModel(nnx.Module):
         x = self.normalize_input(self.build_input(obs, action))
         return jnp.reshape(x, (-1,))
 
-    def update_stats(self, batch):
-        delta_obs = batch.info["next_obs"] - batch.obs
+    def update_stats(self, dataset, pointer):
+        n_samples = dataset.obs.shape[0]
+        mask = jnp.arange(n_samples) < pointer
+        mask2d = mask[:, None]
 
-        self.input_mean[: self.obs_dim] = jnp.mean(batch.obs, axis=0)
+        delta_obs = dataset.info["next_obs"] - dataset.obs
+
+        self.input_mean[: self.obs_dim] = jnp.mean(dataset.obs, axis=0, where=mask2d)
         self.input_std[: self.obs_dim] = jnp.maximum(
-            jnp.std(batch.obs, axis=0), self.eps
+            jnp.std(dataset.obs, axis=0, where=mask2d), self.eps
         )
+
         if self.act_dim is None:
-            self.input_mean[self.obs_dim :] = jnp.mean(batch.action, axis=0)
+            self.input_mean[self.obs_dim :] = jnp.mean(
+                dataset.action, axis=0, where=mask2d
+            )
             self.input_std[self.obs_dim :] = jnp.maximum(
-                jnp.std(batch.action, axis=0), self.eps
+                jnp.std(dataset.action, axis=0, where=mask2d), self.eps
             )
         else:
             self.input_mean[self.obs_dim :] = 0.0
             self.input_std[self.obs_dim :] = 1.0
 
-        self.delta_obs_mean[...] = jnp.mean(delta_obs, axis=0)
-        self.delta_obs_std[...] = jnp.maximum(jnp.std(delta_obs, axis=0), self.eps)
-        self.reward_mean[...] = jnp.mean(batch.reward, axis=0)
-        self.reward_std[...] = jnp.maximum(jnp.std(batch.reward, axis=0), self.eps)
+        self.delta_obs_mean[...] = jnp.mean(delta_obs, axis=0, where=mask2d)
+        self.delta_obs_std[...] = jnp.maximum(
+            jnp.std(delta_obs, axis=0, where=mask2d), self.eps
+        )
+        self.reward_mean[...] = jnp.mean(dataset.reward, axis=0, where=mask)
+        self.reward_std[...] = jnp.maximum(
+            jnp.std(dataset.reward, axis=0, where=mask), self.eps
+        )
 
     def normalize_input(self, x):
         return (x - self.input_mean) / self.input_std
@@ -159,15 +172,6 @@ def train_step(
     optimizer.update(model, grads)
 
 
-def _train_step(
-    train_state,
-    batch,
-):
-    model, optimizer, metrics, rngs = train_state
-    train_step(model, optimizer, metrics, rngs, batch)
-    return train_state, None
-
-
 @nnx.jit
 def eval_step(
     model: DynamicsModel,
@@ -186,41 +190,28 @@ def eval_step(
     )
 
 
-def make_train_epoch(minibatch_size: int, num_minibatches: int):
-    def train_epoch(train_state, unused):
-        """Train for a single epoch."""
-        model, optimizer, metrics, batch, rngs = train_state
-        batch_size = minibatch_size * num_minibatches
-        permutation = jax.random.permutation(rngs.epoch(), batch_size)
-        shuffled_batch = jax.tree_util.tree_map(
-            lambda x: jnp.take(x, permutation, axis=0), batch
-        )
-        minibatches = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, [num_minibatches, -1] + list(x.shape[1:])),
-            shuffled_batch,
-        )
-        metrics.reset()
-        inner_train_state = (model, optimizer, metrics, rngs)
-        nnx.scan(_train_step)(inner_train_state, minibatches)
-        return train_state, metrics.compute()
-
-    return train_epoch
-
-
+@partial(nnx.jit, static_argnums=(4, 6))
 def train_model(
     model: DynamicsModel,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
-    batch,
-    epochs: int,
-    batch_size: int,
+    dataset,
+    update_steps: int,
+    pointer: int,
     minibatch_size: int,
     rngs: nnx.Rngs,
 ):
     """Train the model."""
-    model.update_stats(batch)
-    num_minibatches = batch_size // minibatch_size
-    train_epoch = make_train_epoch(minibatch_size, num_minibatches)
-    train_state = (model, optimizer, metrics, batch, rngs)
-    _, history = nnx.scan(train_epoch, length=epochs)(train_state, None)
+    model.update_stats(dataset, pointer)
+
+    def train_step_fn(train_state, _):
+        model, optimizer, metrics, rngs = train_state
+        indices = jax.random.randint(rngs(), (minibatch_size,), 0, pointer)
+        minibatch = jax.tree_util.tree_map(lambda x: jnp.take(x, indices, axis=0), dataset)
+        metrics.reset()
+        train_step(model, optimizer, metrics, rngs, minibatch)
+        return (model, optimizer, metrics, rngs), metrics.compute()
+
+    train_state = (model, optimizer, metrics, rngs)
+    _, history = nnx.scan(train_step_fn, length=update_steps)(train_state, None)
     return history

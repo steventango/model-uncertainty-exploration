@@ -107,7 +107,7 @@ def main():
         "PRIOR_HIDDEN_DIM": 5,
         "INDEX_DIM": 8,
         "ACTIVATION": "tanh",
-        "EPOCHS": 10000,
+        "UPDATE_STEPS": 10000,
         "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
     }
 
@@ -239,15 +239,13 @@ def main():
         logger.log_dataset(traj_batch, pointer)
         pointer += traj_batch.obs.shape[0]
 
-        batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
-
         # TRAIN MODEL
         history = train_model(
             model,
             optimizer,
             metrics,
-            batch,
-            model_config["EPOCHS"],
+            dataset,
+            model_config["UPDATE_STEPS"],
             pointer,
             model_config["MINIBATCH_SIZE"],
             rngs=rngs,
