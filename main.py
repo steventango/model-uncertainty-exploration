@@ -17,7 +17,13 @@ from model import DynamicsModel, train_model
 from model_env import ModelEnvironment
 from networks import ENN
 import plotting
-from ppo import make_rollout, make_train, make_train_state
+from ppo import (
+    make_batched_train,
+    make_batched_train_state,
+    make_rollout,
+    make_train_state,
+    unstack_train_state,
+)
 import validation
 from wrappers import ClipAction, LogWrapper, VecEnv
 
@@ -198,31 +204,20 @@ def main():
 
     _eval_rollout = nnx.jit(make_rollout(eval_config, env, env_params, training=False))
 
-    model_env_explore = ModelEnvironment(
+    model_env = ModelEnvironment(
         env,
         env_params,
-        alpha=args.alpha,
-        beta=args.beta,
         prediction_mode=args.model_env_mode,
     )
-    model_env_explore = _wrap_env(model_env_explore, discrete)
-    model_env_explore_params = model_env_explore.default_params
-    model_env_explore_params = model_env_explore_params.with_model(model)
-    train_jit_explore = nnx.jit(
-        make_train(model_env_explore, model_env_explore_params, config)
+    model_env = _wrap_env(model_env, discrete)
+    model_env_params = model_env.default_params.with_model(model)
+    EXPLORE, EVAL = 0, 1
+    alphas = jnp.array([args.alpha, 1.0])
+    betas = jnp.array([args.beta, 0.0])
+    num_configs = alphas.shape[0]
+    batched_train_jit = nnx.jit(
+        make_batched_train(model_env, model_env_params, config)
     )
-
-    model_env_eval = ModelEnvironment(
-        env,
-        env_params,
-        alpha=1.0,
-        beta=0.0,
-        prediction_mode=args.model_env_mode,
-    )
-    model_env_eval = _wrap_env(model_env_eval, discrete)
-    model_env_eval_params = model_env_eval.default_params
-    model_env_eval_params = model_env_eval_params.with_model(model)
-    train_jit_eval = nnx.jit(make_train(model_env_eval, model_env_eval_params, config))
     for j in range(num_rollouts):
         # ROLLOUT
         runner_state, traj_batch = _rollout(runner_state)
@@ -288,13 +283,21 @@ def main():
                 log_dir,
             )
 
-        # Train model-env explore policy
-        explore_train_state = make_train_state(
-            config, model_env_explore, model_env_explore_params, rngs
+        rng, _rng = jax.random.split(rng)
+        batched_train_state = make_batched_train_state(
+            config, model_env, model_env_params, _rng, num_configs
         )
         rng, _rng = jax.random.split(rng)
-        out = train_jit_explore(explore_train_state, _rng)
-        explore_train_state = out["runner_state"][0]
+        out = batched_train_jit(
+            batched_train_state,
+            alphas,
+            betas,
+            jax.random.split(_rng, num_configs),
+        )
+        batched_out_train_state = out["runner_state"][0]
+        explore_train_state = unstack_train_state(batched_out_train_state, EXPLORE)
+        eval_train_state = unstack_train_state(batched_out_train_state, EVAL)
+
         runner_state = (
             explore_train_state,
             runner_state[1],
@@ -302,31 +305,15 @@ def main():
             runner_state[3],
         )
 
-        logger.log_ppo_returns(
-            out["metrics"],
-            "ppo/explore_return",
-            j,
-            config["NUM_ENVS"],
-            config["NUM_STEPS"],
-            int(config["TOTAL_TIMESTEPS"]),
-        )
-
-        # Train model-env eval policy
-        eval_train_state = make_train_state(
-            config, model_env_eval, model_env_eval_params, rngs
-        )
-        rng, _rng = jax.random.split(rng)
-        out = train_jit_eval(eval_train_state, _rng)
-        eval_train_state = out["runner_state"][0]
-
-        logger.log_ppo_returns(
-            out["metrics"],
-            "ppo/eval_return",
-            j,
-            config["NUM_ENVS"],
-            config["NUM_STEPS"],
-            int(config["TOTAL_TIMESTEPS"]),
-        )
+        for tag, index in (("ppo/explore_return", EXPLORE), ("ppo/eval_return", EVAL)):
+            logger.log_ppo_returns(
+                jax.tree_util.tree_map(lambda x: x[index], out["metrics"]),
+                tag,
+                j,
+                config["NUM_ENVS"],
+                config["NUM_STEPS"],
+                int(config["TOTAL_TIMESTEPS"]),
+            )
 
         rng, _rng = jax.random.split(rng)
         mean_return = evaluation.evaluate_policy(

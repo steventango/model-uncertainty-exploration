@@ -22,9 +22,14 @@ class ModelEnvParams:
     env_params: environment.EnvParams
     max_steps_in_episode: int
     model: DynamicsModel | None = None
+    alpha: float = 1.0
+    beta: float = 0.0
 
     def with_model(self, model: DynamicsModel) -> "ModelEnvParams":
         return replace(self, model=model)
+
+    def with_weights(self, alpha, beta) -> "ModelEnvParams":
+        return replace(self, alpha=alpha, beta=beta)
 
 
 class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
@@ -33,8 +38,6 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         env: environment.Environment,
         env_params: environment.EnvParams,
         samples: int = 10,
-        alpha: float = 1.0,
-        beta: float = 0.1,
         prediction_mode: Literal["mean", "sample"] = "mean",
     ):
         if prediction_mode not in ("mean", "sample"):
@@ -43,8 +46,6 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             )
         self._real_env = env
         self._real_env_params = env_params
-        self.alpha = alpha
-        self.beta = beta
         self.samples = samples
         self.prediction_mode = prediction_mode
 
@@ -124,7 +125,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             self._real_env.observation_space(params.env_params).high,
         )
         r_exploit = model.denormalize_reward(y[..., -2])
-        r = self.alpha * r_exploit + self.beta * r_intrinsic
+        r = params.alpha * r_exploit + params.beta * r_intrinsic
         terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
         state = ModelEnvState(
             obs=obs, terminated=terminated, time=state.time + 1, z=state.z

@@ -100,13 +100,16 @@ def make_train(env, env_params, config):
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
 
-    def train(train_state, rng):
+    def train(train_state, alpha, beta, rng):
         _, _, normalize_vec_obs, _ = train_state
+
+        # Per-config reward weights; model and base env_params stay broadcast/shared.
+        _env_params = env_params.with_weights(alpha, beta)
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
-        obsv, env_state = env.reset(reset_rng, env_params)
+        obsv, env_state = env.reset(reset_rng, _env_params)
 
         if config["NORMALIZE_ENV"]:
             normalize_vec_obs.train()
@@ -114,7 +117,7 @@ def make_train(env, env_params, config):
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
-            _rollout = make_rollout(config, env, env_params, training=True)
+            _rollout = make_rollout(config, env, _env_params, training=True)
             runner_state, traj_batch = _rollout(runner_state)
 
             # CALCULATE ADVANTAGE
@@ -303,3 +306,23 @@ def make_train_state(config, env, env_params, rngs):
     )
     train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
     return train_state
+
+
+def make_batched_train(env, env_params, config):
+    train = make_train(env, env_params, config)
+    return nnx.vmap(train, in_axes=(0, 0, 0, 0), out_axes=0)
+
+
+def make_batched_train_state(config, env, env_params, rng, n):
+    keys = jax.random.split(rng, n)
+
+    @nnx.vmap(in_axes=0, out_axes=0)
+    def build(key):
+        return make_train_state(config, env, env_params, nnx.Rngs(params=key))
+
+    return build(keys)
+
+
+def unstack_train_state(batched_train_state, i):
+    graphdef, state = nnx.split(batched_train_state)
+    return nnx.merge(graphdef, jax.tree.map(lambda x: x[i], state))
