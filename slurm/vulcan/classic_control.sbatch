@@ -34,40 +34,11 @@ export MKL_NUM_THREADS=1
 export XLA_FLAGS="--xla_gpu_deterministic_ops=true"
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
-ENVS=(
-    Pendulum-v1
-    MountainCar-v0
-    MountainCarContinuous-v0
-    CartPole-v1
-    Acrobot-v1
-)
-BASE_SEED=0
-NUM_SEEDS=30
-# Reward weights: exploit-only, explore-only, both.
-ALPHAS=(1.0 0.0 1.0)
-BETAS=(0.0 1.0 1.0)
-PREDICT_MODES=(mean sample)
-
-NUM_PREDICT=${#PREDICT_MODES[@]}
-NUM_REWARD=${#ALPHAS[@]}
-COMBO_PER_ENV=$((NUM_REWARD * NUM_PREDICT))   # 3 reward weights x 2 predict
-
-# tasks 0-29: 5 envs x 3 reward weights x 2 predict
+# Decode this array task via the single source of truth (submit.py).
+# Sets ENV, ALPHA, BETA, MODE, BASE_SEED, NUM_SEEDS, LOG_DIR.
 task_id="${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID not set}"
-
-env_idx=$((task_id / COMBO_PER_ENV))
-rem=$((task_id % COMBO_PER_ENV))
-reward_idx=$((rem / NUM_PREDICT))
-predict_idx=$((rem % NUM_PREDICT))
-
-ENV="${ENVS[$env_idx]}"
-ALPHA="${ALPHAS[$reward_idx]}"
-BETA="${BETAS[$reward_idx]}"
-MODE="${PREDICT_MODES[$predict_idx]}"
-
-alpha_tag="${ALPHA/./p}"
-beta_tag="${BETA/./p}"
-LOG_DIR="runs/classic_grid/${ENV}/a${alpha_tag}_b${beta_tag}/${MODE}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+eval "$("$VENV" "$SCRIPT_DIR/submit.py" env "$task_id")"
 
 echo "task=${task_id} env=${ENV} base_seed=${BASE_SEED} num_seeds=${NUM_SEEDS} alpha=${ALPHA} beta=${BETA} mode=${MODE}"
 echo "log_dir=${LOG_DIR}"

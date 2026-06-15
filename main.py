@@ -363,6 +363,9 @@ def main():
     for logger in loggers:
         logger.close()
 
+    # Completion sentinel for resubmission tooling (slurm/vulcan/grid_tasks.py).
+    open(os.path.join(log_dir, "COMPLETE"), "w").close()
+
 
 if __name__ == "__main__":
     main()
