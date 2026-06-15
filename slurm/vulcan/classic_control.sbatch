@@ -36,9 +36,9 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 # Decode this array task via the single source of truth (submit.py).
 # Sets ENV, ALPHA, BETA, MODE, BASE_SEED, NUM_SEEDS, LOG_DIR.
+# SLURM runs a spooled copy of this script, so resolve submit.py via REPO_ROOT.
 task_id="${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID not set}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-eval "$("$VENV" "$SCRIPT_DIR/submit.py" env "$task_id")"
+eval "$("$VENV" "${REPO_ROOT}/slurm/vulcan/submit.py" env "$task_id")"
 
 echo "task=${task_id} env=${ENV} base_seed=${BASE_SEED} num_seeds=${NUM_SEEDS} alpha=${ALPHA} beta=${BETA} mode=${MODE}"
 echo "log_dir=${LOG_DIR}"
