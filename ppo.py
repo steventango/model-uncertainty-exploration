@@ -92,7 +92,7 @@ def make_rollout(config, env, env_params, training=True):
     return _rollout
 
 
-def make_train(env, env_params, config):
+def make_train(env, config):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
@@ -100,16 +100,14 @@ def make_train(env, env_params, config):
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
 
-    def train(train_state, alpha, beta, rng):
+    def train(train_state, env_params, rng):
         _, _, normalize_vec_obs, _ = train_state
 
-        # Per-config reward weights; model and base env_params stay broadcast/shared.
-        _env_params = env_params.with_weights(alpha, beta)
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
-        obsv, env_state = env.reset(reset_rng, _env_params)
+        obsv, env_state = env.reset(reset_rng, env_params)
 
         if config["NORMALIZE_ENV"]:
             normalize_vec_obs.train()
@@ -117,7 +115,7 @@ def make_train(env, env_params, config):
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
-            _rollout = make_rollout(config, env, _env_params, training=True)
+            _rollout = make_rollout(config, env, env_params, training=True)
             runner_state, traj_batch = _rollout(runner_state)
 
             # CALCULATE ADVANTAGE
@@ -235,7 +233,10 @@ def make_train(env, env_params, config):
                 _update_epoch, length=config["UPDATE_EPOCHS"]
             )(update_state, None)
             train_state = update_state[0]
-            metric = traj_batch.info
+            metric = {
+                "returned_episode_returns": traj_batch.info["returned_episode_returns"],
+                "returned_episode": traj_batch.info["returned_episode"],
+            }
             rng = update_state[-1]
             if config.get("DEBUG"):
 
@@ -309,20 +310,46 @@ def make_train_state(config, env, env_params, rngs):
 
 
 def make_batched_train(env, env_params, config):
-    train = make_train(env, env_params, config)
-    return nnx.vmap(train, in_axes=(0, 0, 0, 0), out_axes=0)
+    """Vmap PPO ``train`` over B seeds (outer) and C configs (inner).
+
+    ``env_params`` carries everything that varies: its ``model`` subtree has a
+    leading B (seed) axis and its ``alpha``/``beta`` weights have a leading C
+    (config) axis. Argument shapes expected by the returned function:
+      train_state: (B, C) leading;   env_params: one struct with ``model`` on a
+      leading B axis and ``alpha``/``beta`` on a leading C axis;   rng: (B, C).
+    Outputs come back with (B, C, ...) leading axes.
+    """
+    train = make_train(env, config)
+    # Inner vmap over C configs: map alpha/beta (prefix in_axes), broadcast model.
+    inner = nnx.vmap(train, in_axes=(0, env_params.config_vmap_axes(), 0), out_axes=0)
+    # Outer vmap over B seeds: map the model subtree (prefix in_axes), broadcast weights.
+    return nnx.vmap(inner, in_axes=(0, env_params.seed_vmap_axes(), 0), out_axes=0)
 
 
-def make_batched_train_state(config, env, env_params, rng, n):
-    keys = jax.random.split(rng, n)
+def make_batched_train_state(config, env, env_params, keys):
+    """Build a (B, C) grid of independent PPO train states. ``keys`` is (B, C)."""
 
-    @nnx.vmap(in_axes=0, out_axes=0)
-    def build(key):
-        return make_train_state(config, env, env_params, nnx.Rngs(params=key))
+    @nnx.vmap
+    def build_seed(seed_keys):  # seed_keys: (C,) keys
+        @nnx.vmap
+        def build_config(key):
+            return make_train_state(config, env, env_params, nnx.Rngs(params=key))
 
-    return build(keys)
+        return build_config(seed_keys)
+
+    return build_seed(keys)
+
+
+def _index_train_state(batched_train_state, index_fn):
+    """Rebuild a train state with ``index_fn`` applied to every leaf of its state."""
+    graphdef, state = nnx.split(batched_train_state)
+    return nnx.merge(graphdef, jax.tree.map(index_fn, state))
 
 
 def unstack_train_state(batched_train_state, i):
-    graphdef, state = nnx.split(batched_train_state)
-    return nnx.merge(graphdef, jax.tree.map(lambda x: x[i], state))
+    return _index_train_state(batched_train_state, lambda x: x[i])
+
+
+def select_config_train_state(batched_train_state, c):
+    """Select config index ``c`` (axis 1), keeping the seed batch axis 0."""
+    return _index_train_state(batched_train_state, lambda x: x[:, c])

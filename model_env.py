@@ -1,4 +1,3 @@
-from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import jax
@@ -17,19 +16,23 @@ class ModelEnvState(environment.EnvState):
     z: jnp.ndarray
 
 
-@dataclass
+@struct.dataclass
 class ModelEnvParams:
     env_params: environment.EnvParams
-    max_steps_in_episode: int
+    max_steps_in_episode: int = struct.field(pytree_node=False)
     model: DynamicsModel | None = None
     alpha: float = 1.0
     beta: float = 0.0
 
-    def with_model(self, model: DynamicsModel) -> "ModelEnvParams":
-        return replace(self, model=model)
+    def seed_vmap_axes(self) -> "ModelEnvParams":
+        """vmap ``in_axes`` prefix that maps only the per-seed ``model`` subtree
+        on axis 0; every other dynamic field is broadcast (None)."""
+        return self.replace(env_params=None, model=0, alpha=None, beta=None)
 
-    def with_weights(self, alpha, beta) -> "ModelEnvParams":
-        return replace(self, alpha=alpha, beta=beta)
+    def config_vmap_axes(self) -> "ModelEnvParams":
+        """vmap ``in_axes`` prefix that maps the per-config ``alpha``/``beta``
+        reward weights on axis 0; every other dynamic field is broadcast (None)."""
+        return self.replace(env_params=None, model=None, alpha=0, beta=0)
 
 
 class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):

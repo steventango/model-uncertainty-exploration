@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
 #SBATCH --gres=gpu:l40s:1
-#SBATCH --array=0-299
+#SBATCH --array=0-29
 #SBATCH --output=/scratch/%u/logs/mue-classic-%A_%a.out
 #SBATCH --error=/scratch/%u/logs/mue-classic-%A_%a.err
 
@@ -41,51 +41,41 @@ ENVS=(
     CartPole-v1
     Acrobot-v1
 )
-SEEDS=(0 1 2 3 4 5 6 7 8 9)
-LEGACY_ALPHAS=(1.0 0.0)
-LEGACY_BETAS=(0.0 1.0)
+BASE_SEED=0
+NUM_SEEDS=30
+# Reward weights: exploit-only, explore-only, both.
+ALPHAS=(1.0 0.0 1.0)
+BETAS=(0.0 1.0 1.0)
 PREDICT_MODES=(mean sample)
 
-LEGACY_NUM_TASKS=200
-COMBO_PER_SEED_LEGACY=20   # 5 envs x 2 reward weights x 2 predict
-COMBO_PER_ENV_LEGACY=4     # 2 reward weights x 2 predict
-COMBO_PER_SEED_BOTH=10     # 5 envs x 2 predict
+NUM_PREDICT=${#PREDICT_MODES[@]}
+NUM_REWARD=${#ALPHAS[@]}
+COMBO_PER_ENV=$((NUM_REWARD * NUM_PREDICT))   # 3 reward weights x 2 predict
 
+# tasks 0-29: 5 envs x 3 reward weights x 2 predict
 task_id="${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID not set}"
 
-if (( task_id < LEGACY_NUM_TASKS )); then
-    seed=$((task_id / COMBO_PER_SEED_LEGACY))
-    rem=$((task_id % COMBO_PER_SEED_LEGACY))
-    env_idx=$((rem / COMBO_PER_ENV_LEGACY))
-    rem2=$((rem % COMBO_PER_ENV_LEGACY))
-    reward_idx=$((rem2 / 2))
-    predict_idx=$((rem2 % 2))
-    ALPHA="${LEGACY_ALPHAS[$reward_idx]}"
-    BETA="${LEGACY_BETAS[$reward_idx]}"
-else
-    sub=$((task_id - LEGACY_NUM_TASKS))
-    seed=$((sub / COMBO_PER_SEED_BOTH))
-    rem=$((sub % COMBO_PER_SEED_BOTH))
-    env_idx=$((rem / 2))
-    predict_idx=$((rem % 2))
-    ALPHA=1.0
-    BETA=1.0
-fi
+env_idx=$((task_id / COMBO_PER_ENV))
+rem=$((task_id % COMBO_PER_ENV))
+reward_idx=$((rem / NUM_PREDICT))
+predict_idx=$((rem % NUM_PREDICT))
 
 ENV="${ENVS[$env_idx]}"
-SEED="${SEEDS[$seed]}"
+ALPHA="${ALPHAS[$reward_idx]}"
+BETA="${BETAS[$reward_idx]}"
 MODE="${PREDICT_MODES[$predict_idx]}"
 
 alpha_tag="${ALPHA/./p}"
 beta_tag="${BETA/./p}"
-LOG_DIR="runs/classic_grid/${ENV}/a${alpha_tag}_b${beta_tag}/${MODE}/seed${SEED}"
+LOG_DIR="runs/classic_grid/${ENV}/a${alpha_tag}_b${beta_tag}/${MODE}"
 
-echo "task=${task_id} env=${ENV} seed=${SEED} alpha=${ALPHA} beta=${BETA} mode=${MODE}"
+echo "task=${task_id} env=${ENV} base_seed=${BASE_SEED} num_seeds=${NUM_SEEDS} alpha=${ALPHA} beta=${BETA} mode=${MODE}"
 echo "log_dir=${LOG_DIR}"
 
 "$VENV" main.py \
     --env "$ENV" \
-    --seed "$SEED" \
+    --seed "$BASE_SEED" \
+    --num_seeds "$NUM_SEEDS" \
     --alpha "$ALPHA" \
     --beta "$BETA" \
     --model_env_mode "$MODE" \

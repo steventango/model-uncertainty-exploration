@@ -1,5 +1,3 @@
-from functools import partial
-
 from flax import nnx
 import jax
 import jax.numpy as jnp
@@ -190,7 +188,6 @@ def eval_step(
     )
 
 
-@partial(nnx.jit, static_argnums=(4, 6))
 def train_model(
     model: DynamicsModel,
     optimizer: nnx.Optimizer,
@@ -207,7 +204,9 @@ def train_model(
     def train_step_fn(train_state, _):
         model, optimizer, metrics, rngs = train_state
         indices = jax.random.randint(rngs(), (minibatch_size,), 0, pointer)
-        minibatch = jax.tree_util.tree_map(lambda x: jnp.take(x, indices, axis=0), dataset)
+        minibatch = jax.tree_util.tree_map(
+            lambda x: jnp.take(x, indices, axis=0), dataset
+        )
         metrics.reset()
         train_step(model, optimizer, metrics, rngs, minibatch)
         return (model, optimizer, metrics, rngs), metrics.compute()
@@ -215,3 +214,63 @@ def train_model(
     train_state = (model, optimizer, metrics, rngs)
     _, history = nnx.scan(train_step_fn, length=update_steps)(train_state, None)
     return history
+
+
+def make_batched_model(model_config, in_features, obs_dim, out_features, act_dim, keys):
+    """Build B independent (model, optimizer, metrics), stacked on a leading seed axis.
+
+    Mirrors the single-model construction in main.py, vmapped over per-seed keys.
+    """
+    @nnx.vmap
+    def build(key):
+        enn = ENN(
+            in_features,
+            model_config["HIDDEN_DIM"],
+            model_config["LEARNABLE_HIDDEN_DIM"],
+            model_config["PRIOR_HIDDEN_DIM"],
+            out_features,
+            model_config["INDEX_DIM"],
+            rngs=nnx.Rngs(params=key),
+        )
+        model = DynamicsModel(enn, in_features, obs_dim, act_dim=act_dim)
+        tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
+        not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
+        optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
+        metrics = nnx.MultiMetric(
+            loss=nnx.metrics.Average("loss"),
+            delta_next_state_loss=nnx.metrics.Average("delta_next_state_loss"),
+            reward_loss=nnx.metrics.Average("reward_loss"),
+            terminated_loss=nnx.metrics.Average("terminated_loss"),
+        )
+        return model, optimizer, metrics
+
+    return build(keys)
+
+
+def make_batched_rngs(keys):
+    """Build a seed-batched nnx.Rngs: one independent stream per seed."""
+
+    @nnx.vmap(in_axes=0, out_axes=0)
+    def build(key):
+        return nnx.Rngs(key)
+
+    return build(keys)
+
+
+def make_batched_train_model(update_steps, minibatch_size):
+    """Vmap the model-fitting loop over the leading seed axis.
+    """
+
+    def core(model, optimizer, metrics, dataset, pointer, rngs):
+        return train_model(
+            model,
+            optimizer,
+            metrics,
+            dataset,
+            update_steps,
+            pointer,
+            minibatch_size,
+            rngs,
+        )
+
+    return nnx.jit(nnx.vmap(core, in_axes=(0, 0, 0, 0, None, 0), out_axes=0))
