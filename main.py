@@ -243,7 +243,12 @@ def main():
     batched_train_jit = nnx.jit(
         make_batched_train(model_env, model_env.default_params, config)
     )
-    eval_rollout_fn = make_rollout(eval_config, env, env_params, training=False)
+    batched_eval = evaluation.make_batched_evaluate_policy(
+        eval_config,
+        env,
+        env_params,
+        make_rollout(eval_config, env, env_params, training=False),
+    )
 
     seed_keys, runner_seed = vsplit(seed_keys)
     runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
@@ -354,9 +359,7 @@ def main():
                 )
 
         seed_keys, eval_keys = vsplit(seed_keys)
-        mean_returns = evaluation.vevaluate_policy(
-            eval_config, env, env_params, eval_rollout_fn, eval_train_state, eval_keys
-        )  # (B,)
+        mean_returns = batched_eval(eval_train_state, eval_keys)  # (B,)
         for b in range(B):
             loggers[b].log_eval_return(pointer, mean_returns[b])
 

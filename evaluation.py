@@ -19,6 +19,11 @@ def evaluate_policy(eval_config, env, env_params, rollout_fn, eval_train_state, 
     return jnp.mean(returns, where=done)
 
 
-vevaluate_policy = nnx.jit(
-    nnx.vmap(evaluate_policy, in_axes=(None, None, None, None, 0, 0), out_axes=0)
-)
+def make_batched_evaluate_policy(eval_config, env, env_params, rollout_fn):
+    """Vmap policy evaluation over a leading seed axis; returns (B,) mean returns."""
+    def one(eval_train_state, rng):
+        return evaluate_policy(
+            eval_config, env, env_params, rollout_fn, eval_train_state, rng
+        )
+
+    return nnx.jit(nnx.vmap(one, in_axes=(0, 0), out_axes=0))
