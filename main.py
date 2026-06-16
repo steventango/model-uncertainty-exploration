@@ -25,6 +25,7 @@ from ppo import (
     select_config_train_state,
     unstack_train_state,
 )
+from environments import make_state_reconstruction_wrapper
 from wrappers import ClipAction, LogWrapper, VecEnv
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
@@ -90,6 +91,11 @@ def main():
         action="store_true",
         help="Enable debug plots (true vs predicted, uncertainty heatmaps)",
     )
+    parser.add_argument(
+        "--predict_reward_terminated",
+        action="store_true",
+        help="Use model-predicted reward/terminated instead of reward/terminated from the real env.",
+    )
     args = parser.parse_args()
 
     config = {
@@ -124,6 +130,7 @@ def main():
     seed_keys = jax.vmap(jax.random.key)(seeds)  # (B,) one master key per seed
 
     base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
+    base_env = make_state_reconstruction_wrapper(base_env, rollout_config["ENV_NAME"])
     action_space = base_env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
@@ -154,7 +161,7 @@ def main():
 
     obs_dim = env.observation_space(env_params).shape[0]
     in_features = obs_dim + action_dim
-    out_features = obs_dim + 2
+    out_features = obs_dim + 2 if args.predict_reward_terminated else obs_dim
 
     # INIT B ROLLOUT POLICIES (one per seed)
     seed_keys, policy_keys = vsplit(seed_keys)
@@ -200,7 +207,13 @@ def main():
     # INIT B WORLD MODELS + OPTIMIZERS + METRICS
     seed_keys, model_keys = vsplit(seed_keys)
     models, optimizers, metrics = make_batched_model(
-        model_config, in_features, obs_dim, out_features, act_dim, model_keys
+        model_config,
+        in_features,
+        obs_dim,
+        out_features,
+        act_dim,
+        model_keys,
+        predict_reward_terminated=args.predict_reward_terminated,
     )
     seed_keys, train_model_seed = vsplit(seed_keys)
     batched_rngs = make_batched_rngs(train_model_seed)
@@ -242,6 +255,7 @@ def main():
         env_params,
         prediction_mode=args.model_env_mode,
         explore_bonus=args.explore_bonus,
+        oracle_reward_terminated=not args.predict_reward_terminated,
     )
     model_env = _wrap_env(model_env, discrete)
     EXPLORE, EVAL = 0, 1

@@ -17,11 +17,13 @@ class DynamicsModel(nnx.Module):
         obs_dim: int,
         act_dim: int | None = None,
         eps: float = 1e-8,
+        predict_reward_terminated: bool = True,
     ):
         self.enn = enn
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.eps = eps
+        self.predict_reward_terminated = predict_reward_terminated
         self.input_mean = nnx.Variable(jnp.zeros(in_features))
         self.input_std = nnx.Variable(jnp.ones(in_features))
         self.delta_obs_mean = nnx.Variable(jnp.zeros(obs_dim))
@@ -121,29 +123,39 @@ def loss_fn(model: DynamicsModel, batch, rngs: nnx.Rngs):
     delta_next_state_target = delta_next_state + sigma * (delta_next_state_c * z).sum(
         axis=-1, keepdims=True
     )
-    delta_next_state_loss = (logits[..., :-2] - delta_next_state_target) ** 2
+    delta_next_state_loss = (
+        logits[..., : model.obs_dim] - delta_next_state_target
+    ) ** 2
     delta_next_state_loss = delta_next_state_loss.mean()
 
-    reward_c = jax.random.normal(rngs(), shape=(batch.obs.shape[0], model.index_dim))
-    reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
-    reward_target = model.normalize_reward(batch.reward) + sigma * (reward_c * z).sum(
-        axis=-1
-    )
-    reward_loss = (logits[..., -2] - reward_target) ** 2
-    reward_loss = reward_loss.mean()
+    if model.predict_reward_terminated:
+        reward_c = jax.random.normal(
+            rngs(), shape=(batch.obs.shape[0], model.index_dim)
+        )
+        reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
+        reward_target = model.normalize_reward(batch.reward) + sigma * (
+            reward_c * z
+        ).sum(axis=-1)
+        reward_loss = (logits[..., -2] - reward_target) ** 2
+        reward_loss = reward_loss.mean()
 
-    terminated_c = jax.random.normal(
-        rngs(), shape=(batch.obs.shape[0], model.index_dim)
-    )
-    terminated_c = terminated_c / jnp.linalg.norm(terminated_c, axis=-1, keepdims=True)
-    p = 0.5
-    mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
-    terminated_target = batch.terminated.astype(jnp.float32)
-    terminated_pred = logits[..., -1]
-    terminated_loss = optax.sigmoid_binary_cross_entropy(
-        terminated_pred, terminated_target
-    )
-    terminated_loss = (terminated_loss * mask).sum() / jnp.maximum(mask.sum(), 1.0)
+        terminated_c = jax.random.normal(
+            rngs(), shape=(batch.obs.shape[0], model.index_dim)
+        )
+        terminated_c = terminated_c / jnp.linalg.norm(
+            terminated_c, axis=-1, keepdims=True
+        )
+        p = 0.5
+        mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
+        terminated_target = batch.terminated.astype(jnp.float32)
+        terminated_pred = logits[..., -1]
+        terminated_loss = optax.sigmoid_binary_cross_entropy(
+            terminated_pred, terminated_target
+        )
+        terminated_loss = (terminated_loss * mask).sum() / jnp.maximum(mask.sum(), 1.0)
+    else:
+        reward_loss = jnp.zeros(())
+        terminated_loss = jnp.zeros(())
 
     loss = delta_next_state_loss + reward_loss + terminated_loss
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
@@ -216,11 +228,20 @@ def train_model(
     return history
 
 
-def make_batched_model(model_config, in_features, obs_dim, out_features, act_dim, keys):
+def make_batched_model(
+    model_config,
+    in_features,
+    obs_dim,
+    out_features,
+    act_dim,
+    keys,
+    predict_reward_terminated: bool = True,
+):
     """Build B independent (model, optimizer, metrics), stacked on a leading seed axis.
 
     Mirrors the single-model construction in main.py, vmapped over per-seed keys.
     """
+
     @nnx.vmap
     def build(key):
         enn = ENN(
@@ -232,7 +253,13 @@ def make_batched_model(model_config, in_features, obs_dim, out_features, act_dim
             model_config["INDEX_DIM"],
             rngs=nnx.Rngs(params=key),
         )
-        model = DynamicsModel(enn, in_features, obs_dim, act_dim=act_dim)
+        model = DynamicsModel(
+            enn,
+            in_features,
+            obs_dim,
+            act_dim=act_dim,
+            predict_reward_terminated=predict_reward_terminated,
+        )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
         optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
@@ -258,8 +285,7 @@ def make_batched_rngs(keys):
 
 
 def make_batched_train_model(update_steps, minibatch_size):
-    """Vmap the model-fitting loop over the leading seed axis.
-    """
+    """Vmap the model-fitting loop over the leading seed axis."""
 
     def core(model, optimizer, metrics, dataset, pointer, rngs):
         return train_model(

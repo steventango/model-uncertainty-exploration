@@ -91,14 +91,18 @@ def evaluate_and_plot_uncertainty(
         # 2. Mean Predictions (using the base network output)
         dummy_z = jnp.zeros(model.index_dim)
         _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_grid_norm, dummy_z)
-        pred_delta = model.denormalize_delta_obs(mean_y[..., :-2])
-        pred_rew_grids.append(
-            model.denormalize_reward(mean_y[..., -2]).reshape(num_grid, num_grid)
-        )
+        pred_delta = model.denormalize_delta_obs(mean_y[..., : model.obs_dim])
+        if model.predict_reward_terminated:
+            pred_rew_grids.append(
+                model.denormalize_reward(mean_y[..., -2]).reshape(num_grid, num_grid)
+            )
+            pred_term_grids.append(
+                jax.nn.sigmoid(mean_y[..., -1]).reshape(num_grid, num_grid)
+            )
+        else:
+            pred_rew_grids.append(jnp.zeros((num_grid, num_grid)))
+            pred_term_grids.append(jnp.zeros((num_grid, num_grid)))
         pred_dyn_grids.append(pred_delta[..., dyn_dim].reshape(num_grid, num_grid))
-        pred_term_grids.append(
-            jax.nn.sigmoid(mean_y[..., -1]).reshape(num_grid, num_grid)
-        )
 
         # 3. True Physics and Rewards (from the env, the single source of truth)
         act_flat = jnp.full_like(s1_flat, act)
