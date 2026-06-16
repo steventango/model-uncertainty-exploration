@@ -79,6 +79,13 @@ def main():
         help="Model env transition mode: mean (base net) or sample (epinet at z[0])",
     )
     parser.add_argument(
+        "--explore_bonus",
+        type=str,
+        default="std",
+        choices=["std", "eig"],
+        help="Intrinsic exploration bonus: std (epinet std) or eig (½ log(1 + σ²_ep))",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug plots (true vs predicted, uncertainty heatmaps)",
@@ -234,6 +241,7 @@ def main():
         env,
         env_params,
         prediction_mode=args.model_env_mode,
+        explore_bonus=args.explore_bonus,
     )
     model_env = _wrap_env(model_env, discrete)
     EXPLORE, EVAL = 0, 1

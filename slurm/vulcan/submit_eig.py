@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Classic-control SLURM grid: the single source of truth for task logic.
+"""EIG a0b1 SLURM grid: explore-only configs with EIG exploration bonus.
 
-This one file owns the whole pipeline:
-  * the grid definition (env x reward-weight x predict-mode),
-  * decode_task: array id -> run config (used by classic_control.sbatch),
-  * completion / queue checks and submission (replaces the old submit.sh).
-
-Seeds are vmapped *within* a task (--num_seeds), not spread across array
-elements, so the array axis is just env x reward-weight x predict-mode.
+Runs alpha=0, beta=1 with both prediction modes (mean, sample) and the EIG
+exploration bonus. Results land in runs/eig_a0b1/, a separate experiment root
+designed for side-by-side comparison with the std classic_grid a0b1 runs.
 
 Usage:
-  submit.py submit [--dry-run] [--include-active] [--account ACCT]
-  submit.py env TASK_ID      # emit shell assignments for one task (sbatch)
-  submit.py plan [--format array|summary] [--include-active]
+  submit_eig.py submit [--dry-run] [--include-active] [--account ACCT]
+  submit_eig.py env TASK_ID      # emit shell assignments for one task
+  submit_eig.py plan [--format array|summary] [--include-active]
 """
 
 from __future__ import annotations
@@ -24,17 +20,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-JOB_NAME = "mue-classic"
+JOB_NAME = "mue-eig"
 DEFAULT_ACCOUNT = "aip-amw8"
 
-# submit.py lives at <repo>/slurm/vulcan/submit.py.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
-SBATCH_SCRIPT = SCRIPT_DIR / "classic_control.sbatch"
+SBATCH_SCRIPT = SCRIPT_DIR / "eig_a0b1.sbatch"
 
-# --- grid definition (the one place task logic is described) ---------------
 BASE_SEED = 0
-NUM_SEEDS = 30  # vmapped within each task, not array elements
+NUM_SEEDS = 30
 
 ENVS = [
     "Pendulum-v1",
@@ -43,54 +37,43 @@ ENVS = [
     "CartPole-v1",
     "Acrobot-v1",
 ]
-# (alpha, beta): exploit-only, explore-only, both.
-REWARD_WEIGHTS = [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
 PREDICT_MODES = ["mean", "sample"]
 
-COMBO_PER_ENV = len(REWARD_WEIGHTS) * len(PREDICT_MODES)
-NUM_TASKS = len(ENVS) * COMBO_PER_ENV
+NUM_TASKS = len(ENVS) * len(PREDICT_MODES)
 
 
 def decode_task(task_id: int) -> dict[str, str | int | float]:
-    """Map an array task id -> the run config for that task."""
     if not 0 <= task_id < NUM_TASKS:
         raise ValueError(f"task_id {task_id} out of range [0, {NUM_TASKS})")
-    env_idx, rem = divmod(task_id, COMBO_PER_ENV)
-    reward_idx, predict_idx = divmod(rem, len(PREDICT_MODES))
-    alpha, beta = REWARD_WEIGHTS[reward_idx]
+    env_idx, predict_idx = divmod(task_id, len(PREDICT_MODES))
     return {
         "task_id": task_id,
         "env": ENVS[env_idx],
-        "alpha": alpha,
-        "beta": beta,
+        "alpha": 0.0,
+        "beta": 1.0,
         "mode": PREDICT_MODES[predict_idx],
-        "bonus": "std",
+        "bonus": "eig",
         "base_seed": BASE_SEED,
         "num_seeds": NUM_SEEDS,
     }
 
 
 def log_dir(task: dict[str, str | int | float]) -> Path:
-    """Parent dir for a task; main.py writes per-seed subdirs underneath."""
-    alpha_tag = str(task["alpha"]).replace(".", "p")
-    beta_tag = str(task["beta"]).replace(".", "p")
     return (
         REPO_ROOT
         / "runs"
-        / "classic_grid"
+        / "eig_a0b1"
         / str(task["env"])
-        / f"a{alpha_tag}_b{beta_tag}"
-        / str(task["mode"])
+        / "a0p0_b1p0"
+        / f"{task['mode']}_eig"
     )
 
 
 def is_complete(task: dict[str, str | int | float]) -> bool:
-    """A task is done once main.py has written its COMPLETE sentinel."""
     return (log_dir(task) / "COMPLETE").is_file()
 
 
 def _parse_squeue_array_line(line: str) -> int | None:
-    """Parse array task id from squeue %i output (e.g. '5216383_184')."""
     line = line.strip()
     if not line or line == "N/A":
         return None
@@ -103,23 +86,14 @@ def _parse_squeue_array_line(line: str) -> int | None:
 
 
 def active_task_ids(*, user: str | None = None) -> set[int]:
-    """Array task ids currently queued or running in SLURM."""
-    # %i = jobid_taskid for array jobs. (%a is account, not array index.)
     cmd = [
-        "squeue",
-        "-u",
-        user or os.environ.get("USER", ""),
-        "-n",
-        JOB_NAME,
-        "-h",
-        "-o",
-        "%i",
+        "squeue", "-u", user or os.environ.get("USER", ""),
+        "-n", JOB_NAME, "-h", "-o", "%i",
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     except (FileNotFoundError, subprocess.CalledProcessError):
         return set()
-
     active: set[int] = set()
     for line in result.stdout.splitlines():
         task_id = _parse_squeue_array_line(line)
@@ -128,16 +102,10 @@ def active_task_ids(*, user: str | None = None) -> set[int]:
     return active
 
 
-def tasks_to_submit(
-    *,
-    skip_active: bool = True,
-    user: str | None = None,
-) -> tuple[list[int], int, int]:
+def tasks_to_submit(*, skip_active: bool = True, user: str | None = None):
     active = active_task_ids(user=user) if skip_active else set()
-    complete = 0
-    in_progress = 0
+    complete = in_progress = 0
     to_submit: list[int] = []
-
     for task_id in range(NUM_TASKS):
         task = decode_task(task_id)
         if is_complete(task):
@@ -147,7 +115,6 @@ def tasks_to_submit(
             in_progress += 1
             continue
         to_submit.append(task_id)
-
     return to_submit, complete, in_progress
 
 
@@ -157,14 +124,12 @@ def _array_spec(task_ids: list[int]) -> str:
 
 def _grid_line() -> str:
     return (
-        f"{NUM_TASKS} tasks = {len(ENVS)} envs x {len(REWARD_WEIGHTS)} reward "
-        f"x {len(PREDICT_MODES)} predict ({NUM_SEEDS} seeds vmapped per task)"
+        f"{NUM_TASKS} tasks = {len(ENVS)} envs x {len(PREDICT_MODES)} predict "
+        f"(alpha=0 beta=1 eig; {NUM_SEEDS} seeds vmapped per task)"
     )
 
 
-# --- subcommands -----------------------------------------------------------
 def _cmd_env(args: argparse.Namespace) -> int:
-    """Emit shell assignments for one task (eval'd by classic_control.sbatch)."""
     task = decode_task(args.task_id)
     fields = {
         "ENV": task["env"],
@@ -251,11 +216,7 @@ def main() -> int:
 
     p_submit = sub.add_parser("submit", help="submit pending tasks to SLURM")
     p_submit.add_argument("--dry-run", action="store_true")
-    p_submit.add_argument(
-        "--include-active",
-        action="store_true",
-        help="resubmit tasks already queued/running in SLURM",
-    )
+    p_submit.add_argument("--include-active", action="store_true")
     p_submit.add_argument(
         "--account",
         default=os.environ.get("SLURM_ACCOUNT", DEFAULT_ACCOUNT),
