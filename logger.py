@@ -102,13 +102,19 @@ class ExperimentLogger:
         )
         self._track_summary_metric("eval/mean_return", mean_return)
 
-    def log_validation_metrics(self, dyn_mae, rew_mae, term_bce, term_f1, iteration):
-        self._writer.add_scalar("validation/dynamics_mae", float(dyn_mae), iteration)
-        self._writer.add_scalar("validation/reward_mae", float(rew_mae), iteration)
+    def log_validation_metrics(self, dyn_mae, rew_mae, term_bce, term_f1, dataset_size):
         self._writer.add_scalar(
-            "validation/termination_bce", float(term_bce), iteration
+            "validation/dynamics_mae", float(dyn_mae), int(dataset_size)
         )
-        self._writer.add_scalar("validation/termination_f1", float(term_f1), iteration)
+        self._writer.add_scalar(
+            "validation/reward_mae", float(rew_mae), int(dataset_size)
+        )
+        self._writer.add_scalar(
+            "validation/termination_bce", float(term_bce), int(dataset_size)
+        )
+        self._writer.add_scalar(
+            "validation/termination_f1", float(term_f1), int(dataset_size)
+        )
         self._track_summary_metric("validation/dynamics_mae", dyn_mae)
         self._track_summary_metric("validation/reward_mae", rew_mae)
         self._track_summary_metric("validation/termination_bce", term_bce)
@@ -119,3 +125,34 @@ class ExperimentLogger:
             metrics = self._summary_metrics or {"hparam/complete": 1.0}
             self._writer.add_hparams(self._hparams, metrics)
         self._writer.close()
+
+
+def log_validation(
+    loggers,
+    batched_val_metrics,
+    models,
+    val_obs,
+    val_act,
+    val_true_delta_obs,
+    val_true_reward,
+    val_true_terminated,
+    dataset_ptr,
+):
+    dyn_mae, rew_mae, term_bce, term_f1 = batched_val_metrics(
+        models,
+        val_obs,
+        val_act,
+        val_true_delta_obs,
+        val_true_reward,
+        val_true_terminated,
+    )
+    for b, logger in enumerate(loggers):
+        logger.log_validation_metrics(
+            dyn_mae[b], rew_mae[b], term_bce[b], term_f1[b], dataset_ptr
+        )
+
+
+def log_eval(loggers, batched_eval, eval_policy_state, eval_keys, dataset_ptr):
+    mean_returns = batched_eval(eval_policy_state, eval_keys)
+    for b, logger in enumerate(loggers):
+        logger.log_eval_return(dataset_ptr, mean_returns[b])

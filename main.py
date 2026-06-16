@@ -14,7 +14,7 @@ import plotting
 import validation
 from data import collate_rollout
 from env_config import SUPPORTED_ENVS
-from logger import ExperimentLogger
+from logger import ExperimentLogger, log_eval, log_validation
 from model import make_batched_model, make_batched_rngs, make_batched_train_model
 from model_env import ModelEnvironment
 from ppo import (
@@ -275,6 +275,20 @@ def main():
     seed_keys, runner_seed = vsplit(seed_keys)
     runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
 
+    seed_keys, eval_keys = vsplit(seed_keys)
+    log_validation(
+        loggers,
+        batched_val_metrics,
+        models,
+        val_obs,
+        val_act,
+        val_true_delta_obs,
+        val_true_reward,
+        val_true_terminated,
+        0,
+    )
+    log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
+
     for j in range(num_rollouts):
         # ROLLOUT (B seeds in parallel)
         runner_state, traj_batch = _rollout(runner_state)
@@ -293,40 +307,39 @@ def main():
         for b in range(B):
             loggers[b].log_loss_history(_seed_slice(history, b), j)
 
-        if pointer > 0:
-            dyn_mae, rew_mae, term_bce, term_f1 = batched_val_metrics(
-                models,
+        log_validation(
+            loggers,
+            batched_val_metrics,
+            models,
+            val_obs,
+            val_act,
+            val_true_delta_obs,
+            val_true_reward,
+            val_true_terminated,
+            pointer,
+        )
+
+        if config["DEBUG"]:
+            seed_keys, plot_seed = vsplit(seed_keys)
+            # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
+            # are all sliced to seed 0), not all B seeds.
+            validation.evaluate_validation(
+                unstack_train_state(models, 0),
+                base_env,
+                env_params,
+                env_name,
                 val_obs,
                 val_act,
                 val_true_delta_obs,
                 val_true_reward,
                 val_true_terminated,
+                _seed_slice(dataset, 0),
+                pointer,
+                plot_seed[0],
+                j,
+                seed_dirs[0],
+                plot=True,
             )
-            for b in range(B):
-                loggers[b].log_validation_metrics(
-                    dyn_mae[b], rew_mae[b], term_bce[b], term_f1[b], j
-                )
-            if config["DEBUG"]:
-                seed_keys, plot_seed = vsplit(seed_keys)
-                # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
-                # are all sliced to seed 0), not all B seeds.
-                validation.evaluate_validation(
-                    unstack_train_state(models, 0),
-                    base_env,
-                    env_params,
-                    env_name,
-                    val_obs,
-                    val_act,
-                    val_true_delta_obs,
-                    val_true_reward,
-                    val_true_terminated,
-                    _seed_slice(dataset, 0),
-                    pointer,
-                    plot_seed[0],
-                    j,
-                    seed_dirs[0],
-                    plot=True,
-                )
 
         if config["DEBUG"]:
             seed_keys, unc_seed = vsplit(seed_keys)
@@ -385,9 +398,7 @@ def main():
                 )
 
         seed_keys, eval_keys = vsplit(seed_keys)
-        mean_returns = batched_eval(eval_train_state, eval_keys)  # (B,)
-        for b in range(B):
-            loggers[b].log_eval_return(pointer, mean_returns[b])
+        log_eval(loggers, batched_eval, eval_train_state, eval_keys, pointer)
 
     for logger in loggers:
         logger.close()
