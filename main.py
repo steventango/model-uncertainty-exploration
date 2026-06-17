@@ -28,8 +28,6 @@ from ppo import (
 from environments import make_state_reconstruction_wrapper
 from wrappers import ClipAction, LogWrapper, VecEnv
 
-os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
-
 
 def _wrap_env(env, discrete):
     wrapped = LogWrapper(env)
