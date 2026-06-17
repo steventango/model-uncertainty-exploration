@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import struct
 from gymnax.environments import environment, spaces
 
-from model import DynamicsModel
+from models import WorldModel
 
 
 @struct.dataclass
@@ -21,7 +21,7 @@ class ModelEnvState(environment.EnvState):
 class ModelEnvParams:
     env_params: environment.EnvParams
     max_steps_in_episode: int = struct.field(pytree_node=False)
-    model: DynamicsModel | None = None
+    model: WorldModel | None = None
     alpha: float = 1.0
     beta: float = 0.0
 
@@ -124,24 +124,18 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         model = params.model
         x = model.single_input(state.obs, action)
-        y_base, y_samples = jax.vmap(model.__call__, in_axes=(None, 0))(x, state.z)
+        samples = model.predict_samples(x, state.z)
         if self.prediction_mode == "mean":
-            y = y_base[0]
+            y = model.predict_mean(x)
         else:
-            y = y_samples[0]
+            y = samples[0]
         # NOTE: the "eig" and "std" bonuses are on different scales and are NOT
         # magnitude-matched. "std" is the posterior standard deviation (linear,
         # in normalized output units) while "eig" is ½ log(1 + σ²_ep) nats
         # (logarithmic in variance). Consequently --beta is not directly
         # comparable across the two bonus types and must be retuned when
         # switching between them.
-        if self.explore_bonus == "eig":
-            # EIG under Gaussian approximation: ½ log(1 + σ²_ep / σ²)
-            # Operating in normalized prediction space so σ² ≈ 1, giving ½ log(1 + σ²_ep).
-            var_ep = y_samples.var(axis=0)
-            r_intrinsic = 0.5 * jnp.log(1.0 + var_ep).mean()
-        else:
-            r_intrinsic = y_samples.std(axis=0).mean()
+        r_intrinsic = model.uncertainty(samples, self.explore_bonus)
 
         delta_obs = model.denormalize_delta_obs(y[..., : model.obs_dim])
         obs = state.obs + delta_obs
@@ -176,7 +170,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         model = params.model
         key, key_reset, key_z = jax.random.split(key, 3)
         obs, _ = self._real_env.reset_env(key_reset, params.env_params)
-        z = jax.random.normal(key_z, (self.samples, model.index_dim))
+        z = model.sample_index(key_z, self.samples)
         state = ModelEnvState(
             obs=obs,
             terminated=jnp.bool_(False),

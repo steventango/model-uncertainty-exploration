@@ -1,14 +1,15 @@
-from flax import nnx
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import norm
+from flax import nnx
 import optax
 
 from networks import ENN
+from models.base import WorldModel, register_model
 
 
-class DynamicsModel(nnx.Module):
-    """ENN with dataset normalization stats for inputs and targets."""
+class ENNModel(WorldModel):
+    """ENN-based dynamics model. Epistemic uncertainty via index-variable sampling."""
 
     def __init__(
         self,
@@ -19,97 +20,38 @@ class DynamicsModel(nnx.Module):
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
     ):
+        super().__init__(
+            in_features=in_features,
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            eps=eps,
+            predict_reward_terminated=predict_reward_terminated,
+        )
         self.enn = enn
-        self.obs_dim = obs_dim
-        self.act_dim = act_dim
-        self.eps = eps
-        self.predict_reward_terminated = predict_reward_terminated
-        self.input_mean = nnx.Variable(jnp.zeros(in_features))
-        self.input_std = nnx.Variable(jnp.ones(in_features))
-        self.delta_obs_mean = nnx.Variable(jnp.zeros(obs_dim))
-        self.delta_obs_std = nnx.Variable(jnp.ones(obs_dim))
-        self.reward_mean = nnx.Variable(jnp.zeros(()))
-        self.reward_std = nnx.Variable(jnp.ones(()))
 
     @property
     def index_dim(self):
         return self.enn.index_dim
 
-    def encode_action(self, action):
-        """action: (batch, a_dim); discrete uses a_dim=1 index column."""
-        if self.act_dim is not None:
-            return jax.nn.one_hot(action[:, 0], self.act_dim)
-        return action
+    def predict_sample(self, x, index):
+        """Single input x, single index vector → sample output."""
+        return self.enn(x, index)[1]
 
-    def build_input(self, obs, action):
-        """obs: (batch, obs_dim), action: (batch, a_dim)."""
-        return jnp.concatenate([obs, self.encode_action(action)], axis=-1)
+    def sample_index(self, key, num_samples: int):
+        return jax.random.normal(key, (num_samples, self.index_dim))
 
-    def single_input(self, obs, action):
-        obs = jnp.asarray(obs)
-        if obs.ndim == 1:
-            obs = obs[None]
-        action = jnp.atleast_2d(jnp.asarray(action))
-        x = self.normalize_input(self.build_input(obs, action))
-        return jnp.reshape(x, (-1,))
-
-    def update_stats(self, dataset, pointer):
-        n_samples = dataset.obs.shape[0]
-        mask = jnp.arange(n_samples) < pointer
-        mask2d = mask[:, None]
-
-        delta_obs = dataset.info["next_obs"] - dataset.obs
-
-        self.input_mean[: self.obs_dim] = jnp.mean(dataset.obs, axis=0, where=mask2d)
-        self.input_std[: self.obs_dim] = jnp.maximum(
-            jnp.std(dataset.obs, axis=0, where=mask2d), self.eps
-        )
-
-        if self.act_dim is None:
-            self.input_mean[self.obs_dim :] = jnp.mean(
-                dataset.action, axis=0, where=mask2d
-            )
-            self.input_std[self.obs_dim :] = jnp.maximum(
-                jnp.std(dataset.action, axis=0, where=mask2d), self.eps
-            )
-        else:
-            self.input_mean[self.obs_dim :] = 0.0
-            self.input_std[self.obs_dim :] = 1.0
-
-        self.delta_obs_mean[...] = jnp.mean(delta_obs, axis=0, where=mask2d)
-        self.delta_obs_std[...] = jnp.maximum(
-            jnp.std(delta_obs, axis=0, where=mask2d), self.eps
-        )
-        self.reward_mean[...] = jnp.mean(dataset.reward, axis=0, where=mask)
-        self.reward_std[...] = jnp.maximum(
-            jnp.std(dataset.reward, axis=0, where=mask), self.eps
-        )
-
-    def normalize_input(self, x):
-        return (x - self.input_mean) / self.input_std
-
-    def normalize_delta_obs(self, delta):
-        return (delta - self.delta_obs_mean) / self.delta_obs_std
-
-    def normalize_reward(self, reward):
-        return (reward - self.reward_mean) / self.reward_std
-
-    def denormalize_delta_obs(self, delta_norm):
-        return delta_norm * self.delta_obs_std + self.delta_obs_mean
-
-    def denormalize_reward(self, reward_norm):
-        return reward_norm * self.reward_std + self.reward_mean
-
-    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
-        return self.enn(x, z, rngs=rngs)
+    def predict_mean(self, x):
+        """Deterministic base-network output for a single normalized input."""
+        y, _ = self.enn.base(x)
+        return y
 
 
-def loss_fn(model: DynamicsModel, batch, rngs: nnx.Rngs):
+def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
     sigma = 1.0
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
-    _, logits = jax.vmap(model.__call__, in_axes=(0, None))(x, z)
+    logits = model.batch_predict_sample(x, z)
 
     delta_next_state_c = jax.random.normal(
         rngs(), shape=(batch.obs.shape[0], model.index_dim)
@@ -162,15 +104,14 @@ def loss_fn(model: DynamicsModel, batch, rngs: nnx.Rngs):
 
 
 @nnx.jit
-def train_step(
-    model: DynamicsModel,
+def _train_step(
+    model: ENNModel,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
 ):
-    """Train for a single step."""
-    grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
+    grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
     (loss, aux), grads = grad_fn(model, batch, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
@@ -183,14 +124,13 @@ def train_step(
 
 
 @nnx.jit
-def eval_step(
-    model: DynamicsModel,
+def _eval_step(
+    model: ENNModel,
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
 ):
-    """Eval for a single step."""
-    loss, aux = loss_fn(model, batch, rngs)
+    loss, aux = _loss_fn(model, batch, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -200,8 +140,8 @@ def eval_step(
     )
 
 
-def train_model(
-    model: DynamicsModel,
+def _train_model(
+    model: ENNModel,
     optimizer: nnx.Optimizer,
     metrics: nnx.MultiMetric,
     dataset,
@@ -210,7 +150,6 @@ def train_model(
     minibatch_size: int,
     rngs: nnx.Rngs,
 ):
-    """Train the model."""
     model.update_stats(dataset, pointer)
 
     def train_step_fn(train_state, _):
@@ -220,7 +159,7 @@ def train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        train_step(model, optimizer, metrics, rngs, minibatch)
+        _train_step(model, optimizer, metrics, rngs, minibatch)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -228,7 +167,7 @@ def train_model(
     return history
 
 
-def make_batched_model(
+def _make_batched_model(
     model_config,
     in_features,
     obs_dim,
@@ -237,11 +176,6 @@ def make_batched_model(
     keys,
     predict_reward_terminated: bool = True,
 ):
-    """Build B independent (model, optimizer, metrics), stacked on a leading seed axis.
-
-    Mirrors the single-model construction in main.py, vmapped over per-seed keys.
-    """
-
     @nnx.vmap
     def build(key):
         enn = ENN(
@@ -253,7 +187,7 @@ def make_batched_model(
             model_config["INDEX_DIM"],
             rngs=nnx.Rngs(params=key),
         )
-        model = DynamicsModel(
+        model = ENNModel(
             enn,
             in_features,
             obs_dim,
@@ -274,21 +208,9 @@ def make_batched_model(
     return build(keys)
 
 
-def make_batched_rngs(keys):
-    """Build a seed-batched nnx.Rngs: one independent stream per seed."""
-
-    @nnx.vmap(in_axes=0, out_axes=0)
-    def build(key):
-        return nnx.Rngs(key)
-
-    return build(keys)
-
-
-def make_batched_train_model(update_steps, minibatch_size):
-    """Vmap the model-fitting loop over the leading seed axis."""
-
+def _make_batched_train_model(update_steps, minibatch_size):
     def core(model, optimizer, metrics, dataset, pointer, rngs):
-        return train_model(
+        return _train_model(
             model,
             optimizer,
             metrics,
@@ -300,3 +222,11 @@ def make_batched_train_model(update_steps, minibatch_size):
         )
 
     return nnx.jit(nnx.vmap(core, in_axes=(0, 0, 0, 0, None, 0), out_axes=0))
+
+
+register_model("enn")(
+    {
+        "make_batched_model": _make_batched_model,
+        "make_batched_train_model": _make_batched_train_model,
+    }
+)

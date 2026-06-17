@@ -34,9 +34,8 @@ def validation_metrics(
     model, val_obs, val_act, val_true_delta_obs, val_true_reward, val_true_terminated
 ):
     """Pure-JAX validation metrics (mean model). Vmappable over a batch of models."""
-    dummy_z = jnp.zeros(model.index_dim)
     val_x_norm = _model_inputs(model, val_obs, val_act)
-    _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x_norm, dummy_z)
+    mean_y_val = jax.vmap(model.predict_mean)(val_x_norm)
     pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., : model.obs_dim])
 
     dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
@@ -92,15 +91,13 @@ def evaluate_validation(
     *,
     plot=False,
 ):
-    dummy_z = jnp.zeros(model.index_dim)
-
     if plot:
         batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
         env_config = get_env_config(env_name)
 
         # Training data predictions (mean model, i.e. zero epistemic index)
         x_data = _model_inputs(model, batch.obs, batch.action)
-        _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_data, dummy_z)
+        mean_y = jax.vmap(model.predict_mean)(x_data)
         pred_delta_obs = model.denormalize_delta_obs(mean_y[..., : model.obs_dim])
         pred_reward = (
             model.denormalize_reward(mean_y[..., -2])
@@ -122,7 +119,7 @@ def evaluate_validation(
         )
         x_rand = _model_inputs(model, rand_obs, rand_act)
 
-        _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
+        mean_y_rand = jax.vmap(model.predict_mean)(x_rand)
         pred_delta_obs_rand = model.denormalize_delta_obs(
             mean_y_rand[..., : model.obs_dim]
         )
@@ -148,8 +145,15 @@ def evaluate_validation(
         )
 
         # Epistemic uncertainty per output dimension
-        unc_data, rng = plotting.compute_epistemic_uncertainty(model, x_data, rng)
-        unc_rand, rng = plotting.compute_epistemic_uncertainty(model, x_rand, rng)
+        rng, key_data, key_rand = jax.random.split(rng, 3)
+        idx_data = model.sample_index(key_data, 10)
+        unc_data = model.uncertainty(
+            model.batch_predict_samples(x_data, idx_data), reduce_output=False
+        )
+        idx_rand = model.sample_index(key_rand, 10)
+        unc_rand = model.uncertainty(
+            model.batch_predict_samples(x_rand, idx_rand), reduce_output=False
+        )
         unc_delta_obs = unc_data[..., : model.obs_dim]
         unc_delta_obs_rand = unc_rand[..., : model.obs_dim]
         unc_reward = unc_data[..., -2] if model.predict_reward_terminated else None

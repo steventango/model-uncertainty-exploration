@@ -15,7 +15,7 @@ import validation
 from data import collate_rollout
 from env_config import SUPPORTED_ENVS
 from logger import ExperimentLogger, log_eval, log_validation
-from model import make_batched_model, make_batched_rngs, make_batched_train_model
+from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from model_env import ModelEnvironment
 from ppo import (
     make_batched_train,
@@ -93,6 +93,19 @@ def main():
         "--predict_reward_terminated",
         action="store_true",
         help="Use model-predicted reward/terminated instead of reward/terminated from the real env.",
+    )
+    parser.add_argument(
+        "--num_rollouts",
+        type=int,
+        default=None,
+        help="Number of rollout iterations.",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="enn",
+        choices=["enn"],
+        help="World model type.",
     )
     args = parser.parse_args()
 
@@ -205,6 +218,7 @@ def main():
     # INIT B WORLD MODELS + OPTIMIZERS + METRICS
     seed_keys, model_keys = vsplit(seed_keys)
     models, optimizers, metrics = make_batched_model(
+        args.model,
         model_config,
         in_features,
         obs_dim,
@@ -216,7 +230,7 @@ def main():
     seed_keys, train_model_seed = vsplit(seed_keys)
     batched_rngs = make_batched_rngs(train_model_seed)
     batched_train_model = make_batched_train_model(
-        model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
+        args.model, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
 
@@ -224,11 +238,15 @@ def main():
     log_dir = args.log_dir or (
         f"runs/{env_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
-    num_rollouts = int(
-        rollout_config["TOTAL_TIMESTEPS"]
-        // rollout_config["NUM_STEPS"]
-        // rollout_config["NUM_ENVS"]
-    )
+
+    if args.num_rollouts is not None:
+        num_rollouts = args.num_rollouts
+    else:
+        num_rollouts = int(
+            rollout_config["TOTAL_TIMESTEPS"]
+            // rollout_config["NUM_STEPS"]
+            // rollout_config["NUM_ENVS"]
+        )
     seed_dirs, loggers = [], []
     for b in range(B):
         seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
