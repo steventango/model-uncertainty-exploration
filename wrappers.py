@@ -22,7 +22,7 @@ class GymnaxWrapper(object):
 class StateReconstructionWrapper(GymnaxWrapper):
     """Base class for env-specific invert get_obs wrappers."""
 
-    def get_state(self, obs, last_action, time):
+    def get_state(self, obs, last_action, time, next_obs=None):
         raise NotImplementedError
 
 

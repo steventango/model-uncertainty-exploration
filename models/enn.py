@@ -205,7 +205,8 @@ def _make_batched_model(
         )
         return model, optimizer, metrics
 
-    return build(keys)
+    model, optimizer, metrics = build(keys)
+    return model, (optimizer, metrics)
 
 
 def _make_batched_train_model(update_steps, minibatch_size):
@@ -221,7 +222,13 @@ def _make_batched_train_model(update_steps, minibatch_size):
             rngs,
         )
 
-    return nnx.jit(nnx.vmap(core, in_axes=(0, 0, 0, 0, None, 0), out_axes=0))
+    batched = nnx.jit(nnx.vmap(core, in_axes=(0, 0, 0, 0, None, 0), out_axes=0))
+
+    def train_fn(model, train_state, dataset, pointer, rngs):
+        optimizer, metrics = train_state
+        return batched(model, optimizer, metrics, dataset, pointer, rngs)
+
+    return train_fn
 
 
 register_model("enn")(
