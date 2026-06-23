@@ -259,7 +259,7 @@ def main():
         "ANNEAL_LR": False,
         "NORMALIZE_ENV": True,
         "SEED": args.seed,
-        "DEBUG": args.debug,
+        "DEBUG": False,
     }
     if not args.offline:
         config["ENV_NAME"] = args.env
@@ -433,7 +433,7 @@ def main():
                 data_count,
             )
 
-        if not args.offline and config["DEBUG"]:
+        if not args.offline and args.debug:
             seed_keys, plot_seed = vsplit(seed_keys)
             # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
             # are all sliced to seed 0), not all B seeds.
@@ -455,7 +455,7 @@ def main():
                 plot=True,
             )
 
-        if not args.offline and config["DEBUG"]:
+        if not args.offline and args.debug:
             seed_keys, unc_seed = vsplit(seed_keys)
             # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir are
             # all sliced to seed 0), not all B seeds.
