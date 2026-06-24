@@ -182,7 +182,7 @@ def main():
 
         num_steps = 14
         model_minibatch_size = min(N, 256)
-        max_data = N
+        total_timesteps = N
 
         num_rollouts = args.num_rollouts if args.num_rollouts is not None else 1
         log_prefix = f"plant_{args.dataset.replace('/', '_')}"
@@ -224,10 +224,11 @@ def main():
         rollout_steps = env_params.max_steps_in_episode // 10
         num_steps = 10
         model_minibatch_size = rollout_steps
-        max_data = 10000
+        num_episodes = 5
+        total_timesteps = env_params.max_steps_in_episode * num_episodes
 
         num_rollouts = args.num_rollouts or int(
-            env_params.max_steps_in_episode * 10 // rollout_steps
+            total_timesteps // rollout_steps
         )
         log_prefix = env_name
         hparams_run = {
@@ -293,8 +294,8 @@ def main():
             **config,
             "NUM_ENVS": 1,
             "NUM_STEPS": rollout_steps,
-            "TOTAL_TIMESTEPS": env_params.max_steps_in_episode * 10,
-            "DATASET_SIZE": 10000,
+            "TOTAL_TIMESTEPS": total_timesteps,
+            "DATASET_SIZE": min(10000, total_timesteps),
         }
         eval_config = {
             **rollout_config,
