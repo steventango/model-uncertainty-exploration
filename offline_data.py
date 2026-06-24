@@ -43,11 +43,11 @@ def load_offline_transitions(
     max_ep_len = 0
 
     for ep in dataset.iterate_episodes():
-        ep_obs = np.asarray(ep.observations)       # (T+1, obs_full_dim)
-        ep_actions = np.asarray(ep.actions)        # (T, act_dim)
-        ep_rewards = np.asarray(ep.rewards)        # (T,)
-        ep_terms = np.asarray(ep.terminations)     # (T,)
-        ep_truncs = np.asarray(ep.truncations)     # (T,)
+        ep_obs = np.asarray(ep.observations)  # (T+1, obs_full_dim)
+        ep_actions = np.asarray(ep.actions)  # (T, act_dim)
+        ep_rewards = np.asarray(ep.rewards)  # (T,)
+        ep_terms = np.asarray(ep.terminations)  # (T,)
+        ep_truncs = np.asarray(ep.truncations)  # (T,)
         T = len(ep_rewards)
 
         if T == 0:
@@ -56,19 +56,19 @@ def load_offline_transitions(
         # Extract scalar log-area from the full observation vector.
         area = ep_obs[:, area_index : area_index + 1].astype(np.float32)  # (T+1, 1)
 
-        obss.append(area[:-1])                             # (T, 1)
-        next_obss.append(area[1:])                         # (T, 1)
-        actions.append(ep_actions.astype(np.float32))      # (T, act_dim)
-        rewards.append(ep_rewards.astype(np.float32))      # (T,)
+        obss.append(area[:-1])  # (T, 1)
+        next_obss.append(area[1:])  # (T, 1)
+        actions.append(ep_actions.astype(np.float32))  # (T, act_dim)
+        rewards.append(ep_rewards.astype(np.float32))  # (T,)
         terminateds.append(ep_terms.astype(bool))
         truncateds.append(ep_truncs.astype(bool))
         init_areas_list.append(float(area[0, 0]))
         max_ep_len = max(max_ep_len, T)
 
-    obs = jnp.asarray(np.concatenate(obss, axis=0))           # (N, 1)
-    next_obs = jnp.asarray(np.concatenate(next_obss, axis=0)) # (N, 1)
-    action = jnp.asarray(np.concatenate(actions, axis=0))     # (N, act_dim)
-    reward = jnp.asarray(np.concatenate(rewards, axis=0))     # (N,)
+    obs = jnp.asarray(np.concatenate(obss, axis=0))  # (N, 1)
+    next_obs = jnp.asarray(np.concatenate(next_obss, axis=0))  # (N, 1)
+    action = jnp.asarray(np.concatenate(actions, axis=0))  # (N, act_dim)
+    reward = jnp.asarray(np.concatenate(rewards, axis=0))  # (N,)
     terminated = jnp.asarray(np.concatenate(terminateds, axis=0))
     truncated = jnp.asarray(np.concatenate(truncateds, axis=0))
     init_areas = jnp.asarray(np.array(init_areas_list, dtype=np.float32))

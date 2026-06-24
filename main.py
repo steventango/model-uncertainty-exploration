@@ -52,7 +52,10 @@ def _save_checkpoint(seed_dir, models, explore_train_state, eval_train_state, se
     _, model_state = nnx.split(unstack_train_state(models, seed_idx))
     checkpointer.save(os.path.join(abs_seed_dir, "checkpoint", "model"), model_state)
 
-    for tag, batched_ts in [("ppo_explore", explore_train_state), ("ppo_eval", eval_train_state)]:
+    for tag, batched_ts in [
+        ("ppo_explore", explore_train_state),
+        ("ppo_eval", eval_train_state),
+    ]:
         network, _, normalize_vec_obs, _ = unstack_train_state(batched_ts, seed_idx)
         _, network_state = nnx.split(network)
         _, obs_norm_state = nnx.split(normalize_vec_obs)
@@ -183,7 +186,11 @@ def main():
 
         num_rollouts = args.num_rollouts if args.num_rollouts is not None else 1
         log_prefix = f"plant_{args.dataset.replace('/', '_')}"
-        hparams_run = {"num_rollouts": num_rollouts, "N_train": N, "action_dim": action_dim}
+        hparams_run = {
+            "num_rollouts": num_rollouts,
+            "N_train": N,
+            "action_dim": action_dim,
+        }
         hparams_extra = {}
 
     else:
@@ -368,7 +375,9 @@ def main():
         seed_dirs.append(seed_dir)
         loggers.append(logger)
 
-    oracle_reward_terminated = True if args.offline else not args.predict_reward_terminated
+    oracle_reward_terminated = (
+        True if args.offline else not args.predict_reward_terminated
+    )
     model_env = ModelEnvironment(
         env,
         env_params,
