@@ -4,6 +4,7 @@ import jax.scipy.linalg
 from flax import nnx
 
 from models.base import WorldModel, register_model
+from models.features import Features, RBFFeatures, RFFFeatures
 
 
 class BLRModel(WorldModel):
@@ -12,12 +13,11 @@ class BLRModel(WorldModel):
         in_features: int,
         obs_dim: int,
         out_features: int,
-        num_features: int,
         num_samples: int,
         lam: float,
         a0: float,
         b0: float,
-        length_scale: float,
+        features: Features,
         key: jax.Array,
         act_dim=None,
         eps: float = 1e-8,
@@ -31,20 +31,16 @@ class BLRModel(WorldModel):
             predict_reward_terminated=predict_reward_terminated,
         )
         self.out_features = out_features
-        self.num_features = num_features
+        self.num_features = features.num_features
         self.num_samples = num_samples
         self.lam = lam
         self.a0 = a0
         self.b0 = b0
-        self.length_scale = length_scale
+        self.features = features
 
-        d = in_features
         o = out_features
-        F = num_features + 1
+        F = features.num_features + 1
         S = num_samples
-
-        self.C = nnx.Variable(jnp.zeros((num_features, d), dtype=jnp.float32))
-        self.n_valid = nnx.Variable(jnp.zeros((), dtype=jnp.int32))
 
         self.w_mean = nnx.Variable(jnp.zeros((o, F)))
         self.w_samples = nnx.Variable(jnp.zeros((S, o, F)))
@@ -52,29 +48,19 @@ class BLRModel(WorldModel):
         # Cholesky of Λ_n (lower triangular, shared across outputs).
         self.L = nnx.Variable(jnp.eye(F))
 
-    def _features(self, x):
-        """RBF features + bias; invalid centers zeroed out.  x: (..., d) → (..., num_features+1)."""
-        diff = jnp.expand_dims(x, axis=-2) - self.C.value
-        sq_dist = jnp.sum(diff**2, axis=-1)
-        phi = jnp.exp(-sq_dist / (2 * self.length_scale**2))
-        valid = jnp.arange(self.num_features) < self.n_valid.value
-        rbf = phi * valid
-        bias = jnp.ones(x.shape[:-1] + (1,))
-        return jnp.concatenate([bias, rbf], axis=-1)
-
     def sample_index(self, key, num_samples: int):
         return jax.random.randint(key, (num_samples,), 0, self.num_samples)
 
     def predict_mean(self, x):
         """x: (in_features,) → (out_features,)."""
-        return self.w_mean.value @ self._features(x)
+        return self.w_mean.value @ self.features(x)
 
     def predict_sample(self, x, index):
-        return self.w_samples.value[index] @ self._features(x)
+        return self.w_samples.value[index] @ self.features(x)
 
     def variance(self, x, z):
         """Closed-form posterior variance."""
-        phi = self._features(x)
+        phi = self.features(x)
         v = jax.scipy.linalg.solve_triangular(self.L.value, phi, lower=True)
         return self.noise.value * (v @ v)
 
@@ -101,11 +87,8 @@ def _train_model(
     N_eff = mask.sum()
 
     X = model.normalize_input(model.build_input(dataset.obs, dataset.action))
-    model.C.value = X
-    model.n_valid.value = pointer.astype(jnp.int32)
-
-    Phi = model._features(X)
-    Phi = Phi * mask
+    model.features.update(X, pointer)
+    Phi = model.features(X) * mask
 
     Y = model.build_targets(dataset.obs, dataset.info["next_obs"], dataset.reward, dataset.terminated) * mask
 
@@ -157,18 +140,23 @@ def _make_batched_model(
     keys,
     predict_reward_terminated: bool = True,
 ):
+    use_rff = model_config.get("FEATURE_TYPE", "rbf") == "rff"
+
     @nnx.vmap
     def build(key):
+        if use_rff:
+            features = RFFFeatures(key, in_features, model_config["NUM_FEATURES"], model_config["LENGTH_SCALE"])
+        else:
+            features = RBFFeatures(model_config["MAX_DATA"], in_features, model_config["LENGTH_SCALE"])
         return BLRModel(
             in_features=in_features,
             obs_dim=obs_dim,
             out_features=out_features,
-            num_features=model_config["MAX_DATA"],
             num_samples=model_config["NUM_SAMPLES"],
             lam=model_config["LAM"],
             a0=model_config["A0"],
             b0=model_config["B0"],
-            length_scale=model_config["LENGTH_SCALE"],
+            features=features,
             key=key,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
