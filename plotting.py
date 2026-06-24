@@ -43,9 +43,7 @@ def compute_epistemic_uncertainty(model, x_norm, rng, num_samples=10):
     """Std of normalized model outputs across epistemic index samples."""
     rng, subkey = jax.random.split(rng)
     index = model.sample_index(subkey, num_samples)
-    return model.uncertainty(
-        model.batch_predict_samples(x_norm, index), reduce_output=False
-    ), rng
+    return model.batch_uncertainty(x_norm, index, reduce_output=False), rng
 
 
 def evaluate_and_plot_uncertainty(
@@ -83,7 +81,7 @@ def evaluate_and_plot_uncertainty(
         x_grid_norm = model.normalize_input(x_grid)
 
         # 1. Epistemic Uncertainty (std of normalized model outputs)
-        std_y = model.uncertainty(model.batch_predict_samples(x_grid_norm, z_samples))
+        std_y = model.batch_uncertainty(x_grid_norm, z_samples)
         unc_grids.append(std_y.reshape(num_grid, num_grid))
 
         # 2. Mean Predictions (using the base network output)
@@ -622,7 +620,7 @@ def plot_area_action_uncertainty(
 
     samples = model.batch_predict_samples(x_grid_norm, z)     # (S, G*G, out_dim)
 
-    unc_flat = model.uncertainty(samples, kind=bonus)          # (G*G,)
+    unc_flat = model.batch_uncertainty(x_grid_norm, z, bonus)         # (G*G,)
     unc_grid = unc_flat.reshape(num_grid, num_grid)
 
     mean_y_flat = jax.vmap(model.predict_mean)(x_grid_norm)   # (G*G, out_dim)

@@ -55,24 +55,37 @@ class WorldModel(nnx.Module):
         """x (N, in_features), index (S, index_dim) → (S, N, out_features). Maps over N inputs and S indices."""
         return jax.vmap(self.predict_samples, in_axes=(0, None), out_axes=1)(x, index)
 
+    def variance(self, x: jax.Array, z: jax.Array) -> jax.Array:
+        """Per-output empirical epistemic variance at a single x over S samples.  (out_features,)"""
+        samples = self.predict_samples(x, z)
+        return samples.var(axis=0)
+
     def uncertainty(
         self,
-        samples,
+        x: jax.Array,
+        z: jax.Array,
         kind: Literal["std", "eig"] = "std",
         reduce_output: bool = True,
-    ):
-        """Scalar (or per-output) uncertainty from posterior samples (S, N, out_features) or (S, out_features).
-
-        reduce_output=True  → mean over output dims (scalar per input point)
-        reduce_output=False → per-output-dim uncertainty (shape N, out_features or out_features)
-        """
+    ) -> jax.Array:
+        """Epistemic uncertainty at a single x given S epistemic indices z."""
+        var = self.variance(x, z)
         if kind == "eig":
-            u = 0.5 * jnp.log(1.0 + samples.var(axis=0))
+            u = 0.5 * jnp.log(1.0 + var)
         else:
-            u = samples.std(axis=0)
-        if reduce_output:
-            return u.mean(axis=-1)
-        return u
+            u = jnp.sqrt(var)
+        return u.mean(axis=-1) if reduce_output else u
+
+    def batch_uncertainty(
+        self,
+        x: jax.Array,
+        z: jax.Array,
+        explore_bonus: Literal["std", "eig"] = "std",
+        reduce_output: bool = True,
+    ) -> jax.Array:
+        """x (N, in_features) → (N,) or (N, out_features)."""
+        return jax.vmap(
+            lambda xi: self.uncertainty(xi, z, explore_bonus, reduce_output)
+        )(x)
 
     # --- Shared input/normalization helpers ---
 

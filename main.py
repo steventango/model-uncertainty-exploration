@@ -126,7 +126,7 @@ def main():
         "--model",
         type=str,
         default="enn",
-        choices=["enn", "gp"],
+        choices=["enn", "blr"],
         help="World model type.",
     )
     parser.add_argument(
@@ -229,17 +229,28 @@ def main():
             "action_dim": action_dim,
         }
         hparams_extra = {}
-
-    model_config = {
-        "LR": 1e-3,
-        "HIDDEN_DIM": 64,
-        "LEARNABLE_HIDDEN_DIM": 15,
-        "PRIOR_HIDDEN_DIM": 5,
-        "INDEX_DIM": 8,
-        "ACTIVATION": "tanh",
-        "UPDATE_STEPS": 10000,
-        "MINIBATCH_SIZE": model_minibatch_size,
-    }
+    if args.model == "blr":
+        model_config = {
+            "MAX_DATA": max_data,
+            "NUM_SAMPLES": 10,
+            "LAM": 0.01,
+            "A0": 1.0,
+            "B0": 1.0,
+            "LENGTH_SCALE": 1.0,
+            "UPDATE_STEPS": 1,
+            "MINIBATCH_SIZE": model_minibatch_size,
+        }
+    else:
+        model_config = {
+            "LR": 1e-3,
+            "HIDDEN_DIM": 64,
+            "LEARNABLE_HIDDEN_DIM": 15,
+            "PRIOR_HIDDEN_DIM": 5,
+            "INDEX_DIM": 8,
+            "ACTIVATION": "tanh",
+            "UPDATE_STEPS": 10000,
+            "MINIBATCH_SIZE": model_minibatch_size,
+        }
 
     config = {
         "LR": 3e-4,

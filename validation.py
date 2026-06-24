@@ -147,13 +147,9 @@ def evaluate_validation(
         # Epistemic uncertainty per output dimension
         rng, key_data, key_rand = jax.random.split(rng, 3)
         idx_data = model.sample_index(key_data, 10)
-        unc_data = model.uncertainty(
-            model.batch_predict_samples(x_data, idx_data), reduce_output=False
-        )
+        unc_data = model.batch_uncertainty(x_data, idx_data, reduce_output=False)
         idx_rand = model.sample_index(key_rand, 10)
-        unc_rand = model.uncertainty(
-            model.batch_predict_samples(x_rand, idx_rand), reduce_output=False
-        )
+        unc_rand = model.batch_uncertainty(x_rand, idx_rand, reduce_output=False)
         unc_delta_obs = unc_data[..., : model.obs_dim]
         unc_delta_obs_rand = unc_rand[..., : model.obs_dim]
         unc_reward = unc_data[..., -2] if model.predict_reward_terminated else None
