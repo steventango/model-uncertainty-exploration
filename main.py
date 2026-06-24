@@ -133,6 +133,13 @@ def main():
         help="World model type.",
     )
     parser.add_argument(
+        "--feature_type",
+        type=str,
+        default="rbf",
+        choices=["rbf", "rff"],
+        help="BLR feature map (only used when --model blr).",
+    )
+    parser.add_argument(
         "--offline",
         action="store_true",
         help="Run in offline mode: load a minari dataset.",
@@ -239,11 +246,17 @@ def main():
         hparams_extra = {}
     if args.model == "blr":
         model_config = {
-            "MAX_DATA": max_data,
+            "FEATURE_TYPE": args.feature_type,
+            "MAX_DATA": total_timesteps,
+            "NUM_FEATURES": 256,
             "NUM_SAMPLES": 10,
             "LAM": 0.01,
             "A0": 1.0,
             "B0": 1.0,
+            "LENGTH_SCALE": 3.0,
+            "UPDATE_STEPS": 1,
+            "MINIBATCH_SIZE": model_minibatch_size,
+        }
             "LENGTH_SCALE": 1.0,
             "UPDATE_STEPS": 1,
             "MINIBATCH_SIZE": model_minibatch_size,
