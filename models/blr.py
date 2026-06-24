@@ -107,15 +107,7 @@ def _train_model(
     Phi = model._features(X)
     Phi = Phi * mask
 
-    delta_obs = dataset.info["next_obs"] - dataset.obs
-    delta_obs_norm = model.normalize_delta_obs(delta_obs)
-    if model.predict_reward_terminated:
-        reward_norm = model.normalize_reward(dataset.reward)[:, None]
-        terminated = dataset.terminated[:, None].astype(jnp.float32)
-        Y = jnp.concatenate([delta_obs_norm, reward_norm, terminated], axis=-1)
-    else:
-        Y = delta_obs_norm
-    Y = Y * mask
+    Y = model.build_targets(dataset.obs, dataset.info["next_obs"], dataset.reward, dataset.terminated) * mask
 
     gram = Phi.T @ Phi
     Phi_y = Phi.T @ Y

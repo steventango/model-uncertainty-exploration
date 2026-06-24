@@ -142,6 +142,15 @@ class WorldModel(nnx.Module):
     def normalize_input(self, x):
         return (x - self.input_mean) / self.input_std
 
+    def build_targets(self, obs, next_obs, reward, terminated) -> jax.Array:
+        """Normalized output targets (N, out_features) from raw transition data."""
+        delta_obs_norm = self.normalize_delta_obs(next_obs - obs)
+        if self.predict_reward_terminated:
+            reward_norm = self.normalize_reward(reward)[:, None]
+            terminated_f = terminated[:, None].astype(jnp.float32)
+            return jnp.concatenate([delta_obs_norm, reward_norm, terminated_f], axis=-1)
+        return delta_obs_norm
+
     def normalize_delta_obs(self, delta):
         return (delta - self.delta_obs_mean) / self.delta_obs_std
 
