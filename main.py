@@ -302,6 +302,7 @@ def main():
         make_batched_train(model_env, model_env.default_params, config)
     )
     if not args.offline:
+        seed_keys, val_keys = vsplit(seed_keys)
         log_validation(
             loggers,
             batched_val_metrics,
@@ -312,6 +313,7 @@ def main():
             val_true_reward,
             val_true_terminated,
             0,
+            val_keys,
         )
         seed_keys, runner_seed = vsplit(seed_keys)
         runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
@@ -341,6 +343,7 @@ def main():
             loggers[b].log_loss_history(_seed_slice(history, b), j)
 
         if not args.offline:
+            seed_keys, val_keys = vsplit(seed_keys)
             log_validation(
                 loggers,
                 batched_val_metrics,
@@ -351,6 +354,7 @@ def main():
                 val_true_reward,
                 val_true_terminated,
                 data_count,
+                val_keys,
             )
 
         if not args.offline and args.debug:

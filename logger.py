@@ -102,7 +102,15 @@ class ExperimentLogger:
         )
         self._track_summary_metric("eval/mean_return", mean_return)
 
-    def log_validation_metrics(self, dyn_mae, rew_mae, term_bce, term_f1, dataset_size):
+    def log_validation_metrics(
+        self,
+        dyn_mae,
+        rew_mae,
+        term_bce,
+        term_f1,
+        mean_uncertainty,
+        dataset_size,
+    ):
         self._writer.add_scalar(
             "validation/dynamics_mae", float(dyn_mae), int(dataset_size)
         )
@@ -115,10 +123,14 @@ class ExperimentLogger:
         self._writer.add_scalar(
             "validation/termination_f1", float(term_f1), int(dataset_size)
         )
+        self._writer.add_scalar(
+            "validation/mean_uncertainty", float(mean_uncertainty), int(dataset_size)
+        )
         self._track_summary_metric("validation/dynamics_mae", dyn_mae)
         self._track_summary_metric("validation/reward_mae", rew_mae)
         self._track_summary_metric("validation/termination_bce", term_bce)
         self._track_summary_metric("validation/termination_f1", term_f1)
+        self._track_summary_metric("validation/mean_uncertainty", mean_uncertainty)
 
     def close(self):
         if self._hparams:
@@ -137,18 +149,25 @@ def log_validation(
     val_true_reward,
     val_true_terminated,
     dataset_ptr,
+    val_keys,
 ):
-    dyn_mae, rew_mae, term_bce, term_f1 = batched_val_metrics(
+    dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty = batched_val_metrics(
         models,
         val_obs,
         val_act,
         val_true_delta_obs,
         val_true_reward,
         val_true_terminated,
+        val_keys,
     )
     for b, logger in enumerate(loggers):
         logger.log_validation_metrics(
-            dyn_mae[b], rew_mae[b], term_bce[b], term_f1[b], dataset_ptr
+            dyn_mae[b],
+            rew_mae[b],
+            term_bce[b],
+            term_f1[b],
+            mean_uncertainty[b],
+            dataset_ptr,
         )
 
 
