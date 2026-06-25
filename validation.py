@@ -70,7 +70,9 @@ def validation_metrics(
         term_f1 = jnp.zeros(())
 
     idx = model.sample_index(key, _NUM_UNC_SAMPLES)
-    mean_uncertainty = model.batch_uncertainty(val_x_norm, idx, reduce_output=True).mean()
+    mean_uncertainty = model.batch_uncertainty(
+        val_x_norm, idx, reduce_output=True
+    ).mean()
 
     return dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty
 
