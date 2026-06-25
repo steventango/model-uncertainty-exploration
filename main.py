@@ -158,7 +158,7 @@ def main():
         rollout_steps = env_params.max_steps_in_episode // 10
         num_steps = 10
         model_minibatch_size = rollout_steps
-        num_episodes = 5
+        num_episodes = max(1, 1000 // env_params.max_steps_in_episode)
         total_timesteps = env_params.max_steps_in_episode * num_episodes
         # Cap the rolling dataset buffer; the RBF feature bank places one center
         # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
