@@ -96,6 +96,10 @@ class ExperimentLogger:
         for step, value in zip(update_steps, mean_returns, strict=True):
             self._writer.add_scalar(tag, float(value), int(step))
 
+    def log_scalar(self, tag: str, value: float, step: int) -> None:
+        """Log an arbitrary scalar with a given tag and dataset-size step."""
+        self._writer.add_scalar(tag, float(value), int(step))
+
     def log_eval_return(self, dataset_size, mean_return):
         self._writer.add_scalar(
             "eval/mean_return", float(mean_return), int(dataset_size)
