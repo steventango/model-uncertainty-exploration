@@ -90,13 +90,31 @@ class Experiment:
         )
 
 
+def job_name(exp: Experiment, label: str = "") -> str:
+    """SLURM job name for a label group (empty label → experiment name only)."""
+    return f"{exp.name}-{label}" if label else exp.name
+
+
+def job_names(exp: Experiment) -> set[str]:
+    return {job_name(exp, cfg.label) for cfg in exp.configs}
+
+
+def active_task_ids_for_experiment(
+    exp: Experiment, *, user: str | None = None
+) -> set[int]:
+    active: set[int] = set()
+    for name in job_names(exp):
+        active |= active_task_ids(name, user=user)
+    return active
+
+
 def tasks_to_submit(
     exp: Experiment,
     *,
     skip_active: bool = True,
     user: str | None = None,
 ) -> tuple[list[int], int, int]:
-    active = active_task_ids(exp.name, user=user) if skip_active else set()
+    active = active_task_ids_for_experiment(exp, user=user) if skip_active else set()
     complete = 0
     in_progress = 0
     to_submit: list[int] = []
