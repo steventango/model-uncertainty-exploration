@@ -90,7 +90,12 @@ def _train_model(
     model.features.update(X, pointer)
     Phi = model.features(X) * mask
 
-    Y = model.build_targets(dataset.obs, dataset.info["next_obs"], dataset.reward, dataset.terminated) * mask
+    Y = (
+        model.build_targets(
+            dataset.obs, dataset.info["next_obs"], dataset.reward, dataset.terminated
+        )
+        * mask
+    )
 
     gram = Phi.T @ Phi
     Phi_y = Phi.T @ Y
@@ -116,7 +121,7 @@ def _train_model(
     log_marginal_likelihood = (
         -0.5 * N_eff * jnp.log(2 * jnp.pi)
         + 0.5 * log_det_Lambda_0
-        -0.5 * log_det_Lambda_n
+        - 0.5 * log_det_Lambda_n
         + a_0 * jnp.log(b_0)
         - a_n * jnp.log(b_n)
         + jax.scipy.special.gammaln(a_n)
@@ -145,9 +150,16 @@ def _make_batched_model(
     @nnx.vmap
     def build(key):
         if use_rff:
-            features = RFFFeatures(key, in_features, model_config["NUM_FEATURES"], model_config["LENGTH_SCALE"])
+            features = RFFFeatures(
+                key,
+                in_features,
+                model_config["NUM_FEATURES"],
+                model_config["LENGTH_SCALE"],
+            )
         else:
-            features = RBFFeatures(model_config["MAX_DATA"], in_features, model_config["LENGTH_SCALE"])
+            features = RBFFeatures(
+                model_config["NUM_FEATURES"], in_features, model_config["LENGTH_SCALE"]
+            )
         return BLRModel(
             in_features=in_features,
             obs_dim=obs_dim,

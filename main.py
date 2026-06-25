@@ -1,24 +1,26 @@
-import argparse
+import dataclasses
 import os
-import orbax.checkpoint as ocp
+import time
 from datetime import datetime
 from functools import partial
 
 import gymnax
 import jax
-
 import jax.numpy as jnp
+import orbax.checkpoint as ocp
+import tyro
 from flax import nnx
 from gymnax.environments import spaces
 
 import evaluation
 import plotting
 import validation
+from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from env_config import SUPPORTED_ENVS
+from environments import make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_validation
-from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from model_env import ModelEnvironment
+from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
 from ppo import (
@@ -29,7 +31,6 @@ from ppo import (
     select_config_train_state,
     unstack_train_state,
 )
-from environments import make_state_reconstruction_wrapper
 from wrappers import ClipAction, LogWrapper, VecEnv
 
 
@@ -72,85 +73,7 @@ def vsplit(keys, num=2):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--alpha", type=float, default=0.0, help="Exploit weight")
-    parser.add_argument("--beta", type=float, default=1.0, help="Explore weight")
-    parser.add_argument("--seed", type=int, default=0, help="Base random seed")
-    parser.add_argument(
-        "--num_seeds",
-        type=int,
-        default=1,
-        help="Number of seeds to train concurrently (vmapped on one GPU)",
-    )
-    parser.add_argument(
-        "--env",
-        type=str,
-        default="Pendulum-v1",
-        choices=SUPPORTED_ENVS,
-        help="Gymnax environment name",
-    )
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        default=None,
-        help="TensorBoard log directory (default: runs/{env}_{timestamp})",
-    )
-    parser.add_argument(
-        "--model_env_mode",
-        type=str,
-        default="sample",
-        choices=["mean", "sample"],
-        help="Model env transition mode: mean (base net) or sample (epinet at z[0])",
-    )
-    parser.add_argument(
-        "--explore_bonus",
-        type=str,
-        default="eig",
-        choices=["std", "eig"],
-        help="Intrinsic exploration bonus: std (epinet std) or eig (½ log(1 + σ²_ep))",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug plots (true vs predicted, uncertainty heatmaps)",
-    )
-    parser.add_argument(
-        "--predict_reward_terminated",
-        action="store_true",
-        help="Use model-predicted reward/terminated instead of reward/terminated from the real env.",
-    )
-    parser.add_argument(
-        "--num_rollouts",
-        type=int,
-        default=None,
-        help="Number of rollout iterations.",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="enn",
-        choices=["enn", "blr"],
-        help="World model type.",
-    )
-    parser.add_argument(
-        "--feature_type",
-        type=str,
-        default="rbf",
-        choices=["rbf", "rff"],
-        help="BLR feature map (only used when --model blr).",
-    )
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Run in offline mode: load a minari dataset.",
-    )
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        default="plant-data/visu-v27",
-        help="Minari dataset id for offline mode.",
-    )
-    args = parser.parse_args()
+    args = tyro.cli(Args)
 
     B = args.num_seeds
     seeds = args.seed + jnp.arange(B)
@@ -234,9 +157,7 @@ def main():
         num_episodes = 5
         total_timesteps = env_params.max_steps_in_episode * num_episodes
 
-        num_rollouts = args.num_rollouts or int(
-            total_timesteps // rollout_steps
-        )
+        num_rollouts = args.num_rollouts or int(total_timesteps // rollout_steps)
         log_prefix = env_name
         hparams_run = {
             "num_rollouts": num_rollouts,
@@ -244,62 +165,12 @@ def main():
             "action_dim": action_dim,
         }
         hparams_extra = {}
-    if args.model == "blr":
-        model_config = {
-            "FEATURE_TYPE": args.feature_type,
-            "MAX_DATA": total_timesteps,
-            "NUM_FEATURES": 256,
-            "NUM_SAMPLES": 10,
-            "LAM": 0.01,
-            "A0": 1.0,
-            "B0": 1.0,
-            "LENGTH_SCALE": 3.0,
-            "UPDATE_STEPS": 1,
-            "MINIBATCH_SIZE": model_minibatch_size,
-        }
-            "LENGTH_SCALE": 1.0,
-            "UPDATE_STEPS": 1,
-            "MINIBATCH_SIZE": model_minibatch_size,
-        }
-    else:
-        model_config = {
-            "LR": 1e-3,
-            "HIDDEN_DIM": 64,
-            "LEARNABLE_HIDDEN_DIM": 15,
-            "PRIOR_HIDDEN_DIM": 5,
-            "INDEX_DIM": 8,
-            "ACTIVATION": "tanh",
-            "UPDATE_STEPS": 10000,
-            "MINIBATCH_SIZE": model_minibatch_size,
-        }
 
-    config = {
-        "LR": 3e-4,
-        "NUM_ENVS": 2048,
-        "NUM_STEPS": 10,
-        "TOTAL_TIMESTEPS": 1e7,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 32,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.0,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.5,
-        "HIDDEN_DIM": 64,
-        "ACTIVATION": "tanh",
-        "ANNEAL_LR": False,
-        "NORMALIZE_ENV": True,
-        "SEED": args.seed,
-        "DEBUG": False,
-    }
-    if not args.offline:
-        config["ENV_NAME"] = args.env
-    config["NUM_UPDATES"] = (
-        int(config["TOTAL_TIMESTEPS"]) // config["NUM_STEPS"] // config["NUM_ENVS"]
+    model_config = model_config_dict(
+        args.model, max_data=total_timesteps, minibatch_size=model_minibatch_size
     )
-    config["MINIBATCH_SIZE"] = (
-        config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
+    config = ppo_config_dict(
+        args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
     )
 
     if not args.offline:
@@ -356,7 +227,7 @@ def main():
 
     seed_keys, model_keys = vsplit(seed_keys)
     models, train_state = make_batched_model(
-        args.model,
+        args.model.name,
         model_config,
         in_features,
         obs_dim,
@@ -368,7 +239,7 @@ def main():
     seed_keys, train_model_seed = vsplit(seed_keys)
     batched_rngs = make_batched_rngs(train_model_seed)
     batched_train_model = make_batched_train_model(
-        args.model, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
+        args.model.name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
 
@@ -379,8 +250,15 @@ def main():
     for b in range(B):
         seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
         logger = ExperimentLogger(seed_dir)
+        args_flat = {
+            k: v
+            for k, v in dataclasses.asdict(args).items()
+            if k not in ("ppo", "model")
+        }
+        args_flat["model"] = args.model.name
+        args_flat["seed"] = int(seeds[b])
         logger.log_hparams(
-            args={**vars(args), "seed": int(seeds[b])},
+            args=args_flat,
             ppo=config,
             model=model_config,
             run=hparams_run,
