@@ -30,6 +30,7 @@ class RunConfig:
     bonus: str = "std"
     predict_reward_terminated: bool = False
     model: str = "enn"
+    label: str = ""
     overrides: tuple[tuple[str, str | int | float | bool], ...] = ()
 
 
@@ -180,6 +181,7 @@ def sweep(
     bonus: str | Sequence[str] = "std",
     predict_reward_terminated: bool | Sequence[bool] = False,
     model: str | Sequence[str] = "enn",
+    label: str | Sequence[str] = "",
     **override_axes: float | int | str | bool | Sequence[float | int | str | bool],
 ) -> tuple[RunConfig, ...]:
     """Build a Cartesian-product grid of RunConfigs.
@@ -201,6 +203,7 @@ def sweep(
         "bonus": _axis(bonus),
         "predict_reward_terminated": _axis(predict_reward_terminated),
         "model": _axis(model),
+        "label": _axis(label),
     }
 
     ov_keys: list[str] = [k.replace("__", ".", 1) for k in override_axes]
