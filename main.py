@@ -340,7 +340,7 @@ def main():
                 loggers[b].log_dataset(_seed_slice(traj_batch, b), data_count)
             data_count += traj_batch.obs.shape[1]
             for b in range(B):
-                loggers[b].log_scalar("time/rollout", rollout_s, data_count)
+                loggers[b].log_scalar("time/rollout_s", rollout_s, data_count)
 
         # TRAIN MODEL (B seeds in parallel)
         t0 = time.perf_counter()
@@ -351,7 +351,7 @@ def main():
         model_train_s = time.perf_counter() - t0
         for b in range(B):
             loggers[b].log_loss_history(_seed_slice(history, b), j)
-            loggers[b].log_scalar("time/model_train", model_train_s, data_count)
+            loggers[b].log_scalar("time/model_train_s", model_train_s, data_count)
 
         if not args.offline:
             seed_keys, val_keys = vsplit(seed_keys)
@@ -370,7 +370,7 @@ def main():
             )
             validation_s = time.perf_counter() - t0
             for b in range(B):
-                loggers[b].log_scalar("time/validation", validation_s, data_count)
+                loggers[b].log_scalar("time/validation_s", validation_s, data_count)
 
         if not args.offline and args.debug:
             seed_keys, plot_seed = vsplit(seed_keys)
@@ -406,10 +406,12 @@ def main():
                 j,
                 seed_dirs[0],
             )
-            validation_plot_s = time.perf_counter() - t0
+            # NOTE: this wraps evaluate_validation (eval compute) AND the
+            # uncertainty plotting, so the metric reflects eval + plot time.
+            validation_eval_plot_s = time.perf_counter() - t0
             for b in range(B):
                 loggers[b].log_scalar(
-                    "time/validation_plot", validation_plot_s, data_count
+                    "time/validation_eval_plot_s", validation_eval_plot_s, data_count
                 )
 
         # BATCHED PPO TRAIN (B seeds x C configs)
