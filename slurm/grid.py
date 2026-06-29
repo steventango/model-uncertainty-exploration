@@ -96,6 +96,7 @@ def job_name(exp: Experiment, label: str = "") -> str:
 
 
 def job_names(exp: Experiment) -> set[str]:
+    """All distinct SLURM job names an experiment submits (one per label group)."""
     return {job_name(exp, cfg.label) for cfg in exp.configs}
 
 
@@ -103,6 +104,10 @@ def active_task_ids_for_experiment(
     exp: Experiment, *, user: str | None = None
 ) -> set[int]:
     active: set[int] = set()
+    # Union the active task IDs across every label-derived job name. This is correct
+    # because task_ids are globally unique across label groups (each task_id maps to
+    # exactly one label), so the per-job-name sets are disjoint — the union can never
+    # conflate one label's active task with another's.
     for name in job_names(exp):
         active |= active_task_ids(name, user=user)
     return active

@@ -12,11 +12,10 @@ import argparse
 import os
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from slurm.experiments import EXPERIMENTS
-from collections import defaultdict
-
 from slurm.grid import (
     REPO_ROOT,
     SBATCH_SCRIPT,

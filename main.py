@@ -158,6 +158,10 @@ def main():
         rollout_steps = env_params.max_steps_in_episode // 10
         num_steps = 10
         model_minibatch_size = rollout_steps
+        # Floor of the episode count: aim for roughly 1000 env-steps of data, but
+        # this is NOT a 1000-step guarantee. Integer division never rounds up and the
+        # max(1, ...) floor means a single episode for envs with max_steps in the
+        # 501-1000 range (e.g. 600 -> 1 episode -> 600 steps).
         num_episodes = max(1, 1000 // env_params.max_steps_in_episode)
         total_timesteps = env_params.max_steps_in_episode * num_episodes
         # Cap the rolling dataset buffer; the RBF feature bank places one center
