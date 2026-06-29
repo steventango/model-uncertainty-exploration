@@ -141,7 +141,14 @@ def main():
     seed_keys = jax.vmap(jax.random.key)(seeds)  # (B,) one master key per seed
 
     base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
-    base_env = make_state_reconstruction_wrapper(base_env, rollout_config["ENV_NAME"])
+    # The state-reconstruction wrapper is only needed when the model env uses the
+    # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
+    # gated on oracle_reward_terminated). Skip it when --predict_reward_terminated is
+    # set so envs without a registered wrapper don't hit the wrapper's ValueError.
+    if not args.predict_reward_terminated:
+        base_env = make_state_reconstruction_wrapper(
+            base_env, rollout_config["ENV_NAME"]
+        )
     action_space = base_env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
