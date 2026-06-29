@@ -281,6 +281,8 @@ def main():
                 )
             if config["DEBUG"]:
                 seed_keys, plot_seed = vsplit(seed_keys)
+                # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
+                # are all sliced to seed 0), not all B seeds.
                 validation.evaluate_validation(
                     unstack_train_state(models, 0),
                     base_env,
@@ -301,6 +303,8 @@ def main():
 
         if config["DEBUG"]:
             seed_keys, unc_seed = vsplit(seed_keys)
+            # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir are
+            # all sliced to seed 0), not all B seeds.
             plotting.evaluate_and_plot_uncertainty(
                 unstack_train_state(models, 0),
                 base_env,

@@ -16,7 +16,10 @@ def evaluate_policy(eval_config, env, env_params, rollout_fn, eval_train_state, 
     _, traj_batch = rollout_fn(runner_state)
     done = traj_batch.info["returned_episode"]
     returns = traj_batch.info["returned_episode_returns"]
-    return jnp.mean(returns, where=done)
+    # Guard against NaN when no episode completed (done all-False): the masked
+    # mean is then 0/0 = NaN, so fall back to 0.0 in that case.
+    mean_return = jnp.mean(returns, where=done)
+    return jnp.where(jnp.any(done), mean_return, 0.0)
 
 
 vevaluate_policy = nnx.jit(
