@@ -113,6 +113,10 @@ def main():
         num_steps = 14
         model_minibatch_size = min(N, 256)
         total_timesteps = N
+        # Single source of truth for the dataset buffer size; the RBF feature
+        # bank places one center per stored datapoint, so NUM_FEATURES (rbf) is
+        # derived from this same value (see model_config_dict).
+        dataset_size = total_timesteps
 
         num_rollouts = args.num_rollouts if args.num_rollouts is not None else 1
         log_prefix = f"plant_{args.dataset.replace('/', '_')}"
@@ -156,6 +160,10 @@ def main():
         model_minibatch_size = rollout_steps
         num_episodes = 5
         total_timesteps = env_params.max_steps_in_episode * num_episodes
+        # Cap the rolling dataset buffer; the RBF feature bank places one center
+        # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
+        # value (see model_config_dict) to keep the two in lockstep.
+        dataset_size = min(10000, total_timesteps)
 
         num_rollouts = args.num_rollouts or int(total_timesteps // rollout_steps)
         log_prefix = env_name
@@ -167,7 +175,7 @@ def main():
         hparams_extra = {}
 
     model_config = model_config_dict(
-        args.model, max_data=total_timesteps, minibatch_size=model_minibatch_size
+        args.model, max_data=dataset_size, minibatch_size=model_minibatch_size
     )
     config = ppo_config_dict(
         args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
@@ -179,7 +187,7 @@ def main():
             "NUM_ENVS": 1,
             "NUM_STEPS": rollout_steps,
             "TOTAL_TIMESTEPS": total_timesteps,
-            "DATASET_SIZE": min(10000, total_timesteps),
+            "DATASET_SIZE": dataset_size,
         }
         eval_config = {
             **rollout_config,

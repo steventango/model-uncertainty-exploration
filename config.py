@@ -36,24 +36,6 @@ class BLRConfig:
 
 
 @dataclass(frozen=True)
-class SKBLRConfig:
-    """sklearn BayesianRidge"""
-
-    name: ClassVar[str] = "skblr"
-    num_features: int | tuple[int, ...] = 256
-    length_scale: float | tuple[float, ...] = 1.0
-    num_samples: int | tuple[int, ...] = 10
-    update_steps: int | tuple[int, ...] = 1
-
-
-@dataclass(frozen=True)
-class SKARDConfig(SKBLRConfig):
-    """sklearn ARD Regression"""
-
-    name: ClassVar[str] = "skard"
-
-
-@dataclass(frozen=True)
 class PPOConfig:
     """PPO hyperparameters."""
 
@@ -79,8 +61,6 @@ class PPOConfig:
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
-    | Annotated[SKBLRConfig, tyro.conf.subcommand("skblr")]
-    | Annotated[SKARDConfig, tyro.conf.subcommand("skard")]
 )
 
 
@@ -110,10 +90,10 @@ def candidate_configs(m):
     If no field is a tuple, returns a 1-tuple containing the original config unchanged.
 
     Example:
-        candidate_configs(SKBLRConfig(length_scale=(0.5, 1.0, 3.0), num_features=64))
-        # → (SKBLRConfig(length_scale=0.5, num_features=64),
-        #    SKBLRConfig(length_scale=1.0, num_features=64),
-        #    SKBLRConfig(length_scale=3.0, num_features=64))
+        candidate_configs(BLRConfig(length_scale=(0.5, 1.0, 3.0), num_features=64))
+        # → (BLRConfig(length_scale=0.5, num_features=64),
+        #    BLRConfig(length_scale=1.0, num_features=64),
+        #    BLRConfig(length_scale=3.0, num_features=64))
     """
     axes = {
         f.name: getattr(m, f.name)
@@ -128,14 +108,16 @@ def candidate_configs(m):
 
 
 def model_config_dict(
-    m: ENNConfig | BLRConfig | SKBLRConfig | SKARDConfig,
+    m: ENNConfig | BLRConfig,
     *,
     max_data: int | float,
     minibatch_size: int | float,
 ) -> dict:
     """Convert a committed (scalar) model config to the UPPERCASE dict the registry expects.
 
-    Injects runtime-derived keys MAX_DATA (for blr/gp/oilmm) and MINIBATCH_SIZE.
+    Injects the runtime-derived key MINIBATCH_SIZE. For BLR with RBF features,
+    NUM_FEATURES is overridden to max_data (the dataset buffer size) because the
+    RBF bank places one center per stored datapoint.
     """
     d: dict = {k.upper(): v for k, v in dataclasses.asdict(m).items()}
     d["MINIBATCH_SIZE"] = minibatch_size

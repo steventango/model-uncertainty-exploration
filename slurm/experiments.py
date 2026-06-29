@@ -1,6 +1,6 @@
 from itertools import product
 
-from slurm.grid import CLASSIC_ENVS, Experiment, RunConfig, sweep
+from slurm.grid import CLASSIC_ENVS, Experiment, RunConfig
 
 MODES = ("mean", "sample")
 REWARD_WEIGHTS = ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0))
@@ -36,19 +36,6 @@ oracle_eig = Experiment(
     description="oracle reward; explore/eig vs exploit (no intrinsic bonus)",
 )
 
-skblr_length_scale = Experiment(
-    name="skblr_length_scale",
-    configs=sweep(
-        env=CLASSIC_ENVS,
-        alpha=0.0,
-        beta=1.0,
-        mode="sample",
-        model="skblr",
-        model__length_scale=(1.0, 3.0, 10.0),
-    ),
-    description="skblr; length_scale in {0.5, 1.0, 3.0}",
-)
-
 EXPERIMENTS: dict[str, Experiment] = {
-    exp.name: exp for exp in (classic_grid, eig_a0b1, oracle_eig, skblr_length_scale)
+    exp.name: exp for exp in (classic_grid, eig_a0b1, oracle_eig)
 }
