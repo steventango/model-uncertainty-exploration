@@ -701,7 +701,7 @@ dependencies = [
     { name = "jax", extra = ["cuda12"] },
     { name = "minari" },
     { name = "optax" },
-    { name = "orbax" },
+    { name = "orbax-checkpoint" },
     { name = "pyyaml" },
     { name = "seaborn" },
     { name = "setuptools" },
@@ -729,7 +729,7 @@ requires-dist = [
     { name = "jax", extras = ["cuda12"], specifier = ">=0.9.2" },
     { name = "minari", specifier = ">=0.5.3" },
     { name = "optax", specifier = ">=0.2.0" },
-    { name = "orbax", specifier = ">=0.1.9" },
+    { name = "orbax-checkpoint", specifier = ">=0.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "setuptools", specifier = "<82" },
@@ -1003,15 +1003,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/5c/0b/3bdc0e698cb0d264e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/63/53/6a81a6ebb1739f19c32002139719d4ee021a349d5bdbe066910feed327a1/optimistix-0.1.0-py3-none-any.whl", hash = "sha256:c8edda7bf7fe48839c93fcd72bce750c950ed9f7033158303150b7ab395add81", size = 101740, upload-time = "2026-02-16T13:35:42.971Z" },
 ]
-
-[[package]]
-name = "orbax"
-version = "0.1.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "orbax-checkpoint" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c7/78/0e144f12703c95d4495e9abc390c2f548ee9f24d2e487137108a921b1d81/orbax-0.1.9.tar.gz", hash = "sha256:42dd487ceef9fbf027f4720f3d041686af75120466a528a8a8141226bc197218", size = 1649, upload-time = "2023-09-06T20:43:02.819Z" }
 
 [[package]]
 name = "orbax-checkpoint"

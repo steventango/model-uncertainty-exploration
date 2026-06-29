@@ -28,6 +28,15 @@ class PlantEnvParams:
 
 
 class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
+    """Offline plant-growth environment.
+
+    This env does not simulate its own dynamics: ``step_env`` replays the
+    ``next_obs`` already stored on the state rather than computing a transition.
+    It is therefore only meaningful when driven by a ``ModelEnvironment`` that
+    supplies predicted transitions and uses the oracle reward (the env's
+    ``compute_reward``); it has no standalone ``default_params``.
+    """
+
     def __init__(
         self,
         act_dim: int,
