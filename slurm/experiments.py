@@ -71,6 +71,37 @@ blr_enn = Experiment(
     description="blr vs enn vs blr_rff; explore-only (alpha=0 beta=1) eig bonus, sample mode",
 )
 
+classic_ln = Experiment(
+    name="classic_ln",
+    configs=(
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="ln_off",
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="ln_on",
+            ppo__use_layer_norm=True,
+        ),
+    ),
+    description="LayerNorm ablation on the PPO ActorCritic; explore-only (alpha=0 beta=1) eig bonus, sample mode",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
-    exp.name: exp for exp in (classic_grid, eig_a0b1, oracle_eig, blr_enn)
+    exp.name: exp
+    for exp in (
+        classic_grid,
+        eig_a0b1,
+        oracle_eig,
+        blr_enn,
+        classic_ln,
+    )
 }
