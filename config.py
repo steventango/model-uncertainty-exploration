@@ -12,6 +12,7 @@ class ENNConfig:
 
     name: ClassVar[str] = "enn"
     lr: float | tuple[float, ...] = 1e-3
+    weight_decay: float | tuple[float, ...] = 1e-4
     hidden_dim: int | tuple[int, ...] = 64
     learnable_hidden_dim: int | tuple[int, ...] = 15
     prior_hidden_dim: int | tuple[int, ...] = 5

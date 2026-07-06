@@ -114,6 +114,34 @@ def make_batched_validation_metrics():
     )
 
 
+def make_per_seed_validation_metrics():
+    """Vmap validation_metrics over the model axis AND the data axis (each seed has its own val slice)."""
+    return nnx.jit(
+        nnx.vmap(
+            validation_metrics,
+            in_axes=(0, 0, 0, 0, 0, 0, 0),
+            out_axes=0,
+        )
+    )
+
+
+def held_out_val_data(dataset, train_ptr, data_count):
+    """Extract the held-out validation slice [train_ptr, data_count) from the buffer.
+
+    Returns (val_obs, val_act, val_true_delta_obs, val_true_reward, val_true_terminated)
+    where each array has shape (B, data_count - train_ptr, ...).
+    Targets are derived from the buffer, no env ground truth required.
+    """
+    val = jax.tree_util.tree_map(
+        lambda x: jax.lax.dynamic_slice_in_dim(x, train_ptr, data_count - train_ptr, axis=1),
+        dataset,
+    )
+    val_true_delta_obs = val.info["next_obs"] - val.obs
+    val_true_reward = val.reward
+    val_true_terminated = val.terminated.astype(jnp.float32)
+    return val.obs, val.action, val_true_delta_obs, val_true_reward, val_true_terminated
+
+
 def evaluate_validation(
     model,
     env,
