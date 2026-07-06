@@ -20,7 +20,7 @@ from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_validation
-from model_env import ModelEnvironment
+from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
@@ -82,7 +82,7 @@ def main():
 
     if args.offline:
         print(f"Loading offline dataset: {args.dataset}")
-        all_transitions, action_space, observation_space, init_areas, _ = (
+        all_transitions, action_space, observation_space, _ = (
             load_offline_transitions(args.dataset)
         )
         action_dim = action_space.shape[0]
@@ -96,7 +96,6 @@ def main():
             area_max=float(observation_space.high[AREA_INDEX]),
             act_low=jnp.asarray(action_space.low, dtype=jnp.float32),
             act_high=jnp.asarray(action_space.high, dtype=jnp.float32),
-            init_areas=init_areas,
             max_steps_in_episode=14,
         )
 
@@ -311,12 +310,20 @@ def main():
 
     if args.offline:
         oracle_reward_terminated = True
+    # Offline has no real env to reset; "env" falls back to the dataset's
+    # initial-state distribution ("init").
+    reset_source = (
+        "init" if args.offline and args.reset_source == "env" else args.reset_source
+    )
     model_env = ModelEnvironment(
         env,
         env_params,
         prediction_mode=args.model_env_mode,
         explore_bonus=args.explore_bonus,
         oracle_reward_terminated=oracle_reward_terminated,
+        reset_source=reset_source,
+        max_steps_in_episode=args.rollout_length,
+        uncertainty_threshold=args.uncertainty_threshold,
     )
     if not args.offline:
         batched_eval = evaluation.make_batched_evaluate_policy(
@@ -455,6 +462,15 @@ def main():
         model_env_params_b = model_env.default_params.replace(
             model=models, alpha=alphas, beta=betas
         )
+        if reset_source != "env":
+            # Per-seed buffer + reset sampling weights (uniform over the full
+            # buffer for "buffer", over episode-start rows for "init").
+            weights = reset_weights(
+                dataset.terminated, dataset.truncated, data_count, reset_source
+            )
+            model_env_params_b = model_env_params_b.replace(
+                init_obs=dataset.obs, init_weights=weights
+            )
         seed_keys, train_seed = vsplit(seed_keys)
         train_rng = vsplit(train_seed, num_configs).T  # (B, C)
         t0 = time.perf_counter()

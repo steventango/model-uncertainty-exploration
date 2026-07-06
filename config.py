@@ -74,6 +74,9 @@ class Args:
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig"] = "eig"
     predict_reward_terminated: bool = False
+    reset_source: Literal["env", "buffer", "init"] = "env"
+    rollout_length: int | None = None
+    uncertainty_threshold: float | None = None
     num_rollouts: int | None = None
     offline: bool = False
     dataset: str = "plant-data/visu-v27"
