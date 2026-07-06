@@ -17,7 +17,7 @@ import plotting
 import validation
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from environments import make_state_reconstruction_wrapper
+from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
@@ -31,7 +31,7 @@ from ppo import (
     select_config_train_state,
     unstack_train_state,
 )
-from wrappers import ClipAction, LogWrapper, VecEnv
+from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
 
 
 def _wrap_env(env, discrete):
@@ -128,12 +128,26 @@ def main():
         hparams_extra = {}
 
     else:
-        base_env, env_params = gymnax.make(args.env)
+        is_brax = args.env in BRAX_ENVS
+        if is_brax:
+            backend = BRAX_BACKENDS.get(args.env, "positional")
+            base_env = BraxGymnaxWrapper(args.env, backend=backend)
+            env_params = base_env.default_params
+        else:
+            base_env, env_params = gymnax.make(args.env)
+
+        if is_brax:
+            predict_reward_terminated = args.predict_reward_terminated or not hasattr(
+                base_env, "obs_to_reward_terminated"
+            )
+        else:
+            predict_reward_terminated = args.predict_reward_terminated
+        oracle_reward_terminated = not predict_reward_terminated
         # The state-reconstruction wrapper is only needed when the model env uses the
         # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
         # gated on oracle_reward_terminated). Skip it when --predict_reward_terminated is
         # set so envs without a registered wrapper don't hit the wrapper's ValueError.
-        if not args.predict_reward_terminated:
+        if not predict_reward_terminated:
             base_env = make_state_reconstruction_wrapper(base_env, args.env)
         action_space = base_env.action_space(env_params)
         discrete = isinstance(action_space, spaces.Discrete)
@@ -142,27 +156,36 @@ def main():
         env = _wrap_env(base_env, discrete)
 
         env_name = args.env
-        (
-            val_obs,
-            val_act,
-            val_true_delta_obs,
-            val_true_reward,
-            val_true_terminated,
-        ) = validation.generate_validation_data(base_env, env_params, env_name)
+        if is_brax:
+            (
+                val_obs,
+                val_act,
+                val_true_delta_obs,
+                val_true_reward,
+                val_true_terminated,
+            ) = validation.generate_brax_validation_data(base_env, env_params)
+        else:
+            (
+                val_obs,
+                val_act,
+                val_true_delta_obs,
+                val_true_reward,
+                val_true_terminated,
+            ) = validation.generate_validation_data(base_env, env_params, env_name)
 
         obs_dim = env.observation_space(env_params).shape[0]
         in_features = obs_dim + action_dim
-        out_features = obs_dim + 2 if args.predict_reward_terminated else obs_dim
-        predict_reward_terminated = args.predict_reward_terminated
+        out_features = obs_dim + 2 if predict_reward_terminated else obs_dim
 
-        rollout_steps = env_params.max_steps_in_episode // 10
+        rollout_steps = env_params.max_steps_in_episode # // 10
         num_steps = 10
         model_minibatch_size = rollout_steps
-        # Floor of the episode count: aim for roughly 1000 env-steps of data, but
-        # this is NOT a 1000-step guarantee. Integer division never rounds up and the
-        # max(1, ...) floor means a single episode for envs with max_steps in the
-        # 501-1000 range (e.g. 600 -> 1 episode -> 600 steps).
-        num_episodes = max(1, 1000 // env_params.max_steps_in_episode)
+        # Floor of the episode count: aim for roughly max_steps env-steps of data,
+        # but this is NOT a step-count guarantee. Integer division never rounds up
+        # and the max(1, ...) floor means a single episode for envs with
+        # max_steps_in_episode in the upper half of the range.
+        max_steps = 100_000 if is_brax else 1000
+        num_episodes = max(1, max_steps // env_params.max_steps_in_episode)
         total_timesteps = env_params.max_steps_in_episode * num_episodes
         # Cap the rolling dataset buffer; the RBF feature bank places one center
         # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
@@ -281,9 +304,8 @@ def main():
         seed_dirs.append(seed_dir)
         loggers.append(logger)
 
-    oracle_reward_terminated = (
-        True if args.offline else not args.predict_reward_terminated
-    )
+    if args.offline:
+        oracle_reward_terminated = True
     model_env = ModelEnvironment(
         env,
         env_params,
@@ -376,7 +398,7 @@ def main():
             for b in range(B):
                 loggers[b].log_scalar("time/validation_s", validation_s, data_count)
 
-        if not args.offline and args.debug:
+        if not args.offline and args.debug and not is_brax:
             seed_keys, plot_seed = vsplit(seed_keys)
             seed_keys, unc_seed = vsplit(seed_keys)
             t0 = time.perf_counter()

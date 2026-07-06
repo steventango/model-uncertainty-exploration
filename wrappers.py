@@ -7,6 +7,11 @@ from functools import partial
 from typing import Optional, Tuple, Union
 from gymnax.environments import environment, spaces
 
+from compat import patch_brax_fluid
+patch_brax_fluid()
+
+from brax import envs
+from brax.envs.wrappers.training import EpisodeWrapper
 
 class GymnaxWrapper(object):
     """Base class for Gymnax wrappers."""
@@ -118,6 +123,60 @@ class LogWrapper(GymnaxWrapper):
         info["timestep"] = state.timestep
         info["returned_episode"] = done
         return obs, state, reward, terminated, truncated, info
+
+
+class BraxGymnaxWrapper:
+    def __init__(self, env_name, backend="positional", episode_length=1000):
+        env = envs.get_environment(env_name=env_name, backend=backend)
+        env = EpisodeWrapper(env, episode_length=episode_length, action_repeat=1)
+        self._env = env
+        self._episode_length = episode_length
+
+    @property
+    def default_params(self):
+        return environment.EnvParams(max_steps_in_episode=self._episode_length)
+
+    def reset(self, key, params=None):
+        state = self._env.reset(key)
+        return state.obs, state
+
+    def reset_env(self, key, params=None):
+        state = self._env.reset(key)
+        return state.obs, state
+
+    def step(self, key, state, action, params=None):
+        key, key_reset = jax.random.split(key)
+        next_state = self._env.step(state, action)
+        truncated = next_state.info["truncation"] > 0.5
+        terminated = (next_state.done > 0.5) & ~truncated
+        done = terminated | truncated
+        info = {"next_obs": next_state.obs}
+        reset_state = self._env.reset(key_reset)
+        state_out = jax.tree_util.tree_map(
+            lambda r, s: jax.lax.select(done, r, s), reset_state, next_state
+        )
+        obs_out = jax.lax.select(done, reset_state.obs, next_state.obs)
+        return obs_out, state_out, next_state.reward, terminated, truncated, info
+
+    def step_env(self, key, state, action, params=None):
+        next_state = self._env.step(state, action)
+        truncated = next_state.info["truncation"] > 0.5
+        terminated = (next_state.done > 0.5) & ~truncated
+        return next_state.obs, next_state, next_state.reward, terminated, {}
+
+    def observation_space(self, params):
+        return spaces.Box(
+            low=-jnp.inf,
+            high=jnp.inf,
+            shape=(self._env.observation_size,),
+        )
+
+    def action_space(self, params):
+        return spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(self._env.action_size,),
+        )
 
 
 class ClipAction(GymnaxWrapper):

@@ -23,6 +23,7 @@ dependencies = [
     "tqdm>=4.67.3",
     "tyro>=1.0.12",
     "orbax-checkpoint>=0.5.0",
+    "brax>=0.14.2",
 ]
 
 [tool.uv.sources]

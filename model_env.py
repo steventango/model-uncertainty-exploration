@@ -144,12 +144,17 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             self._real_env.observation_space(params.env_params).high,
         )
         if self.oracle_reward_terminated:
-            reconstructed = self._real_env.get_state(
-                state.obs, state.last_action, state.time, next_obs=obs
-            )
-            _, _, r_exploit, terminated, _ = self._real_env.step_env(
-                key, reconstructed, action, params.env_params
-            )
+            if hasattr(self._real_env, "obs_to_reward_terminated"):
+                r_exploit, terminated = self._real_env.obs_to_reward_terminated(
+                    state.obs, action, obs
+                )
+            else:
+                reconstructed = self._real_env.get_state(
+                    state.obs, state.last_action, state.time, next_obs=obs
+                )
+                _, _, r_exploit, terminated, _ = self._real_env.step_env(
+                    key, reconstructed, action, params.env_params
+                )
         else:
             r_exploit = model.denormalize_reward(y[..., -2])
             terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
