@@ -79,6 +79,7 @@ class Args:
     dataset: str = "plant-data/visu-v27"
     debug: bool = False
     log_dir: str | None = None
+    label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
 
