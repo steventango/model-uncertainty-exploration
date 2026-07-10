@@ -76,6 +76,7 @@ def load_offline_transitions(
         terminated=terminated,
         truncated=truncated,
         action=action,
+        raw_action=action,
         value=zeros,
         next_value=zeros,
         reward=reward,
