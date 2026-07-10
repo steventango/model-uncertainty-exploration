@@ -198,6 +198,54 @@ classic_plan_every_budget = Experiment(
     ),
 )
 
+# ENN base LayerNorm under plan-every: cheap-model cells (primary) plus full
+# budget + LN as a ceiling control.
+classic_plan_every_enn_ln = Experiment(
+    name="classic_plan_every_enn_ln",
+    configs=(
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="cheap_model_ln_full_ppo",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            model__update_steps=1000,
+            model__use_layer_norm=True,
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="cheap_model_ln_cheap_ppo",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            model__update_steps=1000,
+            ppo__total_timesteps=1e6,
+            model__use_layer_norm=True,
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="full_model_ln_full_ppo",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            model__use_layer_norm=True,
+        ),
+    ),
+    description=(
+        "plan every step, 100 real steps; ENN base LayerNorm ablation — "
+        "cheap+LN+full PPO, cheap+LN+cheap PPO, full+LN+full PPO"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -210,5 +258,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_fast,
         classic_plan_every_fast_ln,
         classic_plan_every_budget,
+        classic_plan_every_enn_ln,
     )
 }
