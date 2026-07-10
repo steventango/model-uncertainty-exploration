@@ -290,6 +290,38 @@ classic_plan_every_cheap_ppo_lr = Experiment(
     ),
 )
 
+# Cheap PPO (1e6) + cheap ENN (update_steps//10): can a non-zero entropy
+# bonus recover quality? Default ent_coef is 0.
+_CHEAP_PPO_ENTS = (
+    (0.0, "0"),
+    (0.01, "0p01"),
+    (0.1, "0p1"),
+)
+classic_plan_every_cheap_ppo_ent = Experiment(
+    name="classic_plan_every_cheap_ppo_ent",
+    configs=tuple(
+        cfg
+        for ent, ent_tag in _CHEAP_PPO_ENTS
+        for cfg in sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label=f"ent_{ent_tag}",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            model__update_steps=1000,
+            ppo__total_timesteps=1e6,
+            ppo__ent_coef=ent,
+        )
+    ),
+    description=(
+        "plan every step, 100 real steps; ENN update_steps//10 + cheap PPO (1e6); "
+        "PPO ent_coef sweep {0, 0.01, 0.1}"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -304,5 +336,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_budget,
         classic_plan_every_enn_ln,
         classic_plan_every_cheap_ppo_lr,
+        classic_plan_every_cheap_ppo_ent,
     )
 }
