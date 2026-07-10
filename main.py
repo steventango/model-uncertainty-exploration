@@ -79,6 +79,13 @@ def main():
         help="Model env transition mode: mean (base net) or sample (epinet at z[0])",
     )
     parser.add_argument(
+        "--explore_bonus",
+        type=str,
+        default="std",
+        choices=["std", "eig"],
+        help="Intrinsic exploration bonus: std (epinet std) or eig (½ log(1 + σ²_ep))",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug plots (true vs predicted, uncertainty heatmaps)",
@@ -234,6 +241,7 @@ def main():
         env,
         env_params,
         prediction_mode=args.model_env_mode,
+        explore_bonus=args.explore_bonus,
     )
     model_env = _wrap_env(model_env, discrete)
     EXPLORE, EVAL = 0, 1
@@ -243,7 +251,12 @@ def main():
     batched_train_jit = nnx.jit(
         make_batched_train(model_env, model_env.default_params, config)
     )
-    eval_rollout_fn = make_rollout(eval_config, env, env_params, training=False)
+    batched_eval = evaluation.make_batched_evaluate_policy(
+        eval_config,
+        env,
+        env_params,
+        make_rollout(eval_config, env, env_params, training=False),
+    )
 
     seed_keys, runner_seed = vsplit(seed_keys)
     runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
@@ -358,14 +371,15 @@ def main():
                 )
 
         seed_keys, eval_keys = vsplit(seed_keys)
-        mean_returns = evaluation.vevaluate_policy(
-            eval_config, env, env_params, eval_rollout_fn, eval_train_state, eval_keys
-        )  # (B,)
+        mean_returns = batched_eval(eval_train_state, eval_keys)  # (B,)
         for b in range(B):
             loggers[b].log_eval_return(pointer, mean_returns[b])
 
     for logger in loggers:
         logger.close()
+
+    # Completion sentinel for resubmission tooling (slurm/vulcan/grid_tasks.py).
+    open(os.path.join(log_dir, "COMPLETE"), "w").close()
 
 
 if __name__ == "__main__":

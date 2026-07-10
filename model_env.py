@@ -42,15 +42,21 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         env_params: environment.EnvParams,
         samples: int = 10,
         prediction_mode: Literal["mean", "sample"] = "mean",
+        explore_bonus: Literal["std", "eig"] = "std",
     ):
         if prediction_mode not in ("mean", "sample"):
             raise ValueError(
                 f"prediction_mode must be 'mean' or 'sample', got {prediction_mode!r}"
             )
+        if explore_bonus not in ("std", "eig"):
+            raise ValueError(
+                f"explore_bonus must be 'std' or 'eig', got {explore_bonus!r}"
+            )
         self._real_env = env
         self._real_env_params = env_params
         self.samples = samples
         self.prediction_mode = prediction_mode
+        self.explore_bonus = explore_bonus
 
     @property
     def default_params(self) -> ModelEnvParams:
@@ -118,7 +124,19 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             y = y_base[0]
         else:
             y = y_samples[0]
-        r_intrinsic = y_samples.std(axis=0).mean()
+        # NOTE: the "eig" and "std" bonuses are on different scales and are NOT
+        # magnitude-matched. "std" is the posterior standard deviation (linear,
+        # in normalized output units) while "eig" is ½ log(1 + σ²_ep) nats
+        # (logarithmic in variance). Consequently --beta is not directly
+        # comparable across the two bonus types and must be retuned when
+        # switching between them.
+        if self.explore_bonus == "eig":
+            # EIG under Gaussian approximation: ½ log(1 + σ²_ep / σ²)
+            # Operating in normalized prediction space so σ² ≈ 1, giving ½ log(1 + σ²_ep).
+            var_ep = y_samples.var(axis=0)
+            r_intrinsic = 0.5 * jnp.log(1.0 + var_ep).mean()
+        else:
+            r_intrinsic = y_samples.std(axis=0).mean()
 
         delta_obs = model.denormalize_delta_obs(y[..., :-2])
         obs = state.obs + delta_obs
