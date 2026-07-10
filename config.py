@@ -77,6 +77,7 @@ class Args:
     predict_reward_terminated: bool = False
     reset_source: Literal["env", "buffer", "init"] = "env"
     rollout_length: int | None = None
+    steps_per_rollout: int | None = None
     uncertainty_threshold: float | None = None
     num_rollouts: int | None = None
     offline: bool = False
