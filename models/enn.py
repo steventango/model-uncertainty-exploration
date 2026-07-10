@@ -185,6 +185,7 @@ def _make_batched_model(
             model_config["PRIOR_HIDDEN_DIM"],
             out_features,
             model_config["INDEX_DIM"],
+            use_layer_norm=model_config.get("USE_LAYER_NORM", False),
             rngs=nnx.Rngs(params=key),
         )
         model = ENNModel(

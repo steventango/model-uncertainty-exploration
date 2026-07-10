@@ -18,6 +18,7 @@ class ENNConfig:
     index_dim: int | tuple[int, ...] = 8
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
+    use_layer_norm: bool = False
 
 
 @dataclass(frozen=True)
