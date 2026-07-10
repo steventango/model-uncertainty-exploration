@@ -11,6 +11,7 @@ EXPS=(
   classic_plan_every_enn_ln
   classic_plan_every_cheap_ppo_lr
   classic_plan_every_cheap_ppo_ent
+  classic_plan_every_cheap_model_long
 )
 
 for exp in "${EXPS[@]}"; do
@@ -52,17 +53,28 @@ uv run python scripts/plot_learning_curves.py \
   --output runs/compare_plan_every/C_cheap_ppo_ln_lr.png \
   || echo "plot C skipped (no scalar data yet)"
 
-# D. Cheap PPO: does entropy regularization recover full plan-every?
+# D. Cheap PPO + cheap model: does entropy recover cheap_model_full_ppo?
 uv run python scripts/plot_learning_curves.py \
   --root "${ROOTS[@]}" \
   --variants \
-    classic_plan_every/enn \
+    classic_plan_every_budget/cheap_model_full_ppo \
     classic_plan_every_cheap_ppo_ent/ent_0 \
     classic_plan_every_cheap_ppo_ent/ent_0p01 \
     classic_plan_every_cheap_ppo_ent/ent_0p1 \
   --smooth ema \
   --output runs/compare_plan_every/D_cheap_ppo_ent.png \
   || echo "plot D skipped (no scalar data yet)"
+
+# E. Long cheap-model + full-PPO run vs 100-step budget reference.
+uv run python scripts/plot_learning_curves.py \
+  --root "${ROOTS[@]}" \
+  --variants \
+    classic_plan_every/enn \
+    classic_plan_every_budget/cheap_model_full_ppo \
+    classic_plan_every_cheap_model_long/cheap_model_full_ppo \
+  --smooth ema \
+  --output runs/compare_plan_every/E_cheap_model_long.png \
+  || echo "plot E skipped (no scalar data yet)"
 
 
 # B. Does ENN model LayerNorm help? One plot per (model, PPO) budget pair.

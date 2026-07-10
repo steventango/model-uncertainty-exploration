@@ -41,6 +41,9 @@ class Experiment:
     base_seed: int = 0
     num_seeds: int = 30
     description: str = ""
+    # Optional sbatch overrides (CLI flags beat #SBATCH in run.sbatch).
+    time_limit: str = "3:00:00"
+    mem_per_cpu: str = "32G"
 
     @property
     def num_tasks(self) -> int:

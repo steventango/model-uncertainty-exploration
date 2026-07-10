@@ -36,6 +36,8 @@ def _sbatch_args(
     name = job_name(exp, label)
     args = [
         f"--job-name={name}",
+        f"--time={exp.time_limit}",
+        f"--mem-per-cpu={exp.mem_per_cpu}",
         f"--export=ALL,REPO_ROOT={REPO_ROOT},EXPERIMENT={exp.name}",
         f"--array={array_spec(to_submit)}",
         str(SBATCH_SCRIPT),
@@ -101,7 +103,8 @@ def _cmd_submit(args: argparse.Namespace, experiments: dict[str, Experiment]) ->
         label_note = f", label={label!r}" if label else ""
         print(
             f"Submitted {name} array job {job_id} "
-            f"({len(task_ids)} tasks, 1 full L40S x 3h each{label_note})"
+            f"({len(task_ids)} tasks, 1 full L40S x {exp.time_limit} "
+            f"/ {exp.mem_per_cpu} each{label_note})"
         )
         print(f"Monitor: squeue -u $USER -j {job_id}")
         print(f"Logs:    /scratch/$USER/logs/mue/{name}/{job_id}_*.out")

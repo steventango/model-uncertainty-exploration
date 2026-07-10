@@ -322,6 +322,31 @@ classic_plan_every_cheap_ppo_ent = Experiment(
     ),
 )
 
+# Best so-far setting (cheap ENN + full PPO, plan-every) run longer to check
+# that return does not collapse after 100 real steps. 6h / 128G wall budget.
+classic_plan_every_cheap_model_long = Experiment(
+    name="classic_plan_every_cheap_model_long",
+    configs=tuple(
+        sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="cheap_model_full_ppo",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+        )
+    ),
+    time_limit="6:00:00",
+    mem_per_cpu="128G",
+    description=(
+        "plan every step, up to 1000 real steps (or 6h timeout); "
+        "ENN update_steps//10 + full PPO; stress-test post-100 stability"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -337,5 +362,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_enn_ln,
         classic_plan_every_cheap_ppo_lr,
         classic_plan_every_cheap_ppo_ent,
+        classic_plan_every_cheap_model_long,
     )
 }
