@@ -12,6 +12,7 @@ import argparse
 import os
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from slurm.experiments import EXPERIMENTS
@@ -20,16 +21,21 @@ from slurm.grid import (
     SBATCH_SCRIPT,
     SCRIPT_DIR,
     Experiment,
+    job_name,
     tasks_to_submit,
 )
 from slurm.queue import array_spec
 
 
 def _sbatch_args(
-    exp: Experiment, to_submit: list[int], account: str | None
+    exp: Experiment,
+    label: str,
+    to_submit: list[int],
+    account: str | None,
 ) -> list[str]:
+    name = job_name(exp, label)
     args = [
-        f"--job-name={exp.name}",
+        f"--job-name={name}",
         f"--export=ALL,REPO_ROOT={REPO_ROOT},EXPERIMENT={exp.name}",
         f"--array={array_spec(to_submit)}",
         str(SBATCH_SCRIPT),
@@ -37,6 +43,13 @@ def _sbatch_args(
     if account:
         args.insert(1, f"--account={account}")
     return args
+
+
+def _tasks_by_label(exp: Experiment, task_ids: list[int]) -> dict[str, list[int]]:
+    groups: dict[str, list[int]] = defaultdict(list)
+    for task_id in task_ids:
+        groups[exp.configs[task_id].label].append(task_id)
+    return dict(groups)
 
 
 def _cmd_list(experiments: dict[str, Experiment]) -> int:
@@ -57,7 +70,7 @@ def _cmd_submit(args: argparse.Namespace, experiments: dict[str, Experiment]) ->
     to_submit, complete, in_progress = tasks_to_submit(
         exp, skip_active=not args.include_active
     )
-    sbatch_args = _sbatch_args(exp, to_submit, args.account)
+    by_label = _tasks_by_label(exp, to_submit)
 
     if args.dry_run:
         print(f"Experiment: {exp.name}")
@@ -66,24 +79,32 @@ def _cmd_submit(args: argparse.Namespace, experiments: dict[str, Experiment]) ->
             f"Complete: {complete} | In progress: {in_progress} | "
             f"To submit: {len(to_submit)}"
         )
-        print(f"Would run: sbatch {' '.join(sbatch_args)}")
+        for label, task_ids in sorted(by_label.items()):
+            sbatch_args = _sbatch_args(exp, label, task_ids, args.account)
+            label_note = f" (label={label!r})" if label else ""
+            print(f"Would run{label_note}: sbatch {' '.join(sbatch_args)}")
         return 0
 
     if not to_submit:
         print("Nothing to submit (all tasks complete or already queued/running).")
         return 0
 
-    log_dir = Path("/scratch") / os.environ.get("USER", "") / "logs" / "mue" / exp.name
-    log_dir.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["sbatch", *sbatch_args], capture_output=True, text=True, check=True
-    )
-    job_id = result.stdout.split()[-1]
-    print(
-        f"Submitted array job {job_id} ({len(to_submit)} tasks, 1 full L40S x 3h each)"
-    )
-    print(f"Monitor: squeue -u $USER -j {job_id}")
-    print(f"Logs:    /scratch/$USER/logs/mue/{exp.name}/{job_id}_*.out")
+    scratch = Path("/scratch") / os.environ.get("USER", "") / "logs" / "mue"
+    for label, task_ids in sorted(by_label.items()):
+        name = job_name(exp, label)
+        (scratch / name).mkdir(parents=True, exist_ok=True)
+        sbatch_args = _sbatch_args(exp, label, task_ids, args.account)
+        result = subprocess.run(
+            ["sbatch", *sbatch_args], capture_output=True, text=True, check=True
+        )
+        job_id = result.stdout.split()[-1]
+        label_note = f", label={label!r}" if label else ""
+        print(
+            f"Submitted {name} array job {job_id} "
+            f"({len(task_ids)} tasks, 1 full L40S x 3h each{label_note})"
+        )
+        print(f"Monitor: squeue -u $USER -j {job_id}")
+        print(f"Logs:    /scratch/$USER/logs/mue/{name}/{job_id}_*.out")
     return 0
 
 

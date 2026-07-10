@@ -25,6 +25,8 @@ class EnvConfig:
     x_label: str
     y_label: str
     dynamics_label: str
+    dynamics_pred_label: str = ""  # predicted row title; defaults to dynamics_label if empty
+    dynamics_err_label: str = ""   # error row title; defaults to "|dynamics_label error|" if empty
 
 
 def is_discrete(env, env_params) -> bool:
@@ -61,27 +63,33 @@ def get_env_config(env_name: str) -> EnvConfig:
                 r"$\Delta \dot{\theta}$",
             ),
             representative_actions=(-2.0, 0.0, 2.0),
-            x_label="Theta (rad)",
-            y_label="Theta Dot (rad/s)",
-            dynamics_label="Delta Theta Dot",
+            x_label=r"$\theta$",
+            y_label=r"$\dot{\theta}$",
+            dynamics_label=r"$\Delta\dot{\theta}$",
+            dynamics_pred_label=r"$\widehat{\Delta\dot{\theta}}$",
+            dynamics_err_label=r"$|\Delta\dot{\theta} - \widehat{\Delta\dot{\theta}}|$",
         ),
         "MountainCar-v0": EnvConfig(
             name="MountainCar-v0",
             dynamics_dim=1,
             delta_obs_labels=(r"$\Delta x$", r"$\Delta \dot{x}$"),
             representative_actions=(0.0, 1.0, 2.0),
-            x_label="Position",
-            y_label="Velocity",
-            dynamics_label="Delta Velocity",
+            x_label=r"$x$",
+            y_label=r"$\dot{x}$",
+            dynamics_label=r"$\Delta\dot{x}$",
+            dynamics_pred_label=r"$\widehat{\Delta\dot{x}}$",
+            dynamics_err_label=r"$|\Delta\dot{x} - \widehat{\Delta\dot{x}}|$",
         ),
         "MountainCarContinuous-v0": EnvConfig(
             name="MountainCarContinuous-v0",
             dynamics_dim=1,
             delta_obs_labels=(r"$\Delta x$", r"$\Delta \dot{x}$"),
             representative_actions=(-1.0, 0.0, 1.0),
-            x_label="Position",
-            y_label="Velocity",
-            dynamics_label="Delta Velocity",
+            x_label=r"$x$",
+            y_label=r"$\dot{x}$",
+            dynamics_label=r"$\Delta\dot{x}$",
+            dynamics_pred_label=r"$\widehat{\Delta\dot{x}}$",
+            dynamics_err_label=r"$|\Delta\dot{x} - \widehat{\Delta\dot{x}}|$",
         ),
         "CartPole-v1": EnvConfig(
             name="CartPole-v1",
@@ -93,9 +101,11 @@ def get_env_config(env_name: str) -> EnvConfig:
                 r"$\Delta \dot{\theta}$",
             ),
             representative_actions=(0.0, 1.0),
-            x_label="Cart Position",
-            y_label="Pole Angle (rad)",
-            dynamics_label="Delta Theta Dot",
+            x_label=r"$x$",
+            y_label=r"$\theta$",
+            dynamics_label=r"$\Delta\dot{\theta}$",
+            dynamics_pred_label=r"$\widehat{\Delta\dot{\theta}}$",
+            dynamics_err_label=r"$|\Delta\dot{\theta} - \widehat{\Delta\dot{\theta}}|$",
         ),
         "Acrobot-v1": EnvConfig(
             name="Acrobot-v1",
@@ -109,9 +119,11 @@ def get_env_config(env_name: str) -> EnvConfig:
                 r"$\Delta \dot{\theta}_2$",
             ),
             representative_actions=(0.0, 1.0, 2.0),
-            x_label=r"$\theta_1$ (rad)",
-            y_label=r"$\theta_2$ (rad)",
-            dynamics_label=r"Delta $\dot{\theta}_2$",
+            x_label=r"$\theta_1$",
+            y_label=r"$\theta_2$",
+            dynamics_label=r"$\Delta\dot{\theta}_2$",
+            dynamics_pred_label=r"$\widehat{\Delta\dot{\theta}_2}$",
+            dynamics_err_label=r"$|\Delta\dot{\theta}_2 - \widehat{\Delta\dot{\theta}_2}|$",
         ),
     }
     if env_name not in configs:
@@ -314,11 +326,15 @@ def visited_coords_from_obs(env_name: str, obs):
 def action_title(env_name: str, act: float, *, discrete: bool) -> str:
     env_config = get_env_config(env_name)
     if discrete:
-        return rf"Action $a = {int(act)}$"
-    low, mid, high = env_config.representative_actions
+        return rf"$a = {int(act)}$"
+    low, _, high = env_config.representative_actions
     threshold = (high - low) / 6
+    lo_str = f"{low + threshold:.2f}"
+    hi_str = f"{high - threshold:.2f}"
+    low_str = f"{low:.2f}"
+    high_str = f"{high:.2f}"
     if act == low:
-        return rf"Action $u \approx {act}$ (binned $u \leq {low + threshold:.2f}$)"
+        return rf"$a \approx {act}$, $a \in [{low_str}, {lo_str}]$"
     if act == high:
-        return rf"Action $u \approx {act}$ (binned $u \geq {high - threshold:.2f}$)"
-    return rf"Action $u \approx {act}$ (binned ${low + threshold:.2f} < u < {high - threshold:.2f}$)"
+        return rf"$a \approx {act}$, $a \in [{hi_str}, {high_str}]$"
+    return rf"$a \approx {act}$, $a \in ({lo_str}, {hi_str})$"
