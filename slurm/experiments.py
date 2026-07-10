@@ -257,6 +257,39 @@ classic_plan_every_enn_ln = Experiment(
     ),
 )
 
+# Cheap PPO (1e6) with full ENN: can PPO LayerNorm and/or higher LR close the
+# gap to full PPO? (LN off/on) x (3e-4, +0.5 OM → 1e-3, +1 OM → 3e-3).
+_CHEAP_PPO_LRS = (
+    (3e-4, "3e-4"),
+    (1e-3, "1e-3"),
+    (3e-3, "3e-3"),
+)
+classic_plan_every_cheap_ppo_lr = Experiment(
+    name="classic_plan_every_cheap_ppo_lr",
+    configs=tuple(
+        cfg
+        for use_ln, ln_tag in ((False, "ln_off"), (True, "ln_on"))
+        for lr, lr_tag in _CHEAP_PPO_LRS
+        for cfg in sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label=f"{ln_tag}_lr_{lr_tag}",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            ppo__total_timesteps=1e6,
+            ppo__lr=lr,
+            ppo__use_layer_norm=use_ln,
+        )
+    ),
+    description=(
+        "plan every step, 100 real steps; full ENN + cheap PPO (1e6); "
+        "PPO LayerNorm x {3e-4, 1e-3, 3e-3} learning-rate sweep"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -270,5 +303,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_fast_ln,
         classic_plan_every_budget,
         classic_plan_every_enn_ln,
+        classic_plan_every_cheap_ppo_lr,
     )
 }
