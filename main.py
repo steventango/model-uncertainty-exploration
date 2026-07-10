@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import os
 import time
 from datetime import datetime
@@ -283,6 +284,10 @@ def main():
         args.log_dir
         or f"runs/{dt.strftime('%Y%m%d')}/{log_prefix}/{dt.strftime('%H%M%S')}"
     )
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "config.json"), "w") as _f:
+        json.dump({"env": args.env, "model": args.model.name, "label": args.label}, _f)
+
     seed_dirs, loggers = [], []
     for b in range(B):
         seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
