@@ -198,8 +198,7 @@ classic_plan_every_budget = Experiment(
     ),
 )
 
-# ENN base LayerNorm under plan-every: cheap-model cells (primary) plus full
-# budget + LN as a ceiling control.
+# ENN base LayerNorm under plan-every: full 2x2 of (model, PPO) budgets with LN.
 classic_plan_every_enn_ln = Experiment(
     name="classic_plan_every_enn_ln",
     configs=(
@@ -239,10 +238,22 @@ classic_plan_every_enn_ln = Experiment(
             num_rollouts=100,
             model__use_layer_norm=True,
         ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="full_model_ln_cheap_ppo",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            ppo__total_timesteps=1e6,
+            model__use_layer_norm=True,
+        ),
     ),
     description=(
         "plan every step, 100 real steps; ENN base LayerNorm ablation — "
-        "cheap+LN+full PPO, cheap+LN+cheap PPO, full+LN+full PPO"
+        "all (model, PPO) budget pairs with LN on"
     ),
 )
 
