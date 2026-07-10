@@ -4,7 +4,7 @@ from wrappers import StateReconstructionWrapper
 
 
 class PendulumWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time):
+    def get_state(self, obs, last_action, time, next_obs=None):
         from gymnax.environments.classic_control.pendulum import EnvState
 
         return EnvState(
@@ -16,21 +16,21 @@ class PendulumWrapper(StateReconstructionWrapper):
 
 
 class MountainCarWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time):
+    def get_state(self, obs, last_action, time, next_obs=None):
         from gymnax.environments.classic_control.mountain_car import EnvState
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
 
 class MountainCarContinuousWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time):
+    def get_state(self, obs, last_action, time, next_obs=None):
         from gymnax.environments.classic_control.continuous_mountain_car import EnvState
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
 
 class CartPoleWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time):
+    def get_state(self, obs, last_action, time, next_obs=None):
         from gymnax.environments.classic_control.cartpole import EnvState
 
         return EnvState(
@@ -39,7 +39,7 @@ class CartPoleWrapper(StateReconstructionWrapper):
 
 
 class AcrobotWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time):
+    def get_state(self, obs, last_action, time, next_obs=None):
         from gymnax.environments.classic_control.acrobot import EnvState
 
         return EnvState(

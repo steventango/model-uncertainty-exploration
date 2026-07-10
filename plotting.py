@@ -1,9 +1,11 @@
 import os
 
 import matplotlib.pyplot as plt
+import numpy as np
 import jax
 import jax.numpy as jnp
 import ground_truth
+from ppo import make_rollout, unstack_train_state
 from env_config import (
     action_title,
     action_visit_mask,
@@ -524,3 +526,482 @@ def plot_uncertainty(
         f"Saved action-dependent uncertainty, comparison and error plots to {fig_path}"
     )
     plt.close()
+
+
+def _quiver_traj(ax, traj, color, label):
+    """Overlay rollout trajectories as quiver arrows on a (log-area, intensity) axes.
+
+    Individual episodes are drawn as thin translucent arrows; the mean trajectory
+    is drawn bold on top.
+    """
+    areas = np.asarray(traj.obs[..., 0])    # (T, E)
+    acts  = np.asarray(traj.action[..., 0]) # (T, E)
+    E = areas.shape[1]
+
+    # Individual episodes (thin, translucent)
+    for e in range(E):
+        x, y = areas[:, e], acts[:, e]
+        ax.quiver(
+            x[:-1], y[:-1], np.diff(x), np.diff(y),
+            color=color, alpha=0.12, scale_units="xy", angles="xy", scale=1,
+            width=0.003, headwidth=3, headlength=4, zorder=4,
+        )
+
+    # Mean trajectory (bold)
+    x = areas.mean(axis=1)
+    y = acts.mean(axis=1)
+    ax.quiver(
+        x[:-1], y[:-1], np.diff(x), np.diff(y),
+        color=color, alpha=0.95, scale_units="xy", angles="xy", scale=1,
+        width=0.006, headwidth=4, headlength=5, label=label, zorder=6,
+    )
+
+
+def plot_area_action_uncertainty(
+    model,
+    area_min: float,
+    area_max: float,
+    act_low: float,
+    act_high: float,
+    dataset,
+    pointer: int,
+    rng,
+    j: int,
+    run_dir: str,
+    explore_visits=None,
+    exploit_visits=None,
+    explore_traj=None,
+    exploit_traj=None,
+    num_grid: int = 50,
+    num_samples: int = 10,
+    bonus: str = "std",
+) -> None:
+    """Plot epistemic uncertainty and predicted growth over (log-area, intensity) space.
+
+    Parameters
+    ----------
+    model:
+        A single (non-batched) :class:`models.WorldModel`.
+    area_min / area_max:
+        Observed log-area bounds from the offline dataset.
+    act_low / act_high:
+        Scalar action bounds (for the 1-D intensity action).
+    dataset:
+        Offline :class:`ppo.Transition` pytree (shape ``(N, ...)``).
+    pointer:
+        Number of valid dataset entries; used for the data scatter overlay.
+    rng:
+        JAX random key for posterior index sampling.
+    j:
+        Rollout iteration index (included in the filename).
+    run_dir:
+        Directory where the PNG is saved.
+    explore_visits / exploit_visits:
+        Optional ``(areas, actions)`` tuples (both 1-D arrays) of ``(log-area,
+        intensity)`` pairs visited by the explore / exploit agent respectively.
+        When provided, they are overlaid as scatter plots for comparison.
+    num_grid:
+        Resolution of the 2-D grid (``num_grid × num_grid`` points).
+    num_samples:
+        Number of posterior samples for uncertainty estimation.
+    bonus:
+        ``"std"`` or ``"eig"`` — passed to :meth:`~models.WorldModel.uncertainty`.
+    """
+    area_axis = jnp.linspace(area_min, area_max, num_grid)
+    act_axis = jnp.linspace(act_low, act_high, num_grid)
+    area_grid, act_grid = jnp.meshgrid(area_axis, act_axis)  # (G, G) each
+
+    area_flat = area_grid.flatten()[:, None]  # (G*G, 1)
+    act_flat = act_grid.flatten()[:, None]    # (G*G, 1)
+
+    x_grid = model.build_input(area_flat, act_flat)           # (G*G, in_features)
+    x_grid_norm = model.normalize_input(x_grid)               # (G*G, in_features)
+
+    rng, subkey = jax.random.split(rng)
+    z = model.sample_index(subkey, num_samples)               # (S, index_dim)
+
+    samples = model.batch_predict_samples(x_grid_norm, z)     # (S, G*G, out_dim)
+
+    unc_flat = model.uncertainty(samples, kind=bonus)          # (G*G,)
+    unc_grid = unc_flat.reshape(num_grid, num_grid)
+
+    mean_y_flat = jax.vmap(model.predict_mean)(x_grid_norm)   # (G*G, out_dim)
+    growth_flat = model.denormalize_delta_obs(
+        mean_y_flat[..., : model.obs_dim]
+    )[..., 0]                                                  # (G*G,)
+    growth_grid = growth_flat.reshape(num_grid, num_grid)
+
+    unc_levels = _contour_levels(unc_flat.min(), unc_flat.max())
+    growth_levels = _contour_levels(growth_flat.min(), growth_flat.max())
+
+    n_cols = 2
+    fig, axs = plt.subplots(1, n_cols, figsize=(12, 5))
+
+    # — Left panel: uncertainty —
+    ax_unc = axs[0]
+    cf_unc = ax_unc.contourf(area_axis, act_axis, unc_grid, levels=unc_levels, cmap="viridis")
+    fig.colorbar(cf_unc, ax=ax_unc).set_label(f"Uncertainty ({bonus})")
+    ax_unc.set_xlabel("log(Area)")
+    ax_unc.set_ylabel("Intensity")
+    ax_unc.set_title("Epistemic Uncertainty")
+
+    # Dataset scatter overlay
+    if pointer > 0:
+        d_area = jnp.asarray(dataset.obs[:pointer, 0])
+        d_act = jnp.asarray(dataset.action[:pointer, 0])
+        ax_unc.scatter(d_area, d_act, color="white", alpha=0.3, s=4, label="Dataset")
+
+    # — Right panel: predicted growth —
+    ax_growth = axs[1]
+    cf_growth = ax_growth.contourf(area_axis, act_axis, growth_grid, levels=growth_levels, cmap="RdYlGn")
+    fig.colorbar(cf_growth, ax=ax_growth).set_label("Predicted Δlog(area)")
+    ax_growth.set_xlabel("log(Area)")
+    ax_growth.set_ylabel("Intensity")
+    ax_growth.set_title("Predicted Growth")
+
+    # Agent trajectory overlays
+    if explore_visits is not None:
+        exp_areas, exp_acts = explore_visits
+        ax_unc.scatter(exp_areas, exp_acts, color="red", alpha=0.5, s=8, label="Explore")
+        ax_growth.scatter(exp_areas, exp_acts, color="red", alpha=0.5, s=8, label="Explore")
+
+    if exploit_visits is not None:
+        expt_areas, expt_acts = exploit_visits
+        ax_unc.scatter(expt_areas, expt_acts, color="orange", alpha=0.5, s=8, label="Exploit")
+        ax_growth.scatter(expt_areas, expt_acts, color="orange", alpha=0.5, s=8, label="Exploit")
+
+    for ax in (ax_unc, ax_growth):
+        if explore_traj is not None:
+            _quiver_traj(ax, explore_traj, color="#4c72b0", label="Explore traj")
+        if exploit_traj is not None:
+            _quiver_traj(ax, exploit_traj, color="#55a868", label="Exploit traj")
+
+    for ax in axs:
+        ax.legend(loc="upper right", markerscale=3, fontsize=7)
+
+    fig.suptitle(f"Plant Model: Area × Intensity (Iteration {j})", fontsize=13)
+    fig.tight_layout()
+    os.makedirs(run_dir, exist_ok=True)
+    fig_path = os.path.join(run_dir, f"area_action_uncertainty_{j:04d}.png")
+    plt.savefig(fig_path, bbox_inches="tight", dpi=150)
+    print(f"Saved area×action uncertainty plot to {fig_path}")
+    plt.close()
+
+
+def plot_policy_rollouts(
+    explore_traj,
+    exploit_traj,
+    j: int,
+    run_dir: str,
+    area_min: float | None = None,
+    area_max: float | None = None,
+    act_low: float | None = None,
+    act_high: float | None = None,
+) -> None:
+    """Plot area / intensity / reward trajectories for explore vs exploit policies.
+
+    Each subplot shows individual episode traces (thin, translucent) plus a
+    bold mean line and ±1σ shaded band.
+
+    Parameters
+    ----------
+    explore_traj / exploit_traj:
+        :class:`ppo.Transition` pytrees with leaves shaped ``(T, num_episodes, ...)``.
+    j:
+        Outer-loop iteration index (used in the filename).
+    run_dir:
+        Directory where the PNG is saved.
+    area_min / area_max:
+        Optional y-axis bounds for the log-area panels.
+    act_low / act_high:
+        Optional y-axis bounds for the intensity panels.
+    """
+    areas_exp = np.asarray(explore_traj.obs[..., 0])    # (T, E)
+    acts_exp = np.asarray(explore_traj.action[..., 0])  # (T, E)
+
+    areas_expt = np.asarray(exploit_traj.obs[..., 0])
+    acts_expt = np.asarray(exploit_traj.action[..., 0])
+
+    T = areas_exp.shape[0]
+    timesteps = np.arange(T)
+
+    COLOR_EXP = "#4c72b0"   # blue
+    COLOR_EXPT = "#55a868"  # green
+
+    def _plot_traces(ax, values, color, ylabel, ylim=None):
+        E = values.shape[1]
+        for e in range(E):
+            ax.plot(timesteps, values[:, e], color=color, alpha=0.12, lw=0.8)
+        mean = values.mean(axis=1)
+        std = values.std(axis=1)
+        ax.plot(timesteps, mean, color=color, lw=2.0, label="mean")
+        ax.fill_between(timesteps, mean - std, mean + std, color=color, alpha=0.22, label="±1σ")
+        ax.set_ylabel(ylabel)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, linestyle=":", alpha=0.5)
+
+    fig, axs = plt.subplots(3, 2, figsize=(11, 9), sharex=True)
+
+    area_ylim = (area_min, area_max) if area_min is not None and area_max is not None else None
+    act_ylim = (act_low, act_high) if act_low is not None and act_high is not None else None
+
+    # Row 0: log(Area)
+    axs[0, 0].set_title("Explore", color=COLOR_EXP, fontsize=12, fontweight="bold")
+    axs[0, 1].set_title("Exploit", color=COLOR_EXPT, fontsize=12, fontweight="bold")
+    _plot_traces(axs[0, 0], areas_exp, COLOR_EXP, "log(Area)", ylim=area_ylim)
+    _plot_traces(axs[0, 1], areas_expt, COLOR_EXPT, "log(Area)", ylim=area_ylim)
+
+    # Row 1: Intensity
+    _plot_traces(axs[1, 0], acts_exp, COLOR_EXP, "Intensity", ylim=act_ylim)
+    _plot_traces(axs[1, 1], acts_expt, COLOR_EXPT, "Intensity", ylim=act_ylim)
+
+    # Row 2: Δlog(area) per step — same metric for both agents so they're comparable
+    growth_exp = np.diff(areas_exp, axis=0, prepend=areas_exp[:1])   # (T, E)
+    growth_expt = np.diff(areas_expt, axis=0, prepend=areas_expt[:1])
+    growth_all = np.concatenate([growth_exp[1:], growth_expt[1:]])    # skip step-0 artifact
+    growth_lim = (float(growth_all.min()), float(growth_all.max()))
+    _plot_traces(axs[2, 0], growth_exp, COLOR_EXP, "Δlog(area) / step", ylim=growth_lim)
+    _plot_traces(axs[2, 1], growth_expt, COLOR_EXPT, "Δlog(area) / step", ylim=growth_lim)
+    for ax in axs[2, :]:
+        ax.set_xlabel("Step")
+
+    fig.suptitle(f"Policy Rollouts in World Model (Iteration {j})", fontsize=13)
+    fig.tight_layout()
+    os.makedirs(run_dir, exist_ok=True)
+    fig_path = os.path.join(run_dir, f"policy_rollouts_{j:04d}.png")
+    plt.savefig(fig_path, bbox_inches="tight", dpi=150)
+    print(f"Saved policy rollout trajectories to {fig_path}")
+    plt.close()
+
+
+def plot_reward_landscape(
+    model,
+    reward_fn,
+    area_min: float,
+    area_max: float,
+    act_low: float,
+    act_high: float,
+    j: int,
+    run_dir: str,
+    num_grid: int = 50,
+    explore_traj=None,
+    exploit_traj=None,
+) -> None:
+    """2-D contour plot of model-predicted growth, energy penalty, and total reward.
+
+    X-axis: intensity, Y-axis: log(Area).  Same orientation as the uncertainty plot.
+    """
+    area_axis = jnp.linspace(area_min, area_max, num_grid)
+    act_axis = jnp.linspace(act_low, act_high, num_grid)
+    area_mg, act_mg = jnp.meshgrid(area_axis, act_axis, indexing="ij")  # (G, G)
+
+    area_flat = area_mg.flatten()[:, None]   # (G*G, 1)
+    act_flat = act_mg.flatten()[:, None]     # (G*G, 1)
+
+    x_flat = model.build_input(area_flat, act_flat)                       # (G*G, in_features)
+    x_flat_norm = model.normalize_input(x_flat)                           # (G*G, in_features)
+    y_flat = jax.vmap(model.predict_mean)(x_flat_norm)                    # (G*G, out_dim)
+    delta_flat = model.denormalize_delta_obs(y_flat[..., : model.obs_dim])  # (G*G, 1)
+    next_obs_flat = area_flat + delta_flat                                # (G*G, 1)
+    growth_flat = delta_flat[..., 0]                                      # (G*G,)
+
+    if reward_fn is not None:
+        total_flat = reward_fn(area_flat, act_flat, next_obs_flat)        # (G*G,)
+        penalty_flat = growth_flat - total_flat
+    else:
+        total_flat = growth_flat
+        penalty_flat = jnp.zeros_like(growth_flat)
+
+    # indexing="ij" → result_grid[i, k] = value at (area_axis[i], act_axis[k])
+    # contourf(x, y, z) expects z[k, i], so pass grid.T
+    growth_grid = np.asarray(growth_flat.reshape(num_grid, num_grid))
+    penalty_grid = np.asarray(penalty_flat.reshape(num_grid, num_grid))
+    total_grid = np.asarray(total_flat.reshape(num_grid, num_grid))
+    area_axis_np = np.asarray(area_axis)
+    act_axis_np = np.asarray(act_axis)
+
+    titles = ["Growth (Δlog area)", "Energy penalty", "Total reward"]
+    grids = [growth_grid, penalty_grid, total_grid]
+    cmaps = ["RdYlGn", "RdYlGn_r", "RdYlGn"]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    for ax, title, grid, cmap in zip(axes, titles, grids, cmaps):
+        levels = _contour_levels(grid.min(), grid.max())
+        cf = ax.contourf(area_axis_np, act_axis_np, grid.T, levels=levels, cmap=cmap)
+        fig.colorbar(cf, ax=ax)
+        ax.set_xlabel("log(Area)")
+        ax.set_ylabel("Intensity")
+        ax.set_title(title)
+        if explore_traj is not None:
+            _quiver_traj(ax, explore_traj, color="#4c72b0", label="Explore")
+        if exploit_traj is not None:
+            _quiver_traj(ax, exploit_traj, color="#55a868", label="Exploit")
+        if explore_traj is not None or exploit_traj is not None:
+            ax.legend(loc="upper right", fontsize=7)
+
+    fig.suptitle(f"Reward Landscape (Iteration {j})", fontsize=13)
+    fig.tight_layout()
+    os.makedirs(run_dir, exist_ok=True)
+    fig_path = os.path.join(run_dir, f"reward_landscape_{j:04d}.png")
+    plt.savefig(fig_path, bbox_inches="tight", dpi=150)
+    print(f"Saved reward landscape to {fig_path}")
+    plt.close()
+
+
+def _collect_agent_visits(train_state, model_env, model_env_params, rollout_config, rng):
+    """Roll out a single-seed policy in the model env; return (areas, actions) arrays."""
+    rng, key_reset, key_roll = jax.random.split(rng, 3)
+    reset_keys = jax.random.split(key_reset, rollout_config["NUM_ENVS"])
+    obsv, env_state = model_env.reset(reset_keys, model_env_params)
+    rollout_fn = make_rollout(rollout_config, model_env, model_env_params, training=False)
+    _, traj = rollout_fn((train_state, env_state, obsv, key_roll))
+    areas = jnp.asarray(traj.obs[..., 0]).flatten()
+    acts = jnp.asarray(traj.action[..., 0]).flatten()
+    return areas, acts
+
+
+def _collect_policy_trajectories(
+    train_state,
+    model_env,
+    model_env_params,
+    ppo_config,
+    rng,
+    num_episodes: int = 20,
+    num_steps: int = 14,
+):
+    """Roll out ``num_episodes`` independent episodes; return trajectory shaped ``(num_steps, num_episodes, ...)``."""
+    traj_cfg = {**ppo_config, "NUM_ENVS": num_episodes, "NUM_STEPS": num_steps}
+    rng, key_reset, key_roll = jax.random.split(rng, 3)
+    reset_keys = jax.random.split(key_reset, num_episodes)
+    obsv, env_state = model_env.reset(reset_keys, model_env_params)
+    rollout_fn = make_rollout(traj_cfg, model_env, model_env_params, training=False)
+    _, traj = rollout_fn((train_state, env_state, obsv, key_roll))
+    return traj
+
+
+def plot_policy_action(
+    explore_train_state,
+    exploit_train_state,
+    area_min: float,
+    area_max: float,
+    act_low: float,
+    act_high: float,
+    j: int,
+    run_dir: str,
+    num_grid: int = 200,
+) -> None:
+    """Plot mean action chosen by explore vs exploit policy across log(area) values."""
+    area_axis = jnp.linspace(area_min, area_max, num_grid)
+    obs_grid = area_axis[:, None]  # (G, 1)
+
+    def query_policy(train_state):
+        network, _, normalize_vec_obs, _ = train_state
+        normalize_vec_obs.eval()
+        obs_norm = normalize_vec_obs(obs_grid)
+        pi, _ = network(obs_norm)
+        return np.asarray(pi.mean())  # (G, act_dim)
+
+    explore_actions = np.clip(query_policy(explore_train_state), act_low, act_high)
+    exploit_actions = np.clip(query_policy(exploit_train_state), act_low, act_high)
+    areas_np = np.asarray(area_axis)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(areas_np, explore_actions[:, 0], color="#4c72b0", lw=2, label="Explore")
+    ax.plot(areas_np, exploit_actions[:, 0], color="#55a868", lw=2, label="Exploit")
+    ax.axhline(act_low, color="gray", lw=0.8, linestyle=":")
+    ax.axhline(act_high, color="gray", lw=0.8, linestyle=":")
+    ax.set_xlabel("log(Area)")
+    ax.set_ylabel("Mean action (intensity)")
+    ax.set_ylim(act_low - 0.05 * (act_high - act_low), act_high + 0.05 * (act_high - act_low))
+    ax.legend()
+    ax.grid(True, linestyle=":", alpha=0.5)
+    fig.suptitle(f"Policy Action vs log(Area) (Iteration {j})", fontsize=13)
+    fig.tight_layout()
+    os.makedirs(run_dir, exist_ok=True)
+    fig_path = os.path.join(run_dir, f"policy_action_{j:04d}.png")
+    plt.savefig(fig_path, bbox_inches="tight", dpi=150)
+    print(f"Saved policy action plot to {fig_path}")
+    plt.close()
+
+
+def plot_offline_visualization(
+    models,
+    explore_train_state,
+    eval_train_state,
+    model_env,
+    config,
+    num_steps,
+    rng,
+    dataset,
+    env_params,
+    j,
+    run_dir,
+    explore_bonus,
+    reward_fn=None,
+):
+    """Collect agent visits / trajectories and emit all three offline plots (seed 0)."""
+    area_min = float(env_params.area_min)
+    area_max = float(env_params.area_max)
+    act_low = float(env_params.act_low[0])
+    act_high = float(env_params.act_high[0])
+    N = dataset.obs.shape[0]
+
+    model0 = unstack_train_state(models, 0)
+    explore_ts0 = unstack_train_state(explore_train_state, 0)
+    exploit_ts0 = unstack_train_state(eval_train_state, 0)
+
+    model0_env_params = model_env.default_params.replace(
+        model=model0,
+        alpha=jnp.float32(1.0),
+        beta=jnp.float32(0.0),
+    )
+    rollout_cfg = {
+        **config,
+        "NUM_ENVS": 64,
+        "TOTAL_TIMESTEPS": num_steps * 64,
+        "NUM_UPDATES": 1,
+    }
+
+    rng, rng_exp, rng_expt = jax.random.split(rng, 3)
+    explore_visits = _collect_agent_visits(explore_ts0, model_env, model0_env_params, rollout_cfg, rng_exp)
+    exploit_visits = _collect_agent_visits(exploit_ts0, model_env, model0_env_params, rollout_cfg, rng_expt)
+
+    rng, rng_traj_exp, rng_traj_expt = jax.random.split(rng, 3)
+    explore_traj = _collect_policy_trajectories(
+        explore_ts0, model_env, model0_env_params, config, rng_traj_exp,
+        num_episodes=50, num_steps=num_steps,
+    )
+    exploit_traj = _collect_policy_trajectories(
+        exploit_ts0, model_env, model0_env_params, config, rng_traj_expt,
+        num_episodes=50, num_steps=num_steps,
+    )
+
+    plot_area_action_uncertainty(
+        model0, area_min, area_max, act_low, act_high,
+        dataset, N, rng, j, run_dir,
+        explore_visits=explore_visits,
+        exploit_visits=exploit_visits,
+        explore_traj=explore_traj,
+        exploit_traj=exploit_traj,
+        bonus=explore_bonus,
+    )
+    plot_policy_rollouts(
+        explore_traj, exploit_traj, j, run_dir,
+        area_min=area_min, area_max=area_max,
+        act_low=act_low, act_high=act_high,
+    )
+    plot_reward_landscape(
+        model0, reward_fn,
+        area_min=area_min, area_max=area_max,
+        act_low=act_low, act_high=act_high,
+        j=j, run_dir=run_dir,
+        explore_traj=explore_traj, exploit_traj=exploit_traj,
+    )
+    plot_policy_action(
+        explore_ts0, exploit_ts0,
+        area_min=area_min, area_max=area_max,
+        act_low=act_low, act_high=act_high,
+        j=j, run_dir=run_dir,
+    )
