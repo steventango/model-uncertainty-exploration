@@ -140,6 +140,29 @@ classic_plan_every_fast = Experiment(
     ),
 )
 
+classic_plan_every_fast_ln = Experiment(
+    name="classic_plan_every_fast_ln",
+    configs=tuple(
+        sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="ln_on",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+            ppo__total_timesteps=1e6,
+            ppo__use_layer_norm=True,
+        )
+    ),
+    description=(
+        "classic_plan_every_fast + PPO ActorCritic LayerNorm; "
+        "plan every step, 1000 real steps"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -150,5 +173,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ln,
         classic_plan_every,
         classic_plan_every_fast,
+        classic_plan_every_fast_ln,
     )
 }
