@@ -163,6 +163,41 @@ classic_plan_every_fast_ln = Experiment(
     ),
 )
 
+# Isolate which //10 cut hurts plan-every quality: full ENN + cheap PPO vs
+# cheap ENN + full PPO. 100 real steps matches classic_plan_every for an
+# early-curve comparison within the 3h walltime.
+classic_plan_every_budget = Experiment(
+    name="classic_plan_every_budget",
+    configs=(
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="full_model_cheap_ppo",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            ppo__total_timesteps=1e6,
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="cheap_model_full_ppo",
+            steps_per_rollout=1,
+            num_rollouts=100,
+            model__update_steps=1000,
+        ),
+    ),
+    description=(
+        "plan every step, 100 real steps; asymmetric budget ablation — "
+        "full ENN (10k) + PPO//10 (1e6) vs ENN//10 (1k) + full PPO (1e7)"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -174,5 +209,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every,
         classic_plan_every_fast,
         classic_plan_every_fast_ln,
+        classic_plan_every_budget,
     )
 }
