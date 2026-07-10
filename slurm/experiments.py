@@ -95,6 +95,27 @@ classic_ln = Experiment(
     description="LayerNorm ablation on the PPO ActorCritic; explore-only (alpha=0 beta=1) eig bonus, sample mode",
 )
 
+# Plan after every real step. classic_ln PPO is ~55–70s/iter steady-state on
+# L40S, so 100 real steps (~100 re-plans) fits in the 3h walltime with margin.
+classic_plan_every = Experiment(
+    name="classic_plan_every",
+    configs=tuple(
+        sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            steps_per_rollout=1,
+            num_rollouts=100,
+        )
+    ),
+    description=(
+        "plan every real step (steps_per_rollout=1), 100 real steps; "
+        "explore-only (alpha=0 beta=1) eig bonus, sample mode"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -103,5 +124,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         oracle_eig,
         blr_enn,
         classic_ln,
+        classic_plan_every,
     )
 }

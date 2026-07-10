@@ -177,22 +177,33 @@ def main():
         in_features = obs_dim + action_dim
         out_features = obs_dim + 2 if predict_reward_terminated else obs_dim
 
-        rollout_steps = env_params.max_steps_in_episode # // 10
+        # Real-env steps collected between model+PPO re-plans. Default: one
+        # full episode. Set to 1 to re-plan after every real step.
+        rollout_steps = (
+            args.steps_per_rollout
+            if args.steps_per_rollout is not None
+            else env_params.max_steps_in_episode
+        )
         num_steps = 10
-        model_minibatch_size = rollout_steps
-        # Floor of the episode count: aim for roughly max_steps env-steps of data,
-        # but this is NOT a step-count guarantee. Integer division never rounds up
-        # and the max(1, ...) floor means a single episode for envs with
-        # max_steps_in_episode in the upper half of the range.
-        max_steps = 100_000 if is_brax else 1000
-        num_episodes = max(1, max_steps // env_params.max_steps_in_episode)
-        total_timesteps = env_params.max_steps_in_episode * num_episodes
+        # Keep the model minibatch tied to episode length so shrinking
+        # steps_per_rollout (e.g. plan-every-step) does not collapse it to 1.
+        model_minibatch_size = env_params.max_steps_in_episode
+        if args.num_rollouts is not None:
+            num_rollouts = args.num_rollouts
+            total_timesteps = num_rollouts * rollout_steps
+        else:
+            # Floor of the episode count: aim for roughly max_steps env-steps of
+            # data, but this is NOT a step-count guarantee. Integer division
+            # never rounds up and the max(1, ...) floor means a single episode
+            # for envs with max_steps_in_episode in the upper half of the range.
+            max_steps = 100_000 if is_brax else 1000
+            num_episodes = max(1, max_steps // env_params.max_steps_in_episode)
+            total_timesteps = env_params.max_steps_in_episode * num_episodes
+            num_rollouts = int(total_timesteps // rollout_steps)
         # Cap the rolling dataset buffer; the RBF feature bank places one center
         # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
         # value (see model_config_dict) to keep the two in lockstep.
         dataset_size = min(10000, total_timesteps)
-
-        num_rollouts = args.num_rollouts or int(total_timesteps // rollout_steps)
         log_prefix = env_name
         hparams_run = {
             "num_rollouts": num_rollouts,
