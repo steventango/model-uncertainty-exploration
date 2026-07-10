@@ -15,6 +15,7 @@ class Transition(NamedTuple):
     terminated: jnp.ndarray
     truncated: jnp.ndarray
     action: jnp.ndarray
+    raw_action: jnp.ndarray
     value: jnp.ndarray
     next_value: jnp.ndarray
     reward: jnp.ndarray
@@ -39,8 +40,18 @@ def make_rollout(config, env, env_params, training=True):
             else:
                 network_last_obs = last_obs
             pi, value = network(network_last_obs)
-            action = pi.sample(seed=_rng)
-            log_prob = pi.log_prob(action)
+            if discrete:
+                action = pi.sample(seed=_rng)
+                raw_action = action
+                log_prob = pi.log_prob(action)
+            else:
+                # Sample the pre-squash latent and keep it around: recovering
+                # it later via the bijector's inverse (arctanh) is numerically
+                # unstable once the raw mean saturates the tanh, so the PPO
+                # update recomputes log_prob from this stored latent instead.
+                raw_action = pi.distribution.sample(seed=_rng)
+                action, fwd_log_det = pi.bijector.forward_and_log_det(raw_action)
+                log_prob = pi.distribution.log_prob(raw_action) - fwd_log_det
 
             # STEP ENV
             rng, _rng = jax.random.split(rng)
@@ -73,6 +84,7 @@ def make_rollout(config, env, env_params, training=True):
                 terminated,
                 truncated,
                 action,
+                raw_action,
                 value,
                 next_value,
                 reward,
@@ -101,6 +113,7 @@ def make_train(env, config):
     )
 
     def train(train_state, env_params, rng):
+        discrete = isinstance(env.action_space(env_params), spaces.Discrete)
         _, _, normalize_vec_obs, _ = train_state
 
         # INIT ENV
@@ -159,7 +172,21 @@ def make_train(env, config):
                     def _loss_fn(network, traj_batch, gae, targets):
                         # RERUN NETWORK
                         pi, value = network(traj_batch.obs)
-                        log_prob = pi.log_prob(traj_batch.action)
+                        if discrete:
+                            log_prob = pi.log_prob(traj_batch.action)
+                        else:
+                            # Recompute from the stored pre-squash latent
+                            # (forward-only) rather than pi.log_prob(action),
+                            # which would need the bijector's inverse
+                            # (arctanh) and blows up once actions saturate
+                            # the tanh.
+                            _, fwd_log_det = pi.bijector.forward_and_log_det(
+                                traj_batch.raw_action
+                            )
+                            log_prob = (
+                                pi.distribution.log_prob(traj_batch.raw_action)
+                                - fwd_log_det
+                            )
 
                         # CALCULATE VALUE LOSS
                         value_pred_clipped = traj_batch.value + (
@@ -185,7 +212,10 @@ def make_train(env, config):
                         )
                         loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
                         loss_actor = loss_actor.mean()
-                        entropy = pi.entropy().mean()
+                        # pi.entropy() isn't defined for the tanh-squashed
+                        # distribution (non-constant Jacobian); use the
+                        # single-sample Monte Carlo estimator instead.
+                        entropy = pi.entropy().mean() if discrete else -log_prob.mean()
 
                         total_loss = (
                             loss_actor
@@ -270,6 +300,8 @@ def make_train_state(config, env, env_params, rngs):
     action_space = env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
+    act_low = None if discrete else jnp.asarray(action_space.low, dtype=jnp.float32)
+    act_high = None if discrete else jnp.asarray(action_space.high, dtype=jnp.float32)
     network = ActorCritic(
         env.observation_space(env_params).shape[0],
         action_dim,
@@ -277,6 +309,8 @@ def make_train_state(config, env, env_params, rngs):
         activation=config["ACTIVATION"],
         discrete=discrete,
         use_layer_norm=config["USE_LAYER_NORM"],
+        act_low=act_low,
+        act_high=act_high,
         rngs=rngs,
     )
 
