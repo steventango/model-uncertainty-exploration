@@ -1,24 +1,30 @@
 import argparse
 import os
 from datetime import datetime
+from functools import partial
 
-from flax import nnx
 import gymnax
-from gymnax.environments import spaces
 import jax
 import jax.numpy as jnp
-import optax
+from flax import nnx
+from gymnax.environments import spaces
 
 import evaluation
+import plotting
+import validation
 from data import collate_rollout
 from env_config import SUPPORTED_ENVS
 from logger import ExperimentLogger
-from model import DynamicsModel, train_model
+from model import make_batched_model, make_batched_rngs, make_batched_train_model
 from model_env import ModelEnvironment
-from networks import ENN
-import plotting
-from ppo import make_rollout, make_train, make_train_state
-import validation
+from ppo import (
+    make_batched_train,
+    make_batched_train_state,
+    make_rollout,
+    make_train_state,
+    select_config_train_state,
+    unstack_train_state,
+)
 from wrappers import ClipAction, LogWrapper, VecEnv
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
@@ -31,11 +37,27 @@ def _wrap_env(env, discrete):
     return VecEnv(wrapped)
 
 
+def _seed_slice(tree, idx):
+    """Index every leaf of a batched pytree, e.g. pick one seed (or (seed, config))."""
+    return jax.tree_util.tree_map(lambda x: x[idx], tree)
+
+
+@partial(jax.jit, static_argnums=1)
+def vsplit(keys, num=2):
+    return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--alpha", type=float, default=0.0, help="Exploit weight")
     parser.add_argument("--beta", type=float, default=1.0, help="Explore weight")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--seed", type=int, default=0, help="Base random seed")
+    parser.add_argument(
+        "--num_seeds",
+        type=int,
+        default=1,
+        help="Number of seeds to train concurrently (vmapped on one GPU)",
+    )
     parser.add_argument(
         "--env",
         type=str,
@@ -90,12 +112,15 @@ def main():
     eval_config = rollout_config.copy()
     eval_config["NUM_ENVS"] = 100
 
-    rng = jax.random.key(config["SEED"])
+    B = args.num_seeds
+    seeds = args.seed + jnp.arange(B)
+    seed_keys = jax.vmap(jax.random.key)(seeds)  # (B,) one master key per seed
 
     base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
     action_space = base_env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
+    act_dim = action_space.n if discrete else None
     env = _wrap_env(base_env, discrete)
     rollout_config["TOTAL_TIMESTEPS"] = env_params.max_steps_in_episode * 10
     rollout_config["NUM_STEPS"] = env_params.max_steps_in_episode // 10
@@ -107,7 +132,7 @@ def main():
         "PRIOR_HIDDEN_DIM": 5,
         "INDEX_DIM": 8,
         "ACTIVATION": "tanh",
-        "EPOCHS": 10000,
+        "UPDATE_STEPS": 10000,
         "MINIBATCH_SIZE": rollout_config["NUM_STEPS"],
     }
 
@@ -120,183 +145,197 @@ def main():
         val_true_terminated,
     ) = validation.generate_validation_data(base_env, env_params, env_name)
 
-    # INIT NETWORK
-    rng, _rng = jax.random.split(rng)
-    rngs = nnx.Rngs(_rng)
-    train_state = make_train_state(config, env, env_params, rngs)
+    obs_dim = env.observation_space(env_params).shape[0]
+    in_features = obs_dim + action_dim
+    out_features = obs_dim + 2
 
-    # INIT ENV
-    rng, _rng = jax.random.split(rng)
-    reset_rng = jax.random.split(_rng, rollout_config["NUM_ENVS"])
-    obsv, env_state = env.reset(reset_rng, env_params)
+    # INIT B ROLLOUT POLICIES (one per seed)
+    seed_keys, policy_keys = vsplit(seed_keys)
 
-    # MOCK ROLLOUT
-    _, _rng = jax.random.split(rng)
-    runner_state = (train_state, env_state, obsv, _rng)
-    _rollout = nnx.jit(make_rollout(rollout_config, env, env_params, training=False))
-    runner_state, traj_batch = _rollout(runner_state)
-    sample = collate_rollout(traj_batch)
+    @nnx.vmap(in_axes=0, out_axes=0)
+    def _build_rollout_train_state(key):
+        return make_train_state(config, env, env_params, nnx.Rngs(params=key))
 
-    # INIT DATASET
+    batched_rollout_train_state = _build_rollout_train_state(policy_keys)
+
+    # INIT B ENVS
+    seed_keys, reset_seed = vsplit(seed_keys)
+    reset_rng = vsplit(reset_seed, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
+    obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+
+    # BATCHED ROLLOUT
+    _rollout = nnx.jit(
+        nnx.vmap(make_rollout(rollout_config, env, env_params, training=False))
+    )
+
+    # MOCK ROLLOUT for dataset shapes
+    seed_keys, mock_rng = vsplit(seed_keys)
+    runner_state = (batched_rollout_train_state, env_state, obsv, mock_rng)
+    _, traj_batch = _rollout(runner_state)
+    sample = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
+
+    # INIT DATASET (B, DATASET_SIZE, ...)
     dataset = jax.tree_util.tree_map(
         lambda x: jnp.zeros(
-            (rollout_config["DATASET_SIZE"],) + x.shape[1:], dtype=x.dtype
+            (B, rollout_config["DATASET_SIZE"]) + x.shape[2:], dtype=x.dtype
         ),
         sample,
     )
     pointer = 0
 
-    # INIT MODEL
-    obs_dim = env.observation_space(env_params).shape[0]
-    in_features = obs_dim + action_dim
-    out_features = obs_dim + 2
-    enn = ENN(
-        in_features,
-        model_config["HIDDEN_DIM"],
-        model_config["LEARNABLE_HIDDEN_DIM"],
-        model_config["PRIOR_HIDDEN_DIM"],
-        out_features,
-        model_config["INDEX_DIM"],
-        rngs=rngs,
-    )
-    model = DynamicsModel(
-        enn, in_features, obs_dim, act_dim=action_space.n if discrete else None
-    )
-    tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
-    not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
-    optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
-    metrics = nnx.MultiMetric(
-        loss=nnx.metrics.Average("loss"),
-        delta_next_state_loss=nnx.metrics.Average("delta_next_state_loss"),
-        reward_loss=nnx.metrics.Average("reward_loss"),
-        terminated_loss=nnx.metrics.Average("terminated_loss"),
-    )
+    @jax.jit
+    def append_dataset(dataset, traj_batch, ptr):
+        def append(old, new):
+            return jax.lax.dynamic_update_slice_in_dim(old, new, ptr, axis=0)
 
-    runner_state = (train_state, env_state, obsv, _rng)
+        return jax.tree_util.tree_map(jax.vmap(append), dataset, traj_batch)
 
+    # INIT B WORLD MODELS + OPTIMIZERS + METRICS
+    seed_keys, model_keys = vsplit(seed_keys)
+    models, optimizers, metrics = make_batched_model(
+        model_config, in_features, obs_dim, out_features, act_dim, model_keys
+    )
+    seed_keys, train_model_seed = vsplit(seed_keys)
+    batched_rngs = make_batched_rngs(train_model_seed)
+    batched_train_model = make_batched_train_model(
+        model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
+    )
+    batched_val_metrics = validation.make_batched_validation_metrics()
+
+    # PER-SEED LOGGERS
     log_dir = args.log_dir or (
         f"runs/{env_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
-    logger = ExperimentLogger(log_dir)
     num_rollouts = int(
         rollout_config["TOTAL_TIMESTEPS"]
         // rollout_config["NUM_STEPS"]
         // rollout_config["NUM_ENVS"]
     )
-    logger.log_hparams(
-        args=vars(args),
-        ppo=config,
-        rollout=rollout_config,
-        eval=eval_config,
-        model=model_config,
-        run={
-            "num_rollouts": num_rollouts,
-            "discrete": discrete,
-            "action_dim": action_dim,
-        },
-    )
+    seed_dirs, loggers = [], []
+    for b in range(B):
+        seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
+        logger = ExperimentLogger(seed_dir)
+        logger.log_hparams(
+            args={**vars(args), "seed": int(seeds[b])},
+            ppo=config,
+            rollout=rollout_config,
+            eval=eval_config,
+            model=model_config,
+            run={
+                "num_rollouts": num_rollouts,
+                "discrete": discrete,
+                "action_dim": action_dim,
+            },
+        )
+        seed_dirs.append(seed_dir)
+        loggers.append(logger)
 
-    _eval_rollout = nnx.jit(make_rollout(eval_config, env, env_params, training=False))
-
-    model_env_explore = ModelEnvironment(
+    model_env = ModelEnvironment(
         env,
         env_params,
-        alpha=args.alpha,
-        beta=args.beta,
         prediction_mode=args.model_env_mode,
     )
-    model_env_explore = _wrap_env(model_env_explore, discrete)
-    model_env_explore_params = model_env_explore.default_params
-    model_env_explore_params = model_env_explore_params.with_model(model)
-    train_jit_explore = nnx.jit(
-        make_train(model_env_explore, model_env_explore_params, config)
+    model_env = _wrap_env(model_env, discrete)
+    EXPLORE, EVAL = 0, 1
+    alphas = jnp.array([args.alpha, 1.0])
+    betas = jnp.array([args.beta, 0.0])
+    num_configs = alphas.shape[0]
+    batched_train_jit = nnx.jit(
+        make_batched_train(model_env, model_env.default_params, config)
     )
+    eval_rollout_fn = make_rollout(eval_config, env, env_params, training=False)
 
-    model_env_eval = ModelEnvironment(
-        env,
-        env_params,
-        alpha=1.0,
-        beta=0.0,
-        prediction_mode=args.model_env_mode,
-    )
-    model_env_eval = _wrap_env(model_env_eval, discrete)
-    model_env_eval_params = model_env_eval.default_params
-    model_env_eval_params = model_env_eval_params.with_model(model)
-    train_jit_eval = nnx.jit(make_train(model_env_eval, model_env_eval_params, config))
+    seed_keys, runner_seed = vsplit(seed_keys)
+    runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
+
     for j in range(num_rollouts):
-        # ROLLOUT
+        # ROLLOUT (B seeds in parallel)
         runner_state, traj_batch = _rollout(runner_state)
 
         # UPDATE DATASET
-        traj_batch = collate_rollout(traj_batch)
-        dataset = jax.tree_util.tree_map(
-            lambda old, new: jax.lax.dynamic_update_slice_in_dim(
-                old, new, pointer, axis=0
-            ),
-            dataset,
-            traj_batch,
+        traj_batch = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
+        dataset = append_dataset(dataset, traj_batch, jnp.asarray(pointer))
+        for b in range(B):
+            loggers[b].log_dataset(_seed_slice(traj_batch, b), pointer)
+        pointer += traj_batch.obs.shape[1]
+
+        # TRAIN MODEL (B seeds in parallel)
+        history = batched_train_model(
+            models, optimizers, metrics, dataset, jnp.asarray(pointer), batched_rngs
         )
-        logger.log_dataset(traj_batch, pointer)
-        pointer += traj_batch.obs.shape[0]
-
-        batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
-
-        # TRAIN MODEL
-        history = train_model(
-            model,
-            optimizer,
-            metrics,
-            batch,
-            model_config["EPOCHS"],
-            pointer,
-            model_config["MINIBATCH_SIZE"],
-            rngs=rngs,
-        )
-
-        logger.log_loss_history(history, j)
+        for b in range(B):
+            loggers[b].log_loss_history(_seed_slice(history, b), j)
 
         if pointer > 0:
-            rng, _rng = jax.random.split(rng)
-            dyn_mae, rew_mae, term_bce, term_f1, _ = validation.evaluate_validation(
-                model,
-                base_env,
-                env_params,
-                env_name,
+            dyn_mae, rew_mae, term_bce, term_f1 = batched_val_metrics(
+                models,
                 val_obs,
                 val_act,
                 val_true_delta_obs,
                 val_true_reward,
                 val_true_terminated,
-                dataset,
-                pointer,
-                _rng,
-                j,
-                log_dir,
-                plot=config["DEBUG"],
             )
-            logger.log_validation_metrics(dyn_mae, rew_mae, term_bce, term_f1, j)
+            for b in range(B):
+                loggers[b].log_validation_metrics(
+                    dyn_mae[b], rew_mae[b], term_bce[b], term_f1[b], j
+                )
+            if config["DEBUG"]:
+                seed_keys, plot_seed = vsplit(seed_keys)
+                # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
+                # are all sliced to seed 0), not all B seeds.
+                validation.evaluate_validation(
+                    unstack_train_state(models, 0),
+                    base_env,
+                    env_params,
+                    env_name,
+                    val_obs,
+                    val_act,
+                    val_true_delta_obs,
+                    val_true_reward,
+                    val_true_terminated,
+                    _seed_slice(dataset, 0),
+                    pointer,
+                    plot_seed[0],
+                    j,
+                    seed_dirs[0],
+                    plot=True,
+                )
 
         if config["DEBUG"]:
-            rng, _rng = jax.random.split(rng)
+            seed_keys, unc_seed = vsplit(seed_keys)
+            # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir are
+            # all sliced to seed 0), not all B seeds.
             plotting.evaluate_and_plot_uncertainty(
-                model,
+                unstack_train_state(models, 0),
                 base_env,
                 env_params,
                 env_name,
-                _rng,
-                dataset,
+                unc_seed[0],
+                _seed_slice(dataset, 0),
                 pointer,
                 j,
-                log_dir,
+                seed_dirs[0],
             )
 
-        # Train model-env explore policy
-        explore_train_state = make_train_state(
-            config, model_env_explore, model_env_explore_params, rngs
+        # BATCHED PPO TRAIN (B seeds x C configs)
+        seed_keys, ts_seed = vsplit(seed_keys)
+        ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
+        batched_train_state = make_batched_train_state(
+            config, model_env, model_env.default_params, ts_keys
         )
-        rng, _rng = jax.random.split(rng)
-        out = train_jit_explore(explore_train_state, _rng)
-        explore_train_state = out["runner_state"][0]
+        # model varies per seed (B axis); alpha/beta vary per config (C axis).
+        model_env_params_b = model_env.default_params.replace(
+            model=models, alpha=alphas, beta=betas
+        )
+        seed_keys, train_seed = vsplit(seed_keys)
+        train_rng = vsplit(train_seed, num_configs).T  # (B, C)
+        out = batched_train_jit(batched_train_state, model_env_params_b, train_rng)
+        batched_out_train_state = out["runner_state"][0]
+        explore_train_state = select_config_train_state(
+            batched_out_train_state, EXPLORE
+        )
+        eval_train_state = select_config_train_state(batched_out_train_state, EVAL)
+
         runner_state = (
             explore_train_state,
             runner_state[1],
@@ -304,44 +343,29 @@ def main():
             runner_state[3],
         )
 
-        logger.log_ppo_returns(
-            out["metrics"],
-            "ppo/explore_return",
-            j,
-            config["NUM_ENVS"],
-            config["NUM_STEPS"],
-            int(config["TOTAL_TIMESTEPS"]),
-        )
+        for b in range(B):
+            for tag, index in (
+                ("ppo/explore_return", EXPLORE),
+                ("ppo/eval_return", EVAL),
+            ):
+                loggers[b].log_ppo_returns(
+                    _seed_slice(out["metrics"], (b, index)),
+                    tag,
+                    j,
+                    config["NUM_ENVS"],
+                    config["NUM_STEPS"],
+                    int(config["TOTAL_TIMESTEPS"]),
+                )
 
-        # Train model-env eval policy
-        eval_train_state = make_train_state(
-            config, model_env_eval, model_env_eval_params, rngs
-        )
-        rng, _rng = jax.random.split(rng)
-        out = train_jit_eval(eval_train_state, _rng)
-        eval_train_state = out["runner_state"][0]
+        seed_keys, eval_keys = vsplit(seed_keys)
+        mean_returns = evaluation.vevaluate_policy(
+            eval_config, env, env_params, eval_rollout_fn, eval_train_state, eval_keys
+        )  # (B,)
+        for b in range(B):
+            loggers[b].log_eval_return(pointer, mean_returns[b])
 
-        logger.log_ppo_returns(
-            out["metrics"],
-            "ppo/eval_return",
-            j,
-            config["NUM_ENVS"],
-            config["NUM_STEPS"],
-            int(config["TOTAL_TIMESTEPS"]),
-        )
-
-        rng, _rng = jax.random.split(rng)
-        mean_return = evaluation.evaluate_policy(
-            eval_config,
-            env,
-            env_params,
-            eval_train_state,
-            _rng,
-            rollout_fn=_eval_rollout,
-        )
-        logger.log_eval_return(pointer, mean_return)
-
-    logger.close()
+    for logger in loggers:
+        logger.close()
 
 
 if __name__ == "__main__":

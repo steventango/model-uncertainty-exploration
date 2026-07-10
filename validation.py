@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import optax
+from flax import nnx
 import plotting
 import ground_truth
 from env_config import get_env_config, sample_validation_batch
@@ -27,6 +28,44 @@ def generate_validation_data(env, env_params, env_name, num_val=1000):
 
 def _model_inputs(model, obs, action):
     return model.normalize_input(model.build_input(obs, action))
+
+
+def validation_metrics(
+    model, val_obs, val_act, val_true_delta_obs, val_true_reward, val_true_terminated
+):
+    """Pure-JAX validation metrics (mean model). Vmappable over a batch of models."""
+    dummy_z = jnp.zeros(model.index_dim)
+    val_x_norm = _model_inputs(model, val_obs, val_act)
+    _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x_norm, dummy_z)
+    pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., :-2])
+    pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
+    pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., -1])
+
+    dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
+    rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
+    term_bce = jnp.mean(
+        optax.sigmoid_binary_cross_entropy(mean_y_val[..., -1], val_true_terminated)
+    )
+    pred_pos = pred_terminated_val > 0.5
+    true_pos = val_true_terminated.astype(bool)
+    tp = jnp.sum(pred_pos & true_pos)
+    fp = jnp.sum(pred_pos & ~true_pos)
+    fn = jnp.sum(~pred_pos & true_pos)
+    precision = tp / jnp.maximum(tp + fp, 1)
+    recall = tp / jnp.maximum(tp + fn, 1)
+    term_f1 = 2 * precision * recall / jnp.maximum(precision + recall, 1e-8)
+    return dyn_mae, rew_mae, term_bce, term_f1
+
+
+def make_batched_validation_metrics():
+    """Vmap validation_metrics over a leading seed axis on the model."""
+    return nnx.jit(
+        nnx.vmap(
+            validation_metrics,
+            in_axes=(0, None, None, None, None, None),
+            out_axes=0,
+        )
+    )
 
 
 def evaluate_validation(
@@ -121,25 +160,14 @@ def evaluate_validation(
         )
 
     # Evaluate MAE on validation set (mean model)
-    val_x_norm = _model_inputs(model, val_obs, val_act)
-    _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x_norm, dummy_z)
-    pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., :-2])
-    pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
-    pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., -1])
-
-    dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
-    rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
-    term_bce = jnp.mean(
-        optax.sigmoid_binary_cross_entropy(mean_y_val[..., -1], val_true_terminated)
+    dyn_mae, rew_mae, term_bce, term_f1 = validation_metrics(
+        model,
+        val_obs,
+        val_act,
+        val_true_delta_obs,
+        val_true_reward,
+        val_true_terminated,
     )
-    pred_pos = pred_terminated_val > 0.5
-    true_pos = val_true_terminated.astype(bool)
-    tp = jnp.sum(pred_pos & true_pos)
-    fp = jnp.sum(pred_pos & ~true_pos)
-    fn = jnp.sum(~pred_pos & true_pos)
-    precision = tp / jnp.maximum(tp + fp, 1)
-    recall = tp / jnp.maximum(tp + fn, 1)
-    term_f1 = 2 * precision * recall / jnp.maximum(precision + recall, 1e-8)
     print(
         f"Iteration {j}: Dynamics MAE = {dyn_mae:.4f}, Reward MAE = {rew_mae:.4f}, "
         f"Termination BCE = {term_bce:.4f}, Termination F1 = {term_f1:.4f}"
