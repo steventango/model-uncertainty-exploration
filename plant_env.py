@@ -104,12 +104,16 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         )
         return next_obs, new_state, reward, terminated, {}
 
-    def compute_reward(self, obs: jax.Array, action: jax.Array, next_obs: jax.Array) -> jax.Array:
+    def compute_reward(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+    ) -> jax.Array:
         """Reward callable for external use (e.g. visualization)."""
         growth = (next_obs - obs)[..., 0]
         if self._reward_mode == "analytic":
             power = _P0 + _P_SLOPE * action[..., 0]
-            return growth - 1 / _EP_LEN * (jnp.log(power * _HOURS) - jnp.log(_E_CONST_WH))
+            return growth - 1 / _EP_LEN * (
+                jnp.log(power * _HOURS) - jnp.log(_E_CONST_WH)
+            )
         return growth
 
     def get_obs(self, state: PlantEnvState, params=None, key=None) -> jax.Array:
