@@ -116,6 +116,30 @@ classic_plan_every = Experiment(
     ),
 )
 
+# Same plan-every-step setup with ENN update_steps and PPO total_timesteps
+# each // 10, so each re-plan is ~10x cheaper and we can afford 1000 real steps
+# within the 3h walltime.
+classic_plan_every_fast = Experiment(
+    name="classic_plan_every_fast",
+    configs=tuple(
+        sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+            ppo__total_timesteps=1e6,
+        )
+    ),
+    description=(
+        "plan every step, 1000 real steps; ENN update_steps//10, "
+        "PPO total_timesteps//10; explore-only eig, sample mode"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -125,5 +149,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         blr_enn,
         classic_ln,
         classic_plan_every,
+        classic_plan_every_fast,
     )
 }
