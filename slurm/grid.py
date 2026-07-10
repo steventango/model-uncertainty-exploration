@@ -136,7 +136,7 @@ def tasks_to_submit(
     return to_submit, complete, in_progress
 
 
-def _flag_values(value: str | int | float | bool | tuple) -> list[str]:
+def _flag_values(value: str | int | float | tuple) -> list[str]:
     """Serialize a scalar or tuple override value to a list of CLI tokens.
 
     A tuple becomes multiple space-separated tokens so tyro reads it as a
@@ -156,6 +156,22 @@ def _flag(dotted_key: str) -> str:
     """
     section, field = dotted_key.split(".", 1)
     return f"--{section}.{field.lower().replace('_', '-')}"
+
+
+def _override_tokens(key: str, value: str | int | float | bool | tuple) -> list[str]:
+    """Full CLI tokens for one override: the flag plus any value tokens.
+
+    tyro treats bool fields as bare store-true/store-false flags, not
+    ``--flag value`` pairs, so booleans need their own no-value token:
+        ("ppo.use_layer_norm", True)  -> ["--ppo.use-layer-norm"]
+        ("ppo.use_layer_norm", False) -> ["--ppo.no-use-layer-norm"]
+    """
+    if isinstance(value, bool):
+        section, field = key.split(".", 1)
+        flag_field = field.lower().replace("_", "-")
+        prefix = "" if value else "no-"
+        return [f"--{section}.{prefix}{flag_field}"]
+    return [_flag(key)] + _flag_values(value)
 
 
 def _main_argv(exp: Experiment, task_id: int) -> list[str]:
@@ -182,15 +198,17 @@ def _main_argv(exp: Experiment, task_id: int) -> list[str]:
     ]
     if cfg.predict_reward_terminated:
         argv.append("--predict-reward-terminated")
+    if cfg.label:
+        argv += ["--label", cfg.label]
 
     for key, value in cfg.overrides:
         if key.startswith("ppo."):
-            argv += [_flag(key)] + _flag_values(value)
+            argv += _override_tokens(key, value)
 
     argv.append(f"model:{cfg.model}")
     for key, value in cfg.overrides:
         if key.startswith("model."):
-            argv += [_flag(key)] + _flag_values(value)
+            argv += _override_tokens(key, value)
 
     return argv
 

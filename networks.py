@@ -14,11 +14,13 @@ class Actor(nnx.Module):
         hidden_dim: int,
         activation: str = "tanh",
         discrete: bool = False,
+        use_layer_norm: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
         self.action_dim = action_dim
         self.discrete = discrete
+        self.use_layer_norm = use_layer_norm
         if activation == "relu":
             self.activation = nnx.relu
         else:
@@ -44,13 +46,20 @@ class Actor(nnx.Module):
             bias_init=constant(0.0),
             rngs=rngs,
         )
+        if use_layer_norm:
+            self.ln1 = nnx.LayerNorm(hidden_dim, rngs=rngs)
+            self.ln2 = nnx.LayerNorm(hidden_dim, rngs=rngs)
         if not discrete:
             self.log_std = nnx.Param(jnp.zeros(self.action_dim))
 
     def __call__(self, x: jax.Array):
         actor_mean = self.dense1(x)
+        if self.use_layer_norm:
+            actor_mean = self.ln1(actor_mean)
         actor_mean = self.activation(actor_mean)
         actor_mean = self.dense2(actor_mean)
+        if self.use_layer_norm:
+            actor_mean = self.ln2(actor_mean)
         actor_mean = self.activation(actor_mean)
         actor_mean = self.dense3(actor_mean)
         if self.discrete:
@@ -66,9 +75,11 @@ class Critic(nnx.Module):
         state_dim: int,
         hidden_dim: int,
         activation: str = "tanh",
+        use_layer_norm: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
+        self.use_layer_norm = use_layer_norm
         if activation == "relu":
             self.activation = nnx.relu
         else:
@@ -94,11 +105,18 @@ class Critic(nnx.Module):
             bias_init=constant(0.0),
             rngs=rngs,
         )
+        if use_layer_norm:
+            self.ln1 = nnx.LayerNorm(hidden_dim, rngs=rngs)
+            self.ln2 = nnx.LayerNorm(hidden_dim, rngs=rngs)
 
     def __call__(self, x: jax.Array):
         critic = self.dense1(x)
+        if self.use_layer_norm:
+            critic = self.ln1(critic)
         critic = self.activation(critic)
         critic = self.dense2(critic)
+        if self.use_layer_norm:
+            critic = self.ln2(critic)
         critic = self.activation(critic)
         critic = self.dense3(critic)
         return jnp.squeeze(critic, axis=-1)
@@ -112,6 +130,7 @@ class ActorCritic(nnx.Module):
         hidden_dim: int,
         activation: str = "tanh",
         discrete: bool = False,
+        use_layer_norm: bool = False,
         *,
         rngs: nnx.Rngs,
     ):
@@ -119,9 +138,17 @@ class ActorCritic(nnx.Module):
         self.discrete = discrete
         self.activation = activation
         self.actor = Actor(
-            state_dim, action_dim, hidden_dim, activation, discrete, rngs=rngs
+            state_dim,
+            action_dim,
+            hidden_dim,
+            activation,
+            discrete,
+            use_layer_norm,
+            rngs=rngs,
         )
-        self.critic = Critic(state_dim, hidden_dim, activation, rngs=rngs)
+        self.critic = Critic(
+            state_dim, hidden_dim, activation, use_layer_norm, rngs=rngs
+        )
 
     def __call__(self, x):
         pi = self.actor(x)

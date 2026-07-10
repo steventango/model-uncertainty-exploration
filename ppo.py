@@ -276,6 +276,7 @@ def make_train_state(config, env, env_params, rngs):
         config["HIDDEN_DIM"],
         activation=config["ACTIVATION"],
         discrete=discrete,
+        use_layer_norm=config["USE_LAYER_NORM"],
         rngs=rngs,
     )
 

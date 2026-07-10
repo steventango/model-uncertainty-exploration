@@ -53,6 +53,7 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     hidden_dim: int = 64
     activation: str = "tanh"
+    use_layer_norm: bool = False
     anneal_lr: bool = False
     normalize_env: bool = True
     debug: bool = False
