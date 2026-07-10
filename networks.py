@@ -15,6 +15,8 @@ class Actor(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        act_low: jax.Array | None = None,
+        act_high: jax.Array | None = None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -50,7 +52,14 @@ class Actor(nnx.Module):
             self.ln1 = nnx.LayerNorm(hidden_dim, rngs=rngs)
             self.ln2 = nnx.LayerNorm(hidden_dim, rngs=rngs)
         if not discrete:
+            if act_low is None or act_high is None:
+                raise ValueError(
+                    "Continuous Actor requires act_low/act_high to build a "
+                    "bounded (tanh-squashed) action distribution."
+                )
             self.log_std = nnx.Param(jnp.zeros(self.action_dim))
+            self.act_mid = nnx.Variable((act_low + act_high) / 2)
+            self.act_half_range = nnx.Variable((act_high - act_low) / 2)
 
     def __call__(self, x: jax.Array):
         actor_mean = self.dense1(x)
@@ -64,9 +73,24 @@ class Actor(nnx.Module):
         actor_mean = self.dense3(actor_mean)
         if self.discrete:
             return distrax.Categorical(logits=actor_mean)
-        return distrax.MultivariateNormalDiag(
+        base = distrax.MultivariateNormalDiag(
             actor_mean, jnp.exp(self.log_std.get_value())
         )
+        # Squash into [act_low, act_high] via tanh so the raw mean/std can
+        # never push the executed action past the environment's bounds.
+        bijector = distrax.Chain(
+            [
+                distrax.Block(
+                    distrax.ScalarAffine(
+                        shift=self.act_mid.get_value(),
+                        scale=self.act_half_range.get_value(),
+                    ),
+                    ndims=1,
+                ),
+                distrax.Block(distrax.Tanh(), ndims=1),
+            ]
+        )
+        return distrax.Transformed(base, bijector)
 
 
 class Critic(nnx.Module):
@@ -131,6 +155,8 @@ class ActorCritic(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        act_low: jax.Array | None = None,
+        act_high: jax.Array | None = None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -144,6 +170,8 @@ class ActorCritic(nnx.Module):
             activation,
             discrete,
             use_layer_norm,
+            act_low,
+            act_high,
             rngs=rngs,
         )
         self.critic = Critic(

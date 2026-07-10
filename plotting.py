@@ -1082,6 +1082,10 @@ def plot_policy_action(
         normalize_vec_obs.eval()
         obs_norm = normalize_vec_obs(obs_grid)
         pi, _ = network(obs_norm)
+        if hasattr(pi, "bijector"):
+            # Tanh-squashed distribution: .mean() is undefined (non-constant
+            # Jacobian). Use the forward-transformed base mean instead.
+            return np.asarray(pi.bijector.forward(pi.distribution.mean()))
         return np.asarray(pi.mean())  # (G, act_dim)
 
     explore_actions = np.clip(query_policy(explore_train_state), act_low, act_high)
