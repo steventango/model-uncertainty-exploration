@@ -251,8 +251,10 @@ def main():
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
 
+    dt = datetime.now()
     log_dir = (
-        args.log_dir or f"runs/{log_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        args.log_dir
+        or f"runs/{dt.strftime('%Y%m%d')}/{log_prefix}/{dt.strftime('%H%M%S')}"
     )
     seed_dirs, loggers = [], []
     for b in range(B):
@@ -302,6 +304,7 @@ def main():
         make_batched_train(model_env, model_env.default_params, config)
     )
     if not args.offline:
+        seed_keys, val_keys = vsplit(seed_keys)
         log_validation(
             loggers,
             batched_val_metrics,
@@ -312,6 +315,7 @@ def main():
             val_true_reward,
             val_true_terminated,
             0,
+            val_keys,
         )
         seed_keys, runner_seed = vsplit(seed_keys)
         runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
@@ -324,7 +328,10 @@ def main():
     for j in range(num_rollouts):
         if not args.offline:
             # ROLLOUT (B seeds in parallel)
+            t0 = time.perf_counter()
             runner_state, traj_batch = _rollout(runner_state)
+            jax.block_until_ready(traj_batch)
+            rollout_s = time.perf_counter() - t0
 
             # UPDATE DATASET
             traj_batch = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
@@ -332,15 +339,23 @@ def main():
             for b in range(B):
                 loggers[b].log_dataset(_seed_slice(traj_batch, b), data_count)
             data_count += traj_batch.obs.shape[1]
+            for b in range(B):
+                loggers[b].log_scalar("time/rollout_s", rollout_s, data_count)
 
         # TRAIN MODEL (B seeds in parallel)
+        t0 = time.perf_counter()
         history = batched_train_model(
             models, train_state, dataset, jnp.asarray(data_count), batched_rngs
         )
+        jax.block_until_ready(history)
+        model_train_s = time.perf_counter() - t0
         for b in range(B):
             loggers[b].log_loss_history(_seed_slice(history, b), j)
+            loggers[b].log_scalar("time/model_train_s", model_train_s, data_count)
 
         if not args.offline:
+            seed_keys, val_keys = vsplit(seed_keys)
+            t0 = time.perf_counter()
             log_validation(
                 loggers,
                 batched_val_metrics,
@@ -351,10 +366,16 @@ def main():
                 val_true_reward,
                 val_true_terminated,
                 data_count,
+                val_keys,
             )
+            validation_s = time.perf_counter() - t0
+            for b in range(B):
+                loggers[b].log_scalar("time/validation_s", validation_s, data_count)
 
         if not args.offline and args.debug:
             seed_keys, plot_seed = vsplit(seed_keys)
+            seed_keys, unc_seed = vsplit(seed_keys)
+            t0 = time.perf_counter()
             # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
             # are all sliced to seed 0), not all B seeds.
             validation.evaluate_validation(
@@ -374,11 +395,6 @@ def main():
                 seed_dirs[0],
                 plot=True,
             )
-
-        if not args.offline and args.debug:
-            seed_keys, unc_seed = vsplit(seed_keys)
-            # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir are
-            # all sliced to seed 0), not all B seeds.
             plotting.evaluate_and_plot_uncertainty(
                 unstack_train_state(models, 0),
                 base_env,
@@ -390,6 +406,13 @@ def main():
                 j,
                 seed_dirs[0],
             )
+            # NOTE: this wraps evaluate_validation (eval compute) AND the
+            # uncertainty plotting, so the metric reflects eval + plot time.
+            validation_eval_plot_s = time.perf_counter() - t0
+            for b in range(B):
+                loggers[b].log_scalar(
+                    "time/validation_eval_plot_s", validation_eval_plot_s, data_count
+                )
 
         # BATCHED PPO TRAIN (B seeds x C configs)
         seed_keys, ts_seed = vsplit(seed_keys)
@@ -403,7 +426,12 @@ def main():
         )
         seed_keys, train_seed = vsplit(seed_keys)
         train_rng = vsplit(train_seed, num_configs).T  # (B, C)
+        t0 = time.perf_counter()
         out = batched_train_jit(batched_train_state_ppo, model_env_params_b, train_rng)
+        jax.block_until_ready(out)
+        ppo_train_s = time.perf_counter() - t0
+        for b in range(B):
+            loggers[b].log_scalar("time/ppo_train_s", ppo_train_s, data_count)
         batched_out_train_state = out["runner_state"][0]
         explore_train_state = select_config_train_state(
             batched_out_train_state, EXPLORE
@@ -433,6 +461,7 @@ def main():
                 )
 
         seed_keys, eval_keys = vsplit(seed_keys)
+        t0 = time.perf_counter()
         if not args.offline:
             log_eval(loggers, batched_eval, eval_train_state, eval_keys, data_count)
         else:
@@ -451,8 +480,12 @@ def main():
                 explore_bonus=args.explore_bonus,
                 reward_fn=env.compute_reward,
             )
+        eval_s = time.perf_counter() - t0
+        for b in range(B):
+            loggers[b].log_scalar("time/eval_s", eval_s, data_count)
 
     if num_rollouts > 0:
+        t0 = time.perf_counter()
         for b in range(B):
             _save_checkpoint(
                 seed_dirs[b],
@@ -461,6 +494,9 @@ def main():
                 eval_train_state,
                 b,
             )
+        checkpoint_s = time.perf_counter() - t0
+        for b in range(B):
+            loggers[b].log_scalar("time/checkpoint_s", checkpoint_s, data_count)
 
     for logger in loggers:
         logger.close()

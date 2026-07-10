@@ -38,7 +38,9 @@ class RBFFeatures(nnx.Module):
 class RFFFeatures(nnx.Module):
     """Fixed random Fourier features."""
 
-    def __init__(self, key: jax.Array, in_features: int, num_features: int, length_scale: float):
+    def __init__(
+        self, key: jax.Array, in_features: int, num_features: int, length_scale: float
+    ):
         self.num_features = num_features
         key_w, key_b = jax.random.split(key)
         W = jax.random.normal(key_w, (num_features, in_features)) / length_scale

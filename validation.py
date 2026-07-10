@@ -30,10 +30,19 @@ def _model_inputs(model, obs, action):
     return model.normalize_input(model.build_input(obs, action))
 
 
+_NUM_UNC_SAMPLES = 10
+
+
 def validation_metrics(
-    model, val_obs, val_act, val_true_delta_obs, val_true_reward, val_true_terminated
+    model,
+    val_obs,
+    val_act,
+    val_true_delta_obs,
+    val_true_reward,
+    val_true_terminated,
+    key,
 ):
-    """Pure-JAX validation metrics (mean model). Vmappable over a batch of models."""
+    """Pure-JAX validation metrics (mean model + uncertainty). Vmappable over a batch of models."""
     val_x_norm = _model_inputs(model, val_obs, val_act)
     mean_y_val = jax.vmap(model.predict_mean)(val_x_norm)
     pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., : model.obs_dim])
@@ -59,7 +68,13 @@ def validation_metrics(
         rew_mae = jnp.zeros(())
         term_bce = jnp.zeros(())
         term_f1 = jnp.zeros(())
-    return dyn_mae, rew_mae, term_bce, term_f1
+
+    idx = model.sample_index(key, _NUM_UNC_SAMPLES)
+    mean_uncertainty = model.batch_uncertainty(
+        val_x_norm, idx, reduce_output=True
+    ).mean()
+
+    return dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty
 
 
 def make_batched_validation_metrics():
@@ -67,7 +82,7 @@ def make_batched_validation_metrics():
     return nnx.jit(
         nnx.vmap(
             validation_metrics,
-            in_axes=(0, None, None, None, None, None),
+            in_axes=(0, None, None, None, None, None, 0),
             out_axes=0,
         )
     )
@@ -159,43 +174,46 @@ def evaluate_validation(
             unc_rand[..., -1] if model.predict_reward_terminated else None
         )
 
-        if model.predict_reward_terminated:
-            plotting.plot_true_vs_predicted(
-                true_delta_obs,
-                pred_delta_obs,
-                true_delta_obs_rand,
-                pred_delta_obs_rand,
-                true_reward,
-                pred_reward,
-                true_reward_rand,
-                pred_reward_rand,
-                true_terminated,
-                pred_terminated,
-                true_terminated_rand,
-                pred_terminated_rand,
-                unc_delta_obs,
-                unc_delta_obs_rand,
-                unc_reward,
-                unc_reward_rand,
-                unc_terminated,
-                unc_terminated_rand,
-                env_config.delta_obs_labels,
-                j,
-                run_dir,
-            )
+        plotting.plot_true_vs_predicted(
+            true_delta_obs,
+            pred_delta_obs,
+            true_delta_obs_rand,
+            pred_delta_obs_rand,
+            true_reward,
+            pred_reward,
+            true_reward_rand,
+            pred_reward_rand,
+            true_terminated,
+            pred_terminated,
+            true_terminated_rand,
+            pred_terminated_rand,
+            unc_delta_obs,
+            unc_delta_obs_rand,
+            unc_reward,
+            unc_reward_rand,
+            unc_terminated,
+            unc_terminated_rand,
+            env_config.delta_obs_labels,
+            j,
+            run_dir,
+            predict_reward_terminated=model.predict_reward_terminated,
+        )
 
     # Evaluate MAE on validation set (mean model)
-    dyn_mae, rew_mae, term_bce, term_f1 = validation_metrics(
+    rng, val_key = jax.random.split(rng)
+    dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty = validation_metrics(
         model,
         val_obs,
         val_act,
         val_true_delta_obs,
         val_true_reward,
         val_true_terminated,
+        val_key,
     )
     print(
         f"Iteration {j}: Dynamics MAE = {dyn_mae:.4f}, Reward MAE = {rew_mae:.4f}, "
-        f"Termination BCE = {term_bce:.4f}, Termination F1 = {term_f1:.4f}"
+        f"Termination BCE = {term_bce:.4f}, Termination F1 = {term_f1:.4f}, "
+        f"Mean Uncertainty = {mean_uncertainty:.4f}"
     )
 
-    return dyn_mae, rew_mae, term_bce, term_f1, rng
+    return dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty, rng
