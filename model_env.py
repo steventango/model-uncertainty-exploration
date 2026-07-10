@@ -146,7 +146,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         )
         if self.oracle_reward_terminated:
             reconstructed = self._real_env.get_state(
-                state.obs, state.last_action, state.time
+                state.obs, state.last_action, state.time, next_obs=obs
             )
             _, _, r_exploit, terminated, _ = self._real_env.step_env(
                 key, reconstructed, action, params.env_params
