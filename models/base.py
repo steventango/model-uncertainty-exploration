@@ -73,7 +73,7 @@ class WorldModel(nnx.Module):
             u = 0.5 * jnp.log(1.0 + var)
         else:
             u = jnp.sqrt(var)
-        return u.mean(axis=-1) if reduce_output else u
+        return u.sum(axis=-1) if reduce_output else u
 
     def batch_uncertainty(
         self,
