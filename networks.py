@@ -287,13 +287,14 @@ class ENN(nnx.Module):
         out_features: int,
         index_dim: int,
         *,
+        use_layer_norm: bool = False,
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
             out_features=out_features,
-            use_layer_norm=True,
+            use_layer_norm=use_layer_norm,
             rngs=rngs,
         )
         self.epinet = EpiNet(
