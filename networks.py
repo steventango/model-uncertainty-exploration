@@ -164,8 +164,12 @@ class MLP(nnx.Module):
         out_features: int,
         rngs: nnx.Rngs,
         zero_out_init: bool = False,
+        use_layer_norm: bool = False,
     ):
+        self.use_layer_norm = use_layer_norm
         self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
+        if use_layer_norm:
+            self.ln1 = nnx.LayerNorm(hidden_features, rngs=rngs)
         if zero_out_init:
             self.linear2 = nnx.Linear(
                 hidden_features,
@@ -177,7 +181,10 @@ class MLP(nnx.Module):
             self.linear2 = nnx.Linear(hidden_features, out_features, rngs=rngs)
 
     def __call__(self, x, rngs: nnx.Rngs | None = None):
-        features = nnx.tanh(self.linear1(x))
+        features = self.linear1(x)
+        if self.use_layer_norm:
+            features = self.ln1(features)
+        features = nnx.tanh(features)
         y = self.linear2(features)
         return y, features
 
@@ -192,6 +199,7 @@ class ProjectedMLP(nnx.Module):
             out_features=out_features,
             rngs=rngs,
             zero_out_init=True,
+            use_layer_norm=False,
         )
 
     def __call__(self, x, z, rngs: nnx.Rngs | None = None):
@@ -215,7 +223,11 @@ class MLPEnsemble(nnx.Module):
         @nnx.vmap
         def create_model(key):
             return MLP(
-                in_features, hidden_features, out_features, rngs=nnx.Rngs(params=key)
+                in_features,
+                hidden_features,
+                out_features,
+                use_layer_norm=False,
+                rngs=nnx.Rngs(params=key),
             )
 
         self.models = create_model(keys)
@@ -281,6 +293,7 @@ class ENN(nnx.Module):
             in_features=in_features,
             hidden_features=hidden_features,
             out_features=out_features,
+            use_layer_norm=True,
             rngs=rngs,
         )
         self.epinet = EpiNet(
