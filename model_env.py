@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import struct
 from gymnax.environments import environment, spaces
 
-from model import DynamicsModel
+from models import WorldModel
 
 
 @struct.dataclass
@@ -14,13 +14,14 @@ class ModelEnvState(environment.EnvState):
     terminated: jnp.ndarray
     time: int
     z: jnp.ndarray
+    last_action: jnp.ndarray
 
 
 @struct.dataclass
 class ModelEnvParams:
     env_params: environment.EnvParams
     max_steps_in_episode: int = struct.field(pytree_node=False)
-    model: DynamicsModel | None = None
+    model: WorldModel | None = None
     alpha: float = 1.0
     beta: float = 0.0
 
@@ -43,6 +44,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         samples: int = 10,
         prediction_mode: Literal["mean", "sample"] = "mean",
         explore_bonus: Literal["std", "eig"] = "std",
+        oracle_reward_terminated: bool = True,
     ):
         if prediction_mode not in ("mean", "sample"):
             raise ValueError(
@@ -57,6 +59,10 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self.samples = samples
         self.prediction_mode = prediction_mode
         self.explore_bonus = explore_bonus
+        self.oracle_reward_terminated = oracle_reward_terminated
+        self._zero_action = jnp.zeros_like(
+            env.action_space(env_params).sample(jax.random.key(0))
+        )
 
     @property
     def default_params(self) -> ModelEnvParams:
@@ -116,40 +122,45 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         action: int | float | jax.Array,
         params: ModelEnvParams,
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
-        del key
         model = params.model
         x = model.single_input(state.obs, action)
-        y_base, y_samples = jax.vmap(model.__call__, in_axes=(None, 0))(x, state.z)
+        samples = model.predict_samples(x, state.z)
         if self.prediction_mode == "mean":
-            y = y_base[0]
+            y = model.predict_mean(x)
         else:
-            y = y_samples[0]
+            y = samples[0]
         # NOTE: the "eig" and "std" bonuses are on different scales and are NOT
         # magnitude-matched. "std" is the posterior standard deviation (linear,
         # in normalized output units) while "eig" is ½ log(1 + σ²_ep) nats
         # (logarithmic in variance). Consequently --beta is not directly
         # comparable across the two bonus types and must be retuned when
         # switching between them.
-        if self.explore_bonus == "eig":
-            # EIG under Gaussian approximation: ½ log(1 + σ²_ep / σ²)
-            # Operating in normalized prediction space so σ² ≈ 1, giving ½ log(1 + σ²_ep).
-            var_ep = y_samples.var(axis=0)
-            r_intrinsic = 0.5 * jnp.log(1.0 + var_ep).mean()
-        else:
-            r_intrinsic = y_samples.std(axis=0).mean()
+        r_intrinsic = model.uncertainty(samples, self.explore_bonus)
 
-        delta_obs = model.denormalize_delta_obs(y[..., :-2])
+        delta_obs = model.denormalize_delta_obs(y[..., : model.obs_dim])
         obs = state.obs + delta_obs
         obs = jnp.clip(
             obs,
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
-        r_exploit = model.denormalize_reward(y[..., -2])
+        if self.oracle_reward_terminated:
+            reconstructed = self._real_env.get_state(
+                state.obs, state.last_action, state.time
+            )
+            _, _, r_exploit, terminated, _ = self._real_env.step_env(
+                key, reconstructed, action, params.env_params
+            )
+        else:
+            r_exploit = model.denormalize_reward(y[..., -2])
+            terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
         r = params.alpha * r_exploit + params.beta * r_intrinsic
-        terminated = jax.nn.sigmoid(y[..., -1]) > 0.5
         state = ModelEnvState(
-            obs=obs, terminated=terminated, time=state.time + 1, z=state.z
+            obs=obs,
+            terminated=terminated,
+            time=state.time + 1,
+            z=state.z,
+            last_action=jnp.asarray(action),
         )
         return obs, state, r, terminated, {}
 
@@ -159,12 +170,13 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         model = params.model
         key, key_reset, key_z = jax.random.split(key, 3)
         obs, _ = self._real_env.reset_env(key_reset, params.env_params)
-        z = jax.random.normal(key_z, (self.samples, model.index_dim))
+        z = model.sample_index(key_z, self.samples)
         state = ModelEnvState(
             obs=obs,
             terminated=jnp.bool_(False),
             time=0,
             z=z,
+            last_action=self._zero_action,
         )
         return obs, state
 

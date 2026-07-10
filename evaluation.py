@@ -24,6 +24,7 @@ def evaluate_policy(eval_config, env, env_params, rollout_fn, eval_train_state, 
 
 def make_batched_evaluate_policy(eval_config, env, env_params, rollout_fn):
     """Vmap policy evaluation over a leading seed axis; returns (B,) mean returns."""
+
     def one(eval_train_state, rng):
         return evaluate_policy(
             eval_config, env, env_params, rollout_fn, eval_train_state, rng

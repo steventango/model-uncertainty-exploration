@@ -14,8 +14,8 @@ import plotting
 import validation
 from data import collate_rollout
 from env_config import SUPPORTED_ENVS
-from logger import ExperimentLogger
-from model import make_batched_model, make_batched_rngs, make_batched_train_model
+from logger import ExperimentLogger, log_eval, log_validation
+from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from model_env import ModelEnvironment
 from ppo import (
     make_batched_train,
@@ -25,9 +25,8 @@ from ppo import (
     select_config_train_state,
     unstack_train_state,
 )
+from environments import make_state_reconstruction_wrapper
 from wrappers import ClipAction, LogWrapper, VecEnv
-
-os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops=true"
 
 
 def _wrap_env(env, discrete):
@@ -90,6 +89,24 @@ def main():
         action="store_true",
         help="Enable debug plots (true vs predicted, uncertainty heatmaps)",
     )
+    parser.add_argument(
+        "--predict_reward_terminated",
+        action="store_true",
+        help="Use model-predicted reward/terminated instead of reward/terminated from the real env.",
+    )
+    parser.add_argument(
+        "--num_rollouts",
+        type=int,
+        default=None,
+        help="Number of rollout iterations.",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="enn",
+        choices=["enn"],
+        help="World model type.",
+    )
     args = parser.parse_args()
 
     config = {
@@ -124,6 +141,14 @@ def main():
     seed_keys = jax.vmap(jax.random.key)(seeds)  # (B,) one master key per seed
 
     base_env, env_params = gymnax.make(rollout_config["ENV_NAME"])
+    # The state-reconstruction wrapper is only needed when the model env uses the
+    # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
+    # gated on oracle_reward_terminated). Skip it when --predict_reward_terminated is
+    # set so envs without a registered wrapper don't hit the wrapper's ValueError.
+    if not args.predict_reward_terminated:
+        base_env = make_state_reconstruction_wrapper(
+            base_env, rollout_config["ENV_NAME"]
+        )
     action_space = base_env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
@@ -154,7 +179,7 @@ def main():
 
     obs_dim = env.observation_space(env_params).shape[0]
     in_features = obs_dim + action_dim
-    out_features = obs_dim + 2
+    out_features = obs_dim + 2 if args.predict_reward_terminated else obs_dim
 
     # INIT B ROLLOUT POLICIES (one per seed)
     seed_keys, policy_keys = vsplit(seed_keys)
@@ -200,12 +225,19 @@ def main():
     # INIT B WORLD MODELS + OPTIMIZERS + METRICS
     seed_keys, model_keys = vsplit(seed_keys)
     models, optimizers, metrics = make_batched_model(
-        model_config, in_features, obs_dim, out_features, act_dim, model_keys
+        args.model,
+        model_config,
+        in_features,
+        obs_dim,
+        out_features,
+        act_dim,
+        model_keys,
+        predict_reward_terminated=args.predict_reward_terminated,
     )
     seed_keys, train_model_seed = vsplit(seed_keys)
     batched_rngs = make_batched_rngs(train_model_seed)
     batched_train_model = make_batched_train_model(
-        model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
+        args.model, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
 
@@ -213,11 +245,15 @@ def main():
     log_dir = args.log_dir or (
         f"runs/{env_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
-    num_rollouts = int(
-        rollout_config["TOTAL_TIMESTEPS"]
-        // rollout_config["NUM_STEPS"]
-        // rollout_config["NUM_ENVS"]
-    )
+
+    if args.num_rollouts is not None:
+        num_rollouts = args.num_rollouts
+    else:
+        num_rollouts = int(
+            rollout_config["TOTAL_TIMESTEPS"]
+            // rollout_config["NUM_STEPS"]
+            // rollout_config["NUM_ENVS"]
+        )
     seed_dirs, loggers = [], []
     for b in range(B):
         seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
@@ -242,6 +278,7 @@ def main():
         env_params,
         prediction_mode=args.model_env_mode,
         explore_bonus=args.explore_bonus,
+        oracle_reward_terminated=not args.predict_reward_terminated,
     )
     model_env = _wrap_env(model_env, discrete)
     EXPLORE, EVAL = 0, 1
@@ -261,6 +298,20 @@ def main():
     seed_keys, runner_seed = vsplit(seed_keys)
     runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
 
+    seed_keys, eval_keys = vsplit(seed_keys)
+    log_validation(
+        loggers,
+        batched_val_metrics,
+        models,
+        val_obs,
+        val_act,
+        val_true_delta_obs,
+        val_true_reward,
+        val_true_terminated,
+        0,
+    )
+    log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
+
     for j in range(num_rollouts):
         # ROLLOUT (B seeds in parallel)
         runner_state, traj_batch = _rollout(runner_state)
@@ -279,40 +330,39 @@ def main():
         for b in range(B):
             loggers[b].log_loss_history(_seed_slice(history, b), j)
 
-        if pointer > 0:
-            dyn_mae, rew_mae, term_bce, term_f1 = batched_val_metrics(
-                models,
+        log_validation(
+            loggers,
+            batched_val_metrics,
+            models,
+            val_obs,
+            val_act,
+            val_true_delta_obs,
+            val_true_reward,
+            val_true_terminated,
+            pointer,
+        )
+
+        if config["DEBUG"]:
+            seed_keys, plot_seed = vsplit(seed_keys)
+            # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
+            # are all sliced to seed 0), not all B seeds.
+            validation.evaluate_validation(
+                unstack_train_state(models, 0),
+                base_env,
+                env_params,
+                env_name,
                 val_obs,
                 val_act,
                 val_true_delta_obs,
                 val_true_reward,
                 val_true_terminated,
+                _seed_slice(dataset, 0),
+                pointer,
+                plot_seed[0],
+                j,
+                seed_dirs[0],
+                plot=True,
             )
-            for b in range(B):
-                loggers[b].log_validation_metrics(
-                    dyn_mae[b], rew_mae[b], term_bce[b], term_f1[b], j
-                )
-            if config["DEBUG"]:
-                seed_keys, plot_seed = vsplit(seed_keys)
-                # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
-                # are all sliced to seed 0), not all B seeds.
-                validation.evaluate_validation(
-                    unstack_train_state(models, 0),
-                    base_env,
-                    env_params,
-                    env_name,
-                    val_obs,
-                    val_act,
-                    val_true_delta_obs,
-                    val_true_reward,
-                    val_true_terminated,
-                    _seed_slice(dataset, 0),
-                    pointer,
-                    plot_seed[0],
-                    j,
-                    seed_dirs[0],
-                    plot=True,
-                )
 
         if config["DEBUG"]:
             seed_keys, unc_seed = vsplit(seed_keys)
@@ -371,14 +421,11 @@ def main():
                 )
 
         seed_keys, eval_keys = vsplit(seed_keys)
-        mean_returns = batched_eval(eval_train_state, eval_keys)  # (B,)
-        for b in range(B):
-            loggers[b].log_eval_return(pointer, mean_returns[b])
+        log_eval(loggers, batched_eval, eval_train_state, eval_keys, pointer)
 
     for logger in loggers:
         logger.close()
 
-    # Completion sentinel for resubmission tooling (slurm/vulcan/grid_tasks.py).
     open(os.path.join(log_dir, "COMPLETE"), "w").close()
 
 

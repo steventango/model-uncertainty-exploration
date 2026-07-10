@@ -103,7 +103,6 @@ def make_train(env, config):
     def train(train_state, env_params, rng):
         _, _, normalize_vec_obs, _ = train_state
 
-
         # INIT ENV
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])

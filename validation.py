@@ -34,26 +34,31 @@ def validation_metrics(
     model, val_obs, val_act, val_true_delta_obs, val_true_reward, val_true_terminated
 ):
     """Pure-JAX validation metrics (mean model). Vmappable over a batch of models."""
-    dummy_z = jnp.zeros(model.index_dim)
     val_x_norm = _model_inputs(model, val_obs, val_act)
-    _, mean_y_val = jax.vmap(model.__call__, in_axes=(0, None))(val_x_norm, dummy_z)
-    pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., :-2])
-    pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
-    pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., -1])
+    mean_y_val = jax.vmap(model.predict_mean)(val_x_norm)
+    pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., : model.obs_dim])
 
     dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
-    rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
-    term_bce = jnp.mean(
-        optax.sigmoid_binary_cross_entropy(mean_y_val[..., -1], val_true_terminated)
-    )
-    pred_pos = pred_terminated_val > 0.5
-    true_pos = val_true_terminated.astype(bool)
-    tp = jnp.sum(pred_pos & true_pos)
-    fp = jnp.sum(pred_pos & ~true_pos)
-    fn = jnp.sum(~pred_pos & true_pos)
-    precision = tp / jnp.maximum(tp + fp, 1)
-    recall = tp / jnp.maximum(tp + fn, 1)
-    term_f1 = 2 * precision * recall / jnp.maximum(precision + recall, 1e-8)
+
+    if model.predict_reward_terminated:
+        pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
+        pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., -1])
+        rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
+        term_bce = jnp.mean(
+            optax.sigmoid_binary_cross_entropy(mean_y_val[..., -1], val_true_terminated)
+        )
+        pred_pos = pred_terminated_val > 0.5
+        true_pos = val_true_terminated.astype(bool)
+        tp = jnp.sum(pred_pos & true_pos)
+        fp = jnp.sum(pred_pos & ~true_pos)
+        fn = jnp.sum(~pred_pos & true_pos)
+        precision = tp / jnp.maximum(tp + fp, 1)
+        recall = tp / jnp.maximum(tp + fn, 1)
+        term_f1 = 2 * precision * recall / jnp.maximum(precision + recall, 1e-8)
+    else:
+        rew_mae = jnp.zeros(())
+        term_bce = jnp.zeros(())
+        term_f1 = jnp.zeros(())
     return dyn_mae, rew_mae, term_bce, term_f1
 
 
@@ -86,18 +91,22 @@ def evaluate_validation(
     *,
     plot=False,
 ):
-    dummy_z = jnp.zeros(model.index_dim)
-
     if plot:
         batch = jax.tree_util.tree_map(lambda x: x[:pointer], dataset)
         env_config = get_env_config(env_name)
 
         # Training data predictions (mean model, i.e. zero epistemic index)
         x_data = _model_inputs(model, batch.obs, batch.action)
-        _, mean_y = jax.vmap(model.__call__, in_axes=(0, None))(x_data, dummy_z)
-        pred_delta_obs = model.denormalize_delta_obs(mean_y[..., :-2])
-        pred_reward = model.denormalize_reward(mean_y[..., -2])
-        pred_terminated = jax.nn.sigmoid(mean_y[..., -1])
+        mean_y = jax.vmap(model.predict_mean)(x_data)
+        pred_delta_obs = model.denormalize_delta_obs(mean_y[..., : model.obs_dim])
+        pred_reward = (
+            model.denormalize_reward(mean_y[..., -2])
+            if model.predict_reward_terminated
+            else None
+        )
+        pred_terminated = (
+            jax.nn.sigmoid(mean_y[..., -1]) if model.predict_reward_terminated else None
+        )
 
         true_delta_obs = batch.info["next_obs"] - batch.obs
         true_reward = batch.reward
@@ -110,10 +119,20 @@ def evaluate_validation(
         )
         x_rand = _model_inputs(model, rand_obs, rand_act)
 
-        _, mean_y_rand = jax.vmap(model.__call__, in_axes=(0, None))(x_rand, dummy_z)
-        pred_delta_obs_rand = model.denormalize_delta_obs(mean_y_rand[..., :-2])
-        pred_reward_rand = model.denormalize_reward(mean_y_rand[..., -2])
-        pred_terminated_rand = jax.nn.sigmoid(mean_y_rand[..., -1])
+        mean_y_rand = jax.vmap(model.predict_mean)(x_rand)
+        pred_delta_obs_rand = model.denormalize_delta_obs(
+            mean_y_rand[..., : model.obs_dim]
+        )
+        pred_reward_rand = (
+            model.denormalize_reward(mean_y_rand[..., -2])
+            if model.predict_reward_terminated
+            else None
+        )
+        pred_terminated_rand = (
+            jax.nn.sigmoid(mean_y_rand[..., -1])
+            if model.predict_reward_terminated
+            else None
+        )
 
         true_delta_obs_rand = ground_truth.true_delta_obs(
             env, env_params, env_name, rand_s1, rand_s2, rand_act[:, 0]
@@ -126,38 +145,48 @@ def evaluate_validation(
         )
 
         # Epistemic uncertainty per output dimension
-        unc_data, rng = plotting.compute_epistemic_uncertainty(model, x_data, rng)
-        unc_rand, rng = plotting.compute_epistemic_uncertainty(model, x_rand, rng)
-        unc_delta_obs = unc_data[..., :-2]
-        unc_delta_obs_rand = unc_rand[..., :-2]
-        unc_reward = unc_data[..., -2]
-        unc_reward_rand = unc_rand[..., -2]
-        unc_terminated = unc_data[..., -1]
-        unc_terminated_rand = unc_rand[..., -1]
-
-        plotting.plot_true_vs_predicted(
-            true_delta_obs,
-            pred_delta_obs,
-            true_delta_obs_rand,
-            pred_delta_obs_rand,
-            true_reward,
-            pred_reward,
-            true_reward_rand,
-            pred_reward_rand,
-            true_terminated,
-            pred_terminated,
-            true_terminated_rand,
-            pred_terminated_rand,
-            unc_delta_obs,
-            unc_delta_obs_rand,
-            unc_reward,
-            unc_reward_rand,
-            unc_terminated,
-            unc_terminated_rand,
-            env_config.delta_obs_labels,
-            j,
-            run_dir,
+        rng, key_data, key_rand = jax.random.split(rng, 3)
+        idx_data = model.sample_index(key_data, 10)
+        unc_data = model.uncertainty(
+            model.batch_predict_samples(x_data, idx_data), reduce_output=False
         )
+        idx_rand = model.sample_index(key_rand, 10)
+        unc_rand = model.uncertainty(
+            model.batch_predict_samples(x_rand, idx_rand), reduce_output=False
+        )
+        unc_delta_obs = unc_data[..., : model.obs_dim]
+        unc_delta_obs_rand = unc_rand[..., : model.obs_dim]
+        unc_reward = unc_data[..., -2] if model.predict_reward_terminated else None
+        unc_reward_rand = unc_rand[..., -2] if model.predict_reward_terminated else None
+        unc_terminated = unc_data[..., -1] if model.predict_reward_terminated else None
+        unc_terminated_rand = (
+            unc_rand[..., -1] if model.predict_reward_terminated else None
+        )
+
+        if model.predict_reward_terminated:
+            plotting.plot_true_vs_predicted(
+                true_delta_obs,
+                pred_delta_obs,
+                true_delta_obs_rand,
+                pred_delta_obs_rand,
+                true_reward,
+                pred_reward,
+                true_reward_rand,
+                pred_reward_rand,
+                true_terminated,
+                pred_terminated,
+                true_terminated_rand,
+                pred_terminated_rand,
+                unc_delta_obs,
+                unc_delta_obs_rand,
+                unc_reward,
+                unc_reward_rand,
+                unc_terminated,
+                unc_terminated_rand,
+                env_config.delta_obs_labels,
+                j,
+                run_dir,
+            )
 
     # Evaluate MAE on validation set (mean model)
     dyn_mae, rew_mae, term_bce, term_f1 = validation_metrics(

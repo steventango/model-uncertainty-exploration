@@ -19,6 +19,13 @@ class GymnaxWrapper(object):
         return getattr(self._env, name)
 
 
+class StateReconstructionWrapper(GymnaxWrapper):
+    """Base class for env-specific invert get_obs wrappers."""
+
+    def get_state(self, obs, last_action, time):
+        raise NotImplementedError
+
+
 class FlattenObservationWrapper(GymnaxWrapper):
     """Flatten the observations of the environment."""
 
