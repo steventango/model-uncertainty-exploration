@@ -7,6 +7,32 @@ import ground_truth
 from env_config import get_env_config, sample_validation_batch
 
 
+def generate_brax_validation_data(env, env_params, num_val=1000):
+    """Generate validation data for brax envs by running rollout transitions.
+
+    Returns the same 5-tuple as generate_validation_data().
+    """
+    rng = jax.random.PRNGKey(42)
+    all_keys = jax.random.split(rng, num_val * 3).reshape(num_val, 3, -1)
+    reset_keys, act_keys, step_keys = (
+        all_keys[:, 0, :],
+        all_keys[:, 1, :],
+        all_keys[:, 2, :],
+    )
+
+    def sample_transition(k_reset, k_act, k_step):
+        obs, state = env.reset(k_reset, env_params)
+        action = env.action_space(env_params).sample(k_act)
+        _, _, reward, terminated, _, info = env.step(k_step, state, action, env_params)
+        delta_obs = info["next_obs"] - obs
+        return obs, action, delta_obs, reward, terminated.astype(jnp.float32)
+
+    val_obs, val_act, val_delta_obs, val_reward, val_terminated = jax.vmap(
+        sample_transition
+    )(reset_keys, act_keys, step_keys)
+    return val_obs, val_act, val_delta_obs, val_reward, val_terminated
+
+
 def generate_validation_data(env, env_params, env_name, num_val=1000):
     val_rng = jax.random.PRNGKey(42)
     val_rng, val_obs, val_s1, val_s2, val_act = sample_validation_batch(
