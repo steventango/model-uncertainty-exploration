@@ -30,6 +30,7 @@ class RunConfig:
     bonus: str = "std"
     predict_reward_terminated: bool = False
     model: str = "enn"
+    label: str = ""
     overrides: tuple[tuple[str, str | int | float | bool], ...] = ()
 
 
@@ -89,13 +90,36 @@ class Experiment:
         )
 
 
+def job_name(exp: Experiment, label: str = "") -> str:
+    """SLURM job name for a label group (empty label → experiment name only)."""
+    return f"{exp.name}-{label}" if label else exp.name
+
+
+def job_names(exp: Experiment) -> set[str]:
+    """All distinct SLURM job names an experiment submits (one per label group)."""
+    return {job_name(exp, cfg.label) for cfg in exp.configs}
+
+
+def active_task_ids_for_experiment(
+    exp: Experiment, *, user: str | None = None
+) -> set[int]:
+    active: set[int] = set()
+    # Union the active task IDs across every label-derived job name. This is correct
+    # because task_ids are globally unique across label groups (each task_id maps to
+    # exactly one label), so the per-job-name sets are disjoint — the union can never
+    # conflate one label's active task with another's.
+    for name in job_names(exp):
+        active |= active_task_ids(name, user=user)
+    return active
+
+
 def tasks_to_submit(
     exp: Experiment,
     *,
     skip_active: bool = True,
     user: str | None = None,
 ) -> tuple[list[int], int, int]:
-    active = active_task_ids(exp.name, user=user) if skip_active else set()
+    active = active_task_ids_for_experiment(exp, user=user) if skip_active else set()
     complete = 0
     in_progress = 0
     to_submit: list[int] = []
@@ -180,6 +204,7 @@ def sweep(
     bonus: str | Sequence[str] = "std",
     predict_reward_terminated: bool | Sequence[bool] = False,
     model: str | Sequence[str] = "enn",
+    label: str | Sequence[str] = "",
     **override_axes: float | int | str | bool | Sequence[float | int | str | bool],
 ) -> tuple[RunConfig, ...]:
     """Build a Cartesian-product grid of RunConfigs.
@@ -201,6 +226,7 @@ def sweep(
         "bonus": _axis(bonus),
         "predict_reward_terminated": _axis(predict_reward_terminated),
         "model": _axis(model),
+        "label": _axis(label),
     }
 
     ov_keys: list[str] = [k.replace("__", ".", 1) for k in override_axes]

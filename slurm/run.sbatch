@@ -14,7 +14,7 @@ REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR}}"
 EXPERIMENT="${EXPERIMENT:?EXPERIMENT not set — submit via python -m slurm submit}"
 cd "$REPO_ROOT"
 
-mkdir -p "/scratch/${USER}/logs/mue/${EXPERIMENT}"
+mkdir -p "/scratch/${USER}/logs/mue/${SLURM_JOB_NAME}"
 
 module load python/3.13 cuda/12
 
