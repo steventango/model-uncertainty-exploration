@@ -347,6 +347,31 @@ classic_plan_every_cheap_model_long = Experiment(
     ),
 )
 
+# Same recipe as cheap_model_long, but with tanh-squashed continuous PPO
+# (eval branch only; not merged into feat/classic-plan-every).
+classic_plan_every_cheap_model_long_squash = Experiment(
+    name="classic_plan_every_cheap_model_long_squash",
+    configs=tuple(
+        sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="cheap_model_full_ppo_squash",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+        )
+    ),
+    time_limit="6:00:00",
+    mem_per_cpu="128G",
+    description=(
+        "plan every step, up to 1000 real steps (or 6h timeout); "
+        "ENN update_steps//10 + full PPO + tanh-squashed continuous actions"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -363,5 +388,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_ppo_lr,
         classic_plan_every_cheap_ppo_ent,
         classic_plan_every_cheap_model_long,
+        classic_plan_every_cheap_model_long_squash,
     )
 }
