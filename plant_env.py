@@ -23,7 +23,6 @@ class PlantEnvParams:
     area_max: float
     act_low: jnp.ndarray
     act_high: jnp.ndarray
-    init_areas: jnp.ndarray
     max_steps_in_episode: int
 
 
@@ -71,10 +70,15 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
     def reset_env(
         self, key: jax.Array, params: PlantEnvParams
     ) -> tuple[jax.Array, PlantEnvState]:
-        """Sample a random episode-start log-area from the dataset."""
-        n = params.init_areas.shape[0]
-        idx = jax.random.randint(key, (), 0, n)
-        area = params.init_areas[idx].reshape(1)
+        """Reset to a log-area sampled uniformly within the observed range.
+
+        The dataset-driven initial-state distribution now lives in
+        :func:`model_env.reset_weights` (``reset_source="init"``); offline runs
+        use that instead, so this is only a generic in-bounds fallback.
+        """
+        area = jax.random.uniform(
+            key, (1,), minval=params.area_min, maxval=params.area_max
+        )
         state = PlantEnvState(obs=area, next_obs=jnp.zeros_like(area), time=0)
         return area, state
 

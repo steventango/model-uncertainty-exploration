@@ -6,6 +6,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import ground_truth
+from model_env import reset_weights
 from ppo import make_rollout, unstack_train_state
 from env_config import (
     action_title,
@@ -1139,6 +1140,13 @@ def plot_offline_visualization(
         alpha=jnp.float32(1.0),
         beta=jnp.float32(0.0),
     )
+    if model_env.reset_source != "env":
+        weights = reset_weights(
+            dataset.terminated, dataset.truncated, N, model_env.reset_source
+        )
+        model0_env_params = model0_env_params.replace(
+            init_obs=dataset.obs, init_weights=weights
+        )
     rollout_cfg = {
         **config,
         "NUM_ENVS": 64,

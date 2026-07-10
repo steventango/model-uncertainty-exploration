@@ -24,10 +24,11 @@ def load_offline_transitions(
             ``log_prob`` are zeros.
         action_space: :class:`gymnax.spaces.Box` — action space.
         observation_space: :class:`gymnax.spaces.Box` — observation space.
-        init_areas: ``jnp.ndarray`` of shape ``(n_episodes,)`` — first log-area
-            of each episode; used as the reset distribution for
-            :class:`plant_env.PlantEnv`.
         max_ep_len: Maximum episode length in the dataset.
+
+    The dataset's initial-state distribution (episode starts) is recovered
+    generically from the per-transition ``terminated``/``truncated`` flags by
+    :func:`model_env.reset_weights` (``reset_source="init"``).
     """
     dataset = minari.load_dataset(dataset_id)
     action_space = dataset.action_space
@@ -39,7 +40,6 @@ def load_offline_transitions(
     rewards: list[np.ndarray] = []
     terminateds: list[np.ndarray] = []
     truncateds: list[np.ndarray] = []
-    init_areas_list: list[float] = []
     max_ep_len = 0
 
     for ep in dataset.iterate_episodes():
@@ -62,7 +62,6 @@ def load_offline_transitions(
         rewards.append(ep_rewards.astype(np.float32))  # (T,)
         terminateds.append(ep_terms.astype(bool))
         truncateds.append(ep_truncs.astype(bool))
-        init_areas_list.append(float(area[0, 0]))
         max_ep_len = max(max_ep_len, T)
 
     obs = jnp.asarray(np.concatenate(obss, axis=0))  # (N, 1)
@@ -71,7 +70,6 @@ def load_offline_transitions(
     reward = jnp.asarray(np.concatenate(rewards, axis=0))  # (N,)
     terminated = jnp.asarray(np.concatenate(terminateds, axis=0))
     truncated = jnp.asarray(np.concatenate(truncateds, axis=0))
-    init_areas = jnp.asarray(np.array(init_areas_list, dtype=np.float32))
 
     zeros = jnp.zeros(obs.shape[0])
     transitions = Transition(
@@ -86,4 +84,4 @@ def load_offline_transitions(
         info={"next_obs": next_obs},
     )
 
-    return transitions, action_space, observation_space, init_areas, max_ep_len
+    return transitions, action_space, observation_space, max_ep_len
