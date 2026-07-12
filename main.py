@@ -15,6 +15,7 @@ from gymnax.environments import spaces
 
 import evaluation
 import plotting
+import sweep as sweep_lib
 import validation
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
@@ -201,8 +202,9 @@ def main():
         }
         hparams_extra = {}
 
+    sweep_configs = sweep_lib.validate_and_expand(args.model)
     model_config = model_config_dict(
-        args.model, max_data=dataset_size, minibatch_size=model_minibatch_size
+        sweep_configs[0], max_data=dataset_size, minibatch_size=model_minibatch_size
     )
     config = ppo_config_dict(
         args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
@@ -260,6 +262,8 @@ def main():
 
             return jax.tree_util.tree_map(jax.vmap(append), dataset, traj_batch)
 
+    do_sweep = len(sweep_configs) > 1
+
     seed_keys, model_keys = vsplit(seed_keys)
     models, train_state = make_batched_model(
         args.model.name,
@@ -277,6 +281,16 @@ def main():
         args.model.name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
+
+    if do_sweep:
+        # Per-seed val scorer (both model and data axes batched).
+        per_seed_val_metrics = validation.make_per_seed_validation_metrics()
+        # Candidate train fn (iterates over C configs, each seed-vmapped).
+        candidate_train_fn = sweep_lib.make_candidate_train_fn(
+            args.model.name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
+        )
+        # Keys for the candidate RNGs — split fresh each rollout inside the loop.
+        seed_keys, _sweep_base_key = vsplit(seed_keys)
 
     dt = datetime.now()
     log_dir = (
@@ -382,6 +396,64 @@ def main():
 
         # TRAIN MODEL (B seeds in parallel)
         t0 = time.perf_counter()
+        if do_sweep:
+            train_ptr = int(0.8 * data_count)
+            # Build fresh candidates branched from current deployed model's config.
+            seed_keys, cand_key = vsplit(seed_keys)
+            candidates, sweepable_vals = sweep_lib.make_candidates(
+                sweep_configs,
+                args.model.name,
+                in_features=in_features,
+                obs_dim=obs_dim,
+                out_features=out_features,
+                act_dim=act_dim,
+                keys=cand_key,
+                max_data=dataset_size,
+                minibatch_size=model_minibatch_size,
+                predict_reward_terminated=predict_reward_terminated,
+            )
+            # Build per-candidate RNG streams.
+            C = len(candidates)
+            seed_keys, cand_rng_seed = vsplit(seed_keys)
+            cand_rngs_list = [
+                make_batched_rngs(jax.vmap(lambda k, i=c: jax.random.fold_in(k, i))(cand_rng_seed))
+                for c in range(C)
+            ]
+            # Train candidates on first 80% of data (throwaway).
+            candidate_train_fn(candidates, dataset, jnp.asarray(train_ptr), cand_rngs_list)
+            # Score each candidate on held-out 20%.
+            val_obs_h, val_act_h, val_delta_h, val_rew_h, val_term_h = (
+                validation.held_out_val_data(dataset, train_ptr, data_count)
+            )
+            seed_keys, score_keys = vsplit(seed_keys)
+            dyn_maes = []
+            for c_idx, (m_c, _) in enumerate(candidates):
+                dyn_mae_c, _, _, _, _ = per_seed_val_metrics(
+                    m_c, val_obs_h, val_act_h, val_delta_h, val_rew_h, val_term_h,
+                    score_keys,
+                )
+                dyn_maes.append(dyn_mae_c)
+            scores = jnp.stack(dyn_maes, axis=0)  # (C, B)
+            best_c = jnp.argmin(scores, axis=0)   # (B,)
+            # Apply winning hyperparameters to the persistent deployed model.
+            sweep_lib.apply_winning_hypers(
+                models, sweep_configs, best_c, args.model.name, sweepable_vals
+            )
+            # Log which config each seed chose.
+            for b in range(B):
+                chosen = int(best_c[b])
+                loggers[b].log_scalar("sweep/best_config_idx", chosen, data_count)
+                chosen_cfg = sweep_configs[chosen]
+                for field in sweep_lib.SWEEPABLE.get(args.model.name, set()):
+                    loggers[b].log_scalar(
+                        f"sweep/chosen_{field}", float(getattr(chosen_cfg, field)), data_count
+                    )
+                for c_idx in range(C):
+                    loggers[b].log_scalar(
+                        f"sweep/dyn_mae_config_{c_idx}", float(scores[c_idx, b]), data_count
+                    )
+
+        # Retrain deployed model on full data (warm-started).
         history = batched_train_model(
             models, train_state, dataset, jnp.asarray(data_count), batched_rngs
         )

@@ -17,7 +17,7 @@ class RBFFeatures(nnx.Module):
 
     def __init__(self, num_features: int, in_features: int, length_scale: float):
         self.num_features = num_features
-        self.length_scale = length_scale
+        self.length_scale = nnx.Variable(jnp.asarray(length_scale, dtype=jnp.float32))
         self.C = nnx.Variable(jnp.zeros((num_features, in_features), dtype=jnp.float32))
         self.n_valid = nnx.Variable(jnp.zeros((), dtype=jnp.int32))
 
@@ -28,7 +28,7 @@ class RBFFeatures(nnx.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         diff = jnp.expand_dims(x, axis=-2) - self.C.value
         sq_dist = jnp.sum(diff**2, axis=-1)
-        phi = jnp.exp(-sq_dist / (2 * self.length_scale**2))
+        phi = jnp.exp(-sq_dist / (2 * self.length_scale.value**2))
         valid = jnp.arange(self.num_features) < self.n_valid.value
         rbf = phi * valid
         bias = jnp.ones(x.shape[:-1] + (1,))

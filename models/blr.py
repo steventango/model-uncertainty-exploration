@@ -33,9 +33,9 @@ class BLRModel(WorldModel):
         self.out_features = out_features
         self.num_features = features.num_features
         self.num_samples = num_samples
-        self.lam = lam
-        self.a0 = a0
-        self.b0 = b0
+        self.lam = nnx.Variable(jnp.asarray(lam, dtype=jnp.float32))
+        self.a0 = nnx.Variable(jnp.asarray(a0, dtype=jnp.float32))
+        self.b0 = nnx.Variable(jnp.asarray(b0, dtype=jnp.float32))
         self.features = features
 
         o = out_features
@@ -76,9 +76,9 @@ def _train_model(
 ):
     F = model.num_features + 1
     S = model.num_samples
-    lam = model.lam
-    a_0 = model.a0
-    b_0 = model.b0
+    lam = model.lam.value
+    a_0 = model.a0.value
+    b_0 = model.b0.value
 
     model.update_stats(dataset, pointer)
 

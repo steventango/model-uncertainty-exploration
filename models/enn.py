@@ -194,7 +194,10 @@ def _make_batched_model(
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
         )
-        tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
+        tx = optax.inject_hyperparams(optax.adamw)(
+            learning_rate=model_config["LR"],
+            weight_decay=model_config["WEIGHT_DECAY"],
+        )
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
         optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
         metrics = nnx.MultiMetric(
