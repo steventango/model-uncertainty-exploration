@@ -347,6 +347,73 @@ classic_plan_every_cheap_model_long = Experiment(
     ),
 )
 
+# Cheap ENN + full PPO (the best-so-far plan-every budget, per
+# classic_plan_every_cheap_model_long) run to 1000 real steps across the
+# exploit/explore x mean/sample axes used elsewhere in this file, eig bonus
+# throughout.
+#
+# 24h wall time: classic_plan_every_cheap_model_long's 6h attempt reached only
+# ~262-313/1000 steps (~58-80s/iter, dominated by ppo_train_s) before timing
+# out with no COMPLETE marker, so 6h was not enough. Extrapolating that rate
+# to 1000 steps is ~19-22h; 24h leaves margin.
+classic_plan_every_cheap_model_long_variants = Experiment(
+    name="classic_plan_every_cheap_model_long_variants",
+    configs=(
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=1.0,
+            beta=0.0,
+            mode="mean",
+            bonus="eig",
+            label="exploit_mean_eig",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=1.0,
+            beta=0.0,
+            mode="sample",
+            bonus="eig",
+            label="exploit_sample_eig",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="explore_sample_eig",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+        ),
+        *sweep(
+            env=CLASSIC_ENVS,
+            alpha=0.0,
+            beta=1.0,
+            mode="mean",
+            bonus="eig",
+            label="explore_mean_eig",
+            steps_per_rollout=1,
+            num_rollouts=1000,
+            model__update_steps=1000,
+        ),
+    ),
+    time_limit="24:00:00",
+    mem_per_cpu="128G",
+    description=(
+        "plan every step, up to 1000 real steps (24h wall budget); cheap ENN "
+        "(update_steps//10) + full PPO; exploit/explore x mean/sample, eig "
+        "bonus throughout — exploit_mean_eig, exploit_sample_eig, "
+        "explore_sample_eig, explore_mean_eig"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -363,5 +430,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_ppo_lr,
         classic_plan_every_cheap_ppo_ent,
         classic_plan_every_cheap_model_long,
+        classic_plan_every_cheap_model_long_variants,
     )
 }
