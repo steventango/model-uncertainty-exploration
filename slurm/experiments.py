@@ -352,10 +352,12 @@ classic_plan_every_cheap_model_long = Experiment(
 # exploit/explore x mean/sample axes used elsewhere in this file, eig bonus
 # throughout.
 #
-# 24h wall time: classic_plan_every_cheap_model_long's 6h attempt reached only
+# 30h wall time: classic_plan_every_cheap_model_long's 6h attempt reached only
 # ~262-313/1000 steps (~58-80s/iter, dominated by ppo_train_s) before timing
-# out with no COMPLETE marker, so 6h was not enough. Extrapolating that rate
-# to 1000 steps is ~19-22h; 24h leaves margin.
+# out with no COMPLETE marker, so 6h was not enough. The first 24h attempt at
+# this experiment finished 16/20 tasks; 4 were cancelled at the limit (3 at
+# ~950-990/1000 steps, 1 at 381/1000 on an apparently slower node) — bumped to
+# 30h for the rerun of those stragglers.
 classic_plan_every_cheap_model_long_variants = Experiment(
     name="classic_plan_every_cheap_model_long_variants",
     configs=(
@@ -404,10 +406,10 @@ classic_plan_every_cheap_model_long_variants = Experiment(
             model__update_steps=1000,
         ),
     ),
-    time_limit="24:00:00",
+    time_limit="30:00:00",
     mem_per_cpu="128G",
     description=(
-        "plan every step, up to 1000 real steps (24h wall budget); cheap ENN "
+        "plan every step, up to 1000 real steps (30h wall budget); cheap ENN "
         "(update_steps//10) + full PPO; exploit/explore x mean/sample, eig "
         "bonus throughout — exploit_mean_eig, exploit_sample_eig, "
         "explore_sample_eig, explore_mean_eig"
