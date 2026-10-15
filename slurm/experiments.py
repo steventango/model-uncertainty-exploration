@@ -95,8 +95,6 @@ classic_ln = Experiment(
     description="LayerNorm ablation on the PPO ActorCritic; explore-only (alpha=0 beta=1) eig bonus, sample mode",
 )
 
-# Plan after every real step. classic_ln PPO is ~55–70s/iter steady-state on
-# L40S, so 100 real steps (~100 re-plans) fits in the 3h walltime with margin.
 classic_plan_every = Experiment(
     name="classic_plan_every",
     configs=tuple(
@@ -116,9 +114,6 @@ classic_plan_every = Experiment(
     ),
 )
 
-# Same plan-every-step setup with ENN update_steps and PPO total_timesteps
-# each // 10, so each re-plan is ~10x cheaper and we can afford 1000 real steps
-# within the 3h walltime.
 classic_plan_every_fast = Experiment(
     name="classic_plan_every_fast",
     configs=tuple(
@@ -163,9 +158,6 @@ classic_plan_every_fast_ln = Experiment(
     ),
 )
 
-# Isolate which //10 cut hurts plan-every quality: full ENN + cheap PPO vs
-# cheap ENN + full PPO. 100 real steps matches classic_plan_every for an
-# early-curve comparison within the 3h walltime.
 classic_plan_every_budget = Experiment(
     name="classic_plan_every_budget",
     configs=(
@@ -198,7 +190,6 @@ classic_plan_every_budget = Experiment(
     ),
 )
 
-# ENN base LayerNorm under plan-every: full 2x2 of (model, PPO) budgets with LN.
 classic_plan_every_enn_ln = Experiment(
     name="classic_plan_every_enn_ln",
     configs=(
@@ -257,13 +248,12 @@ classic_plan_every_enn_ln = Experiment(
     ),
 )
 
-# Cheap PPO (1e6) with full ENN: can PPO LayerNorm and/or higher LR close the
-# gap to full PPO? (LN off/on) x (3e-4, +0.5 OM → 1e-3, +1 OM → 3e-3).
 _CHEAP_PPO_LRS = (
     (3e-4, "3e-4"),
     (1e-3, "1e-3"),
     (3e-3, "3e-3"),
 )
+
 classic_plan_every_cheap_ppo_lr = Experiment(
     name="classic_plan_every_cheap_ppo_lr",
     configs=tuple(
@@ -290,13 +280,12 @@ classic_plan_every_cheap_ppo_lr = Experiment(
     ),
 )
 
-# Cheap PPO (1e6) + cheap ENN (update_steps//10): can a non-zero entropy
-# bonus recover quality? Default ent_coef is 0.
 _CHEAP_PPO_ENTS = (
     (0.0, "0"),
     (0.01, "0p01"),
     (0.1, "0p1"),
 )
+
 classic_plan_every_cheap_ppo_ent = Experiment(
     name="classic_plan_every_cheap_ppo_ent",
     configs=tuple(
@@ -322,8 +311,6 @@ classic_plan_every_cheap_ppo_ent = Experiment(
     ),
 )
 
-# Best so-far setting (cheap ENN + full PPO, plan-every) run longer to check
-# that return does not collapse after 100 real steps. 6h / 128G wall budget.
 classic_plan_every_cheap_model_long = Experiment(
     name="classic_plan_every_cheap_model_long",
     configs=tuple(
@@ -347,17 +334,6 @@ classic_plan_every_cheap_model_long = Experiment(
     ),
 )
 
-# Cheap ENN + full PPO (the best-so-far plan-every budget, per
-# classic_plan_every_cheap_model_long) run to 1000 real steps across the
-# exploit/explore x mean/sample axes used elsewhere in this file, eig bonus
-# throughout.
-#
-# 30h wall time: classic_plan_every_cheap_model_long's 6h attempt reached only
-# ~262-313/1000 steps (~58-80s/iter, dominated by ppo_train_s) before timing
-# out with no COMPLETE marker, so 6h was not enough. The first 24h attempt at
-# this experiment finished 16/20 tasks; 4 were cancelled at the limit (3 at
-# ~950-990/1000 steps, 1 at 381/1000 on an apparently slower node) — bumped to
-# 30h for the rerun of those stragglers.
 classic_plan_every_cheap_model_long_variants = Experiment(
     name="classic_plan_every_cheap_model_long_variants",
     configs=(
