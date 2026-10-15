@@ -68,17 +68,59 @@ _BASELINE_GROWTH = jnp.asarray(
 _SURPLUS_LOG_MIN, _SURPLUS_LOG_MAX = -3.548095226287842, -2.7120113372802734e-06
 _SURPLUS_GROWTH_MIN, _SURPLUS_GROWTH_MAX = -1.5482633113861084, -3.904104232788086e-06
 
+# --- Masked gate pinned to E21 Z11 (plant-data v29 e18e21 parquet, f=0.9) ------
+# ``masked_log`` above gates against E18 Z11. E21's cohort outgrew E18's by ~56%
+# by day 14 (day-14 mean area 5.25 vs 3.36), so the same 90% gate against E21 is
+# a far harder target: 48.1% of the e18e21-daily-v29 transitions land off-target
+# under it, versus 22.8% under E18. Nearly half the data therefore sits in the
+# off-target penalty branch, which rewards *closing the gap* to the gate rather
+# than saving energy — the two branches push intensity in opposite directions, so
+# a harder gate shifts the policy toward more light.
+#
+# Regenerate with (never hand-edit; the baseline is not invariant to which
+# experiments are in the join, because outlier detection is dataset-wide):
+#   uv run --with polars python scripts/compute_masked_baseline.py \
+#       --parquet /data/plant-rl/offline/v29/e18e21-daily-v29.parquet \
+#       --experiment 21 --zone 11 --dataset plant-data/e18e21-daily-v29
+_BASELINE_AREA_E21 = jnp.asarray(
+    [
+        0.2631085454201212,
+        0.3124857643950437,
+        0.41557147412536444,
+        0.5546442148636799,
+        0.6836382807517538,
+        0.8475167410714285,
+        1.0794577281517446,
+        1.3925572308056287,
+        1.7544857725805165,
+        2.2485650510204085,
+        2.6940398369169096,
+        3.2178730867346936,
+        3.821884110787172,
+        4.460099160631994,
+        5.24752162709842,
+    ],
+    dtype=jnp.float32,
+)
+_SURPLUS_LOG_MIN_E21, _SURPLUS_LOG_MAX_E21 = -4.02999452243816, -0.00014858325585986876
+
 RewardMode = Literal[
     "area",
     "analytic",
     "masked_log",
+    "masked_log_e21",
     "masked_growth",
 ]
-_MASKED_MODES = frozenset({"masked_log", "masked_growth"})
+_MASKED_MODES = frozenset({"masked_log", "masked_log_e21", "masked_growth"})
 # Area-level gates and the Zone-11 baseline each is pinned to, with the
 # off-target surplus range measured under that same baseline.
 _LOG_GATES = {
     "masked_log": (_BASELINE_AREA, _SURPLUS_LOG_MIN, _SURPLUS_LOG_MAX),
+    "masked_log_e21": (
+        _BASELINE_AREA_E21,
+        _SURPLUS_LOG_MIN_E21,
+        _SURPLUS_LOG_MAX_E21,
+    ),
 }
 
 

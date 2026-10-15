@@ -87,6 +87,7 @@ class Args:
         "area",
         "analytic",
         "masked_log",
+        "masked_log_e21",
         "masked_growth",
     ] = "analytic"
     # Put the day index in the plant obs (``[log_area, time]``). Masked reward
