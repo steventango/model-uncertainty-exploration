@@ -662,53 +662,113 @@ def plot_uncertainty(
         plt.close()
 
 
-def _quiver_traj(ax, traj, color, label):
-    """Overlay rollout trajectories as quiver arrows on a (log-area, intensity) axes.
+def _obs_from_area(area, model_obs_dim: int, time: float = 0.0):
+    """Pad log-area with a constant day when the model/policy obs includes time."""
+    area = jnp.asarray(area)
+    if area.ndim == 1:
+        area = area[:, None]
+    if model_obs_dim <= 1:
+        return area
+    t = jnp.full((area.shape[0], 1), float(time), dtype=area.dtype)
+    return jnp.concatenate([area, t], axis=-1)
 
-    Individual episodes are drawn as thin translucent arrows; the mean trajectory
-    is drawn bold on top.
+
+def _policy_mean_action(
+    train_state,
+    area_min: float,
+    area_max: float,
+    act_low: float,
+    act_high: float,
+    num_grid: int = 200,
+    time: float = 0.0,
+    obs_dim: int = 1,
+):
+    """Return ``(areas, mean_actions)`` from ``pi.mean()`` over a log-area grid."""
+    area_axis = jnp.linspace(area_min, area_max, num_grid)
+    obs_grid = _obs_from_area(area_axis, obs_dim, time=time)
+    network, _, normalize_vec_obs, _ = train_state
+    normalize_vec_obs.eval()
+    pi, _ = network(normalize_vec_obs(obs_grid))
+    actions = np.clip(np.asarray(pi.mean())[:, 0], act_low, act_high)
+    return np.asarray(area_axis), actions
+
+
+def _quiver_traj(
+    ax,
+    traj,
+    color,
+    label,
+    mean_action=None,
+    day: int | None = None,
+    mean_only: bool = False,
+    lw: float = 1.6,
+):
+    """Overlay rollout trajectories on a (log-area, intensity) axes.
+
+    Individual episodes are drawn as thin translucent arrows.  When
+    ``mean_action=(areas, actions)`` is given, that policy mean-action curve is
+    drawn bold on top; otherwise the empirical mean trajectory is used.
+
+    If ``day`` is set and ``traj.obs`` includes a time dim, only steps with
+    ``round(time) == day`` are shown (as a scatter — one step per day per
+    episode), matching a day-faceted reward panel. Set ``mean_only`` to skip
+    episode overlays and draw only the mean-action curve.
     """
     areas = np.asarray(traj.obs[..., 0])  # (T, E)
     acts = np.asarray(traj.action[..., 0])  # (T, E)
     E = areas.shape[1]
+    has_time = traj.obs.shape[-1] > 1
 
-    # Individual episodes (thin, translucent)
-    for e in range(E):
-        x, y = areas[:, e], acts[:, e]
-        ax.quiver(
-            x[:-1],
-            y[:-1],
-            np.diff(x),
-            np.diff(y),
-            color=color,
-            alpha=0.12,
-            scale_units="xy",
-            angles="xy",
-            scale=1,
-            width=0.003,
-            headwidth=3,
-            headlength=4,
-            zorder=4,
-        )
+    if not mean_only:
+        if day is not None and has_time:
+            times = np.asarray(traj.obs[..., 1])
+            mask = np.isclose(times, float(day), atol=0.5)
+            ax.scatter(
+                areas[mask],
+                acts[mask],
+                color=color,
+                alpha=0.22,
+                s=4,
+                zorder=4,
+                linewidths=0,
+                rasterized=True,
+            )
+        else:
+            for e in range(E):
+                x, y = areas[:, e], acts[:, e]
+                ax.quiver(
+                    x[:-1],
+                    y[:-1],
+                    np.diff(x),
+                    np.diff(y),
+                    color=color,
+                    alpha=0.2,
+                    scale_units="xy",
+                    angles="xy",
+                    scale=1,
+                    width=0.0025,
+                    headwidth=3,
+                    headlength=4,
+                    zorder=4,
+                )
 
-    # Mean trajectory (bold)
-    x = areas.mean(axis=1)
-    y = acts.mean(axis=1)
-    ax.quiver(
-        x[:-1],
-        y[:-1],
-        np.diff(x),
-        np.diff(y),
+    if mean_action is not None:
+        x, y = mean_action
+    elif day is not None and has_time:
+        ax.plot([], [], color=color, alpha=1.0, lw=lw, label=label, zorder=6)
+        return
+    else:
+        x = areas.mean(axis=1)
+        y = acts.mean(axis=1)
+    ax.plot(
+        x,
+        y,
         color=color,
-        alpha=0.95,
-        scale_units="xy",
-        angles="xy",
-        scale=1,
-        width=0.006,
-        headwidth=4,
-        headlength=5,
+        alpha=1.0,
+        lw=lw,
         label=label,
         zorder=6,
+        solid_capstyle="round",
     )
 
 
@@ -727,6 +787,8 @@ def plot_area_action_uncertainty(
     exploit_visits=None,
     explore_traj=None,
     exploit_traj=None,
+    explore_mean_action=None,
+    exploit_mean_action=None,
     num_grid: int = 50,
     num_samples: int = 10,
     bonus: str = "std",
@@ -768,8 +830,9 @@ def plot_area_action_uncertainty(
 
     area_flat = area_grid.flatten()[:, None]  # (G*G, 1)
     act_flat = act_grid.flatten()[:, None]  # (G*G, 1)
+    obs_flat = _obs_from_area(area_flat, model.obs_dim, time=0.0)
 
-    x_grid = model.build_input(area_flat, act_flat)  # (G*G, in_features)
+    x_grid = model.build_input(obs_flat, act_flat)  # (G*G, in_features)
     x_grid_norm = model.normalize_input(x_grid)  # (G*G, in_features)
 
     rng, subkey = jax.random.split(rng)
@@ -781,7 +844,7 @@ def plot_area_action_uncertainty(
     unc_grid = unc_flat.reshape(num_grid, num_grid)
 
     mean_y_flat = jax.vmap(model.predict_mean)(x_grid_norm)  # (G*G, out_dim)
-    growth_flat = model.denormalize_delta_obs(mean_y_flat[..., : model.obs_dim])[
+    growth_flat = model.denormalize_delta_obs(mean_y_flat[..., : model.dyn_dim])[
         ..., 0
     ]  # (G*G,)
     growth_grid = growth_flat.reshape(num_grid, num_grid)
@@ -822,26 +885,38 @@ def plot_area_action_uncertainty(
     if explore_visits is not None:
         exp_areas, exp_acts = explore_visits
         ax_unc.scatter(
-            exp_areas, exp_acts, color="red", alpha=0.5, s=8, label="Explore"
+            exp_areas, exp_acts, color="cyan", alpha=0.5, s=8, label="Explore"
         )
         ax_growth.scatter(
-            exp_areas, exp_acts, color="red", alpha=0.5, s=8, label="Explore"
+            exp_areas, exp_acts, color="cyan", alpha=0.5, s=8, label="Explore"
         )
 
     if exploit_visits is not None:
         expt_areas, expt_acts = exploit_visits
         ax_unc.scatter(
-            expt_areas, expt_acts, color="orange", alpha=0.5, s=8, label="Exploit"
+            expt_areas, expt_acts, color="magenta", alpha=0.5, s=8, label="Exploit"
         )
         ax_growth.scatter(
-            expt_areas, expt_acts, color="orange", alpha=0.5, s=8, label="Exploit"
+            expt_areas, expt_acts, color="magenta", alpha=0.5, s=8, label="Exploit"
         )
 
     for ax in (ax_unc, ax_growth):
         if explore_traj is not None:
-            _quiver_traj(ax, explore_traj, color="#4c72b0", label="Explore traj")
+            _quiver_traj(
+                ax,
+                explore_traj,
+                color="cyan",
+                label="Explore",
+                mean_action=explore_mean_action,
+            )
         if exploit_traj is not None:
-            _quiver_traj(ax, exploit_traj, color="#55a868", label="Exploit traj")
+            _quiver_traj(
+                ax,
+                exploit_traj,
+                color="magenta",
+                label="Exploit",
+                mean_action=exploit_mean_action,
+            )
 
     for ax in axs:
         ax.legend(loc="upper right", markerscale=3, fontsize=7)
@@ -892,19 +967,35 @@ def plot_policy_rollouts(
     T = areas_exp.shape[0]
     timesteps = np.arange(T)
 
-    COLOR_EXP = "#4c72b0"  # blue
-    COLOR_EXPT = "#55a868"  # green
+    COLOR_EXP = "cyan"
+    COLOR_EXPT = "magenta"
 
-    def _plot_traces(ax, values, color, ylabel, ylim=None):
+    def _iqm(values, axis):
+        """Interquartile mean: trim the bottom/top 25% (by value) and average the rest."""
+        n = values.shape[axis]
+        k = int(np.floor(0.25 * n))
+        sorted_vals = np.sort(values, axis=axis)
+        if k == 0:
+            return sorted_vals.mean(axis=axis)
+        sl = [slice(None)] * values.ndim
+        sl[axis] = slice(k, n - k)
+        return sorted_vals[tuple(sl)].mean(axis=axis)
+
+    def _plot_traces(ax, values, color, ylabel, ylim=None, estimator="mean"):
         E = values.shape[1]
         for e in range(E):
             ax.plot(timesteps, values[:, e], color=color, alpha=0.12, lw=0.8)
-        mean = values.mean(axis=1)
-        std = values.std(axis=1)
-        ax.plot(timesteps, mean, color=color, lw=2.0, label="mean")
-        ax.fill_between(
-            timesteps, mean - std, mean + std, color=color, alpha=0.22, label="±1σ"
-        )
+        if estimator == "iqm":
+            center = _iqm(values, axis=1)
+            lo, hi = np.percentile(values, [25, 75], axis=1)
+            center_label, band_label = "IQM", "IQR"
+        else:
+            center = values.mean(axis=1)
+            std = values.std(axis=1)
+            lo, hi = center - std, center + std
+            center_label, band_label = "mean", "±1σ"
+        ax.plot(timesteps, center, color=color, lw=2.0, label=center_label)
+        ax.fill_between(timesteps, lo, hi, color=color, alpha=0.22, label=band_label)
         ax.set_ylabel(ylabel)
         if ylim is not None:
             ax.set_ylim(*ylim)
@@ -923,8 +1014,12 @@ def plot_policy_rollouts(
     # Row 0: log(Area)
     axs[0, 0].set_title("Explore", color=COLOR_EXP, fontsize=12, fontweight="bold")
     axs[0, 1].set_title("Exploit", color=COLOR_EXPT, fontsize=12, fontweight="bold")
-    _plot_traces(axs[0, 0], areas_exp, COLOR_EXP, "log(Area)", ylim=area_ylim)
-    _plot_traces(axs[0, 1], areas_expt, COLOR_EXPT, "log(Area)", ylim=area_ylim)
+    _plot_traces(
+        axs[0, 0], areas_exp, COLOR_EXP, "log(Area)", ylim=area_ylim, estimator="iqm"
+    )
+    _plot_traces(
+        axs[0, 1], areas_expt, COLOR_EXPT, "log(Area)", ylim=area_ylim, estimator="iqm"
+    )
 
     # Row 1: Intensity
     _plot_traces(axs[1, 0], acts_exp, COLOR_EXP, "Intensity", ylim=act_ylim)
@@ -965,10 +1060,31 @@ def plot_reward_landscape(
     num_grid: int = 50,
     explore_traj=None,
     exploit_traj=None,
+    explore_mean_action=None,
+    exploit_mean_action=None,
+    explore_train_state=None,
+    exploit_train_state=None,
+    obs_dim: int = 1,
+    reward_days: tuple[int, ...] | None = None,
+    gate_log_area_fn=None,
+    compose_next_obs_fn=None,
+    rng=None,
+    bonus: str = "std",
+    num_samples: int = 10,
+    dataset=None,
 ) -> None:
-    """2-D contour plot of model-predicted growth, energy penalty, and total reward.
+    """2-D contour plot of model-predicted uncertainty, growth, and total reward.
 
-    X-axis: intensity, Y-axis: log(Area).  Same orientation as the uncertainty plot.
+    X-axis: log(Area), Y-axis: intensity. Same orientation as the uncertainty plot.
+
+    The figure always shows uncertainty (explore policy only), growth, and total
+    reward each as a single row of panels. When ``reward_days`` is set
+    (day-dependent masked rewards), each row facets across days 0–13 and policy
+    overlays on a day's panel use that day's mean action and only trajectory
+    steps from that day; otherwise the figure has a single column. ``gate_log_area_fn(day)``
+    may return a vertical gate line in log-area (called with day 0 when
+    ``reward_days`` is unset). Uncertainty panels also scatter offline dataset
+    ``(log-area, intensity)`` points for that day when ``dataset`` is set.
     """
     area_axis = jnp.linspace(area_min, area_max, num_grid)
     act_axis = jnp.linspace(act_low, act_high, num_grid)
@@ -977,54 +1093,412 @@ def plot_reward_landscape(
     area_flat = area_mg.flatten()[:, None]  # (G*G, 1)
     act_flat = act_mg.flatten()[:, None]  # (G*G, 1)
 
-    x_flat = model.build_input(area_flat, act_flat)  # (G*G, in_features)
-    x_flat_norm = model.normalize_input(x_flat)  # (G*G, in_features)
-    y_flat = jax.vmap(model.predict_mean)(x_flat_norm)  # (G*G, out_dim)
-    delta_flat = model.denormalize_delta_obs(y_flat[..., : model.obs_dim])  # (G*G, 1)
-    next_obs_flat = area_flat + delta_flat  # (G*G, 1)
-    growth_flat = delta_flat[..., 0]  # (G*G,)
+    def _predict_growth(time: float | None):
+        """Model-predicted Δlog-area, next area and reward at a fixed calendar day.
 
-    if reward_fn is not None:
-        total_flat = reward_fn(area_flat, act_flat, next_obs_flat)  # (G*G,)
-        penalty_flat = growth_flat - total_flat
-    else:
-        total_flat = growth_flat
-        penalty_flat = jnp.zeros_like(growth_flat)
+        ``model_reward`` is the model's own reward head (``None`` unless the model
+        was built with one) — the reward source for reward modes with no closed
+        form, e.g. the per-(experiment, day) differential reward.
+        """
+        t = 0.0 if time is None else float(time)
+        obs_flat = _obs_from_area(area_flat, model.obs_dim, time=t)
+        x_flat = model.build_input(obs_flat, act_flat)
+        x_flat_norm = model.normalize_input(x_flat)
+        y_flat = jax.vmap(model.predict_mean)(x_flat_norm)
+        dyn_flat = model.denormalize_delta_obs(y_flat[..., : model.dyn_dim])
+        # The model output is not always the observation delta: the plant
+        # differential setup predicts a growth advantage that the env turns into
+        # an area by adding the control's own growth back. Use the env's mapping
+        # so the plotted growth and the reward agree with the rollout.
+        if compose_next_obs_fn is not None:
+            next_obs_full = compose_next_obs_fn(obs_flat, dyn_flat)
+            next_obs = next_obs_full[..., :1]
+        else:
+            next_obs = area_flat + dyn_flat[..., :1]
+        growth = (next_obs - area_flat)[..., 0]
+        model_reward = (
+            model.denormalize_reward(y_flat[..., model.reward_index])
+            if model.predict_reward
+            else None
+        )
+        return growth, next_obs, model_reward
 
-    # indexing="ij" → result_grid[i, k] = value at (area_axis[i], act_axis[k])
-    # contourf(x, y, z) expects z[k, i], so pass grid.T
-    growth_grid = np.asarray(growth_flat.reshape(num_grid, num_grid))
-    penalty_grid = np.asarray(penalty_flat.reshape(num_grid, num_grid))
-    total_grid = np.asarray(total_flat.reshape(num_grid, num_grid))
+    days = reward_days if reward_days else (None,)
+    growth_by_day: list[tuple[int | None, np.ndarray]] = []
+    total_by_day: list[tuple[int | None, np.ndarray]] = []
+    unc_by_day: list[tuple[int | None, np.ndarray]] = []
+
+    # Shared posterior indices across days for comparable uncertainty maps.
+    if rng is None:
+        rng = jax.random.PRNGKey(0)
+    rng, z_key = jax.random.split(rng)
+    z = model.sample_index(z_key, num_samples)
+
+    for day in days:
+        t = 0.0 if day is None else float(day)
+        obs_flat = _obs_from_area(area_flat, model.obs_dim, time=t)
+        x_flat = model.build_input(obs_flat, act_flat)
+        x_flat_norm = model.normalize_input(x_flat)
+        unc_flat = model.batch_uncertainty(x_flat_norm, z, bonus)
+        unc_by_day.append((day, np.asarray(unc_flat.reshape(num_grid, num_grid))))
+
+        growth_flat, next_obs_flat, model_reward_flat = _predict_growth(day)
+        growth_by_day.append(
+            (day, np.asarray(growth_flat.reshape(num_grid, num_grid)))
+        )
+        if reward_fn is None and model_reward_flat is not None:
+            total_flat = model_reward_flat
+        elif reward_fn is None:
+            total_flat = growth_flat
+        elif day is None:
+            total_flat = reward_fn(area_flat, act_flat, next_obs_flat)
+        else:
+            total_flat = reward_fn(area_flat, act_flat, next_obs_flat, time=day)
+        total_by_day.append(
+            (day, np.asarray(total_flat.reshape(num_grid, num_grid)))
+        )
+
     area_axis_np = np.asarray(area_axis)
     act_axis_np = np.asarray(act_axis)
 
-    titles = ["Growth (Δlog area)", "Energy penalty", "Total reward"]
-    grids = [growth_grid, penalty_grid, total_grid]
-    cmaps = ["RdYlGn", "RdYlGn_r", "RdYlGn"]
+    # Explore orange / Exploit blue (swapped for heatmap contrast).
+    EXPLORE_COLOR = "#FF5A00"
+    EXPLOIT_COLOR = "#00B0F0"
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    for ax, title, grid, cmap in zip(axes, titles, grids, cmaps):
-        levels = _contour_levels(grid.min(), grid.max())
-        cf = ax.contourf(area_axis_np, act_axis_np, grid.T, levels=levels, cmap=cmap)
-        fig.colorbar(cf, ax=ax)
-        ax.set_xlabel("log(Area)")
-        ax.set_ylabel("Intensity")
-        ax.set_title(title)
-        if explore_traj is not None:
-            _quiver_traj(ax, explore_traj, color="#4c72b0", label="Explore")
-        if exploit_traj is not None:
-            _quiver_traj(ax, exploit_traj, color="#55a868", label="Exploit")
-        if explore_traj is not None or exploit_traj is not None:
-            ax.legend(loc="upper right", fontsize=7)
+    def _mean_action_for_day(train_state, day: int | None):
+        if train_state is None:
+            return None
+        return _policy_mean_action(
+            train_state,
+            area_min,
+            area_max,
+            act_low,
+            act_high,
+            time=float(day if day is not None else 0),
+            obs_dim=obs_dim,
+        )
 
-    fig.suptitle(f"Reward Landscape (Iteration {j})", fontsize=13)
-    fig.tight_layout()
-    os.makedirs(run_dir, exist_ok=True)
-    fig_path = os.path.join(run_dir, f"reward_landscape_{j:04d}.png")
-    plt.savefig(fig_path, bbox_inches="tight", dpi=150)
-    print(f"Saved reward landscape to {fig_path}")
-    plt.close()
+    def _style_ax(ax, *, xlabel=False, ylabel=False, xticklabels=False, yticklabels=False):
+        ax.tick_params(
+            axis="both",
+            which="major",
+            length=2.5,
+            pad=1.5,
+            labelbottom=xticklabels,
+            labelleft=yticklabels,
+        )
+        if xlabel:
+            ax.set_xlabel("log(Area)")
+        else:
+            ax.set_xlabel("")
+        if ylabel:
+            ax.set_ylabel("Intensity")
+        else:
+            ax.set_ylabel("")
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.6)
+
+    def _draw_panel(
+        ax,
+        grid,
+        cmap,
+        gate_x=None,
+        levels=None,
+        norm=None,
+        day: int | None = None,
+        overlay_full_traj: bool = False,
+        show_explore: bool = True,
+        show_exploit: bool = True,
+        mean_only: bool = True,
+        rasterize: bool = True,
+    ):
+        if levels is None:
+            levels = _contour_levels(float(grid.min()), float(grid.max()))
+        cf = ax.contourf(
+            area_axis_np,
+            act_axis_np,
+            grid.T,
+            levels=levels,
+            cmap=cmap,
+            norm=norm,
+            vmin=norm.vmin if norm is not None else None,
+            vmax=norm.vmax if norm is not None else None,
+        )
+        if rasterize:
+            try:
+                for coll in cf.collections:
+                    coll.set_rasterized(True)
+            except AttributeError:
+                pass
+        if gate_x is not None and area_min <= gate_x <= area_max:
+            ax.axvline(gate_x, color="0.15", ls="--", lw=0.7, alpha=0.85, zorder=5)
+
+        if day is not None and not overlay_full_traj:
+            exp_ma = _mean_action_for_day(explore_train_state, day)
+            expt_ma = _mean_action_for_day(exploit_train_state, day)
+            if exp_ma is None:
+                exp_ma = explore_mean_action
+            if expt_ma is None:
+                expt_ma = exploit_mean_action
+            traj_day = day
+        else:
+            exp_ma = explore_mean_action
+            expt_ma = exploit_mean_action
+            traj_day = None
+
+        if show_explore and explore_traj is not None:
+            _quiver_traj(
+                ax,
+                explore_traj,
+                color=EXPLORE_COLOR,
+                label="Explore",
+                mean_action=exp_ma,
+                day=traj_day,
+                mean_only=mean_only or (traj_day is not None),
+                lw=1.8,
+            )
+        if show_exploit and exploit_traj is not None:
+            _quiver_traj(
+                ax,
+                exploit_traj,
+                color=EXPLOIT_COLOR,
+                label="Exploit",
+                mean_action=expt_ma,
+                day=traj_day,
+                mean_only=mean_only or (traj_day is not None),
+                lw=1.8,
+            )
+        ax.set_xlim(area_min, area_max)
+        ax.set_ylim(act_low, act_high)
+        return cf
+
+    n_day_cols = len(days)  # one panel per day (or a single panel when day-invariant)
+    nature_rc = {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "font.size": 7,
+        "axes.labelsize": 8,
+        "axes.titlesize": 8,
+        "axes.labelpad": 2,
+        "xtick.labelsize": 5.5,
+        "ytick.labelsize": 6,
+        "axes.linewidth": 0.6,
+        "xtick.major.width": 0.5,
+        "ytick.major.width": 0.5,
+        "xtick.major.size": 2.5,
+        "ytick.major.size": 2.5,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "savefig.dpi": 300,
+        "figure.dpi": 150,
+    }
+    # One column per day (14 at most) × 3 metric rows; a single column when day-invariant.
+    fig_w, fig_h = max(3.6, 1.05 * n_day_cols + 2.2), 5.2
+    # Left/right margins hold fixed-size text (row labels, colorbars) regardless of
+    # fig_w, so reserve them in absolute inches rather than a fixed figure fraction.
+    left_margin_in, right_margin_in = 0.62, 0.95
+    left_frac = left_margin_in / fig_w
+    right_frac = 1.0 - right_margin_in / fig_w
+    with plt.rc_context(nature_rc):
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        n_rows = 3
+        gs = fig.add_gridspec(
+            n_rows,
+            n_day_cols + 1,
+            width_ratios=[1.0] * n_day_cols + [0.06],
+            height_ratios=[1.0] * n_rows,
+            left=left_frac,
+            right=right_frac,
+            top=0.90,
+            bottom=0.10,
+            wspace=0.08,
+            hspace=0.35,
+        )
+        axes = np.empty((n_rows, n_day_cols), dtype=object)
+        for r in range(n_rows):
+            for c in range(n_day_cols):
+                axes[r, c] = fig.add_subplot(gs[r, c])
+
+        def _block_scales(by_day):
+            all_vals = np.concatenate([g.ravel() for _, g in by_day])
+            vmin, vmax = float(all_vals.min()), float(all_vals.max())
+            return _contour_levels(vmin, vmax), plt.Normalize(vmin=vmin, vmax=vmax)
+
+        def _fill_day_block(
+            row,
+            by_day,
+            cmap,
+            *,
+            show_explore,
+            show_exploit,
+            block_label,
+            show_data: bool = False,
+        ):
+            levels, norm = _block_scales(by_day)
+            cf = None
+            data_area = data_act = data_time = None
+            if show_data and dataset is not None:
+                data_area = np.asarray(dataset.obs[..., 0]).reshape(-1)
+                data_act = np.asarray(dataset.action[..., 0]).reshape(-1)
+                if dataset.obs.shape[-1] > 1:
+                    data_time = np.asarray(dataset.obs[..., 1]).reshape(-1)
+            for i, (day, grid) in enumerate(by_day):
+                ax = axes[row, i]
+                gate = (
+                    gate_log_area_fn(day if day is not None else 0)
+                    if gate_log_area_fn is not None
+                    else None
+                )
+                cf = _draw_panel(
+                    ax,
+                    grid,
+                    cmap,
+                    gate_x=gate,
+                    levels=levels,
+                    norm=norm,
+                    day=day,
+                    show_explore=show_explore,
+                    show_exploit=show_exploit,
+                    mean_only=True,
+                )
+                if data_area is not None:
+                    if data_time is not None and day is not None:
+                        mask = np.isclose(data_time, float(day), atol=0.5)
+                        xa, ya = data_area[mask], data_act[mask]
+                    else:
+                        xa, ya = data_area, data_act
+                    ax.scatter(
+                        xa,
+                        ya,
+                        c="white",
+                        s=2.5,
+                        alpha=0.35,
+                        linewidths=0,
+                        zorder=3,
+                        rasterized=True,
+                        label="Data" if i == 0 else None,
+                    )
+                if day is not None:
+                    ax.set_title(str(day), fontsize=7, pad=1.5)
+                _style_ax(
+                    ax,
+                    xlabel=(i == n_day_cols // 2),
+                    ylabel=(i == 0),
+                    xticklabels=True,
+                    yticklabels=(i == 0),
+                )
+                if i == n_day_cols // 2:
+                    ax.set_xlabel("log(Area)", labelpad=2)
+                if i == 0:
+                    ax.set_ylabel("Intensity", labelpad=2)
+                ax.tick_params(axis="x", which="major", pad=1.5, labelsize=5)
+                if i == 0:
+                    ax.tick_params(axis="y", which="major", pad=2)
+            pos = axes[row, 0].get_position()
+            fig.text(
+                0.08 / fig_w,
+                0.5 * (pos.y0 + pos.y1),
+                block_label,
+                rotation=90,
+                va="center",
+                ha="center",
+                fontsize=7.5,
+            )
+            return cf, norm
+
+        cf_unc, _ = _fill_day_block(
+            0,
+            unc_by_day,
+            "cividis",
+            show_explore=True,
+            show_exploit=False,
+            block_label="Uncertainty",
+            show_data=True,
+        )
+        cf_growth, _ = _fill_day_block(
+            1,
+            growth_by_day,
+            "RdYlGn",
+            show_explore=False,
+            show_exploit=False,
+            block_label="Growth (Δlog area)",
+        )
+        cf_reward, _ = _fill_day_block(
+            2,
+            total_by_day,
+            "RdYlGn",
+            show_explore=False,
+            show_exploit=True,
+            block_label="Total reward",
+        )
+
+        def _cax(r):
+            return fig.add_subplot(gs[r, -1])
+
+        from matplotlib.ticker import FormatStrFormatter, MaxNLocator
+        from matplotlib.lines import Line2D
+
+        def _format_cbar(cbar):
+            cbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            cbar.ax.yaxis.set_major_formatter(FormatStrFormatter("%.2g"))
+            cbar.ax.tick_params(labelsize=6, length=2, width=0.5)
+            cbar.outline.set_linewidth(0.5)
+
+        for cax, cf, label in (
+            (_cax(0), cf_unc, f"Uncertainty ({bonus})"),
+            (_cax(1), cf_growth, "Δlog area"),
+            (_cax(2), cf_reward, "Total reward"),
+        ):
+            cbar = fig.colorbar(cf, cax=cax)
+            cbar.set_label(label, fontsize=7)
+            _format_cbar(cbar)
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="white",
+                markeredgecolor="0.4",
+                markersize=4,
+                linestyle="None",
+                label="Data",
+            ),
+            Line2D([0], [0], color=EXPLORE_COLOR, lw=1.8, label="Explore"),
+            Line2D([0], [0], color=EXPLOIT_COLOR, lw=1.8, label="Exploit"),
+        ]
+        fig.legend(
+            handles=legend_handles,
+            loc="upper right",
+            bbox_to_anchor=(0.93, 0.995),
+            frameon=False,
+            fontsize=7,
+            ncol=3,
+            handlelength=1.8,
+        )
+
+        if n_day_cols > 1:
+            fig.text(
+                0.49,
+                axes[0, 0].get_position().y1 + 0.02,
+                "Day →",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color="0.35",
+            )
+
+        os.makedirs(run_dir, exist_ok=True)
+        fig_path = os.path.join(run_dir, f"reward_landscape_{j:04d}.png")
+        plt.savefig(fig_path, dpi=300, bbox_inches="tight", pad_inches=0.15)
+        pdf_path = os.path.join(run_dir, f"reward_landscape_{j:04d}.pdf")
+        plt.savefig(pdf_path, dpi=300, bbox_inches="tight", pad_inches=0.15)
+        print(f"Saved reward landscape to {fig_path}")
+        print(f"Saved reward landscape PDF to {pdf_path}")
+        plt.close()
 
 
 def _collect_agent_visits(
@@ -1072,25 +1546,55 @@ def plot_policy_action(
     j: int,
     run_dir: str,
     num_grid: int = 200,
+    obs_dim: int = 1,
+    policy_days: tuple[int, ...] | None = None,
 ) -> None:
-    """Plot mean action chosen by explore vs exploit policy across log(area) values."""
-    area_axis = jnp.linspace(area_min, area_max, num_grid)
-    obs_grid = area_axis[:, None]  # (G, 1)
+    """Plot mean action chosen by explore vs exploit policy across log(area).
 
-    def query_policy(train_state):
-        network, _, normalize_vec_obs, _ = train_state
-        normalize_vec_obs.eval()
-        obs_norm = normalize_vec_obs(obs_grid)
-        pi, _ = network(obs_norm)
-        return np.asarray(pi.mean())  # (G, act_dim)
-
-    explore_actions = np.clip(query_policy(explore_train_state), act_low, act_high)
-    exploit_actions = np.clip(query_policy(exploit_train_state), act_low, act_high)
-    areas_np = np.asarray(area_axis)
-
+    When ``obs_dim == 2`` (masked rewards with time), draw one curve per day in
+    ``policy_days`` so time-dependence is visible.
+    """
+    days = policy_days if (obs_dim > 1 and policy_days) else (0,)
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(areas_np, explore_actions[:, 0], color="#4c72b0", lw=2, label="Explore")
-    ax.plot(areas_np, exploit_actions[:, 0], color="#55a868", lw=2, label="Exploit")
+    cmap_exp = plt.cm.cool(np.linspace(0.3, 0.9, len(days)))
+    cmap_expt = plt.cm.autumn(np.linspace(0.2, 0.8, len(days)))
+    for i, day in enumerate(days):
+        areas_np, explore_actions = _policy_mean_action(
+            explore_train_state,
+            area_min,
+            area_max,
+            act_low,
+            act_high,
+            num_grid,
+            time=float(day),
+            obs_dim=obs_dim,
+        )
+        _, exploit_actions = _policy_mean_action(
+            exploit_train_state,
+            area_min,
+            area_max,
+            act_low,
+            act_high,
+            num_grid,
+            time=float(day),
+            obs_dim=obs_dim,
+        )
+        day_lab = f" day {day}" if len(days) > 1 else ""
+        ax.plot(
+            areas_np,
+            explore_actions,
+            color=cmap_exp[i],
+            lw=2,
+            label=f"Explore{day_lab}",
+        )
+        ax.plot(
+            areas_np,
+            exploit_actions,
+            color=cmap_expt[i],
+            lw=2,
+            ls="--",
+            label=f"Exploit{day_lab}",
+        )
     ax.axhline(act_low, color="gray", lw=0.8, linestyle=":")
     ax.axhline(act_high, color="gray", lw=0.8, linestyle=":")
     ax.set_xlabel("log(Area)")
@@ -1098,9 +1602,12 @@ def plot_policy_action(
     ax.set_ylim(
         act_low - 0.05 * (act_high - act_low), act_high + 0.05 * (act_high - act_low)
     )
-    ax.legend()
+    ax.legend(fontsize=7, ncol=2)
     ax.grid(True, linestyle=":", alpha=0.5)
-    fig.suptitle(f"Policy Action vs log(Area) (Iteration {j})", fontsize=13)
+    title = f"Policy Action vs log(Area) (Iteration {j})"
+    if len(days) > 1:
+        title += " — by day"
+    fig.suptitle(title, fontsize=13)
     fig.tight_layout()
     os.makedirs(run_dir, exist_ok=True)
     fig_path = os.path.join(run_dir, f"policy_action_{j:04d}.png")
@@ -1123,6 +1630,9 @@ def plot_offline_visualization(
     run_dir,
     explore_bonus,
     reward_fn=None,
+    reward_days: tuple[int, ...] | None = None,
+    gate_log_area_fn=None,
+    compose_next_obs_fn=None,
 ):
     """Collect agent visits / trajectories and emit all three offline plots (seed 0)."""
     area_min = float(env_params.area_min)
@@ -1182,6 +1692,28 @@ def plot_offline_visualization(
         num_steps=num_steps,
     )
 
+    obs_dim = int(dataset.obs.shape[-1])
+    policy_days = reward_days if obs_dim > 1 else None
+
+    explore_mean_action = _policy_mean_action(
+        explore_ts0,
+        area_min,
+        area_max,
+        act_low,
+        act_high,
+        obs_dim=obs_dim,
+        time=0.0,
+    )
+    exploit_mean_action = _policy_mean_action(
+        exploit_ts0,
+        area_min,
+        area_max,
+        act_low,
+        act_high,
+        obs_dim=obs_dim,
+        time=0.0,
+    )
+
     plot_area_action_uncertainty(
         model0,
         area_min,
@@ -1197,6 +1729,8 @@ def plot_offline_visualization(
         exploit_visits=exploit_visits,
         explore_traj=explore_traj,
         exploit_traj=exploit_traj,
+        explore_mean_action=explore_mean_action,
+        exploit_mean_action=exploit_mean_action,
         bonus=explore_bonus,
     )
     plot_policy_rollouts(
@@ -1209,6 +1743,7 @@ def plot_offline_visualization(
         act_low=act_low,
         act_high=act_high,
     )
+    rng, rng_landscape = jax.random.split(rng)
     plot_reward_landscape(
         model0,
         reward_fn,
@@ -1220,6 +1755,17 @@ def plot_offline_visualization(
         run_dir=run_dir,
         explore_traj=explore_traj,
         exploit_traj=exploit_traj,
+        explore_mean_action=explore_mean_action,
+        exploit_mean_action=exploit_mean_action,
+        explore_train_state=explore_ts0,
+        exploit_train_state=exploit_ts0,
+        obs_dim=obs_dim,
+        reward_days=reward_days,
+        gate_log_area_fn=gate_log_area_fn,
+        compose_next_obs_fn=compose_next_obs_fn,
+        rng=rng_landscape,
+        bonus=explore_bonus,
+        dataset=dataset,
     )
     plot_policy_action(
         explore_ts0,
@@ -1230,4 +1776,6 @@ def plot_offline_visualization(
         act_high=act_high,
         j=j,
         run_dir=run_dir,
+        obs_dim=obs_dim,
+        policy_days=policy_days,
     )
