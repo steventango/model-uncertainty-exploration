@@ -22,7 +22,7 @@ from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wra
 from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
-from offline_data import AREA_INDEX, load_offline_transitions
+from offline_data import load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
 from ppo import (
     make_batched_train,
@@ -91,11 +91,26 @@ def main():
         print(f"  N={N} | action_dim={action_dim}")
 
         env = PlantEnv(action_dim)
+        # Bounds from the transitions actually loaded, not from the dataset's
+        # declared spaces. plant-data derives the Minari action space from
+        # stats["intensity"] over the whole parquet, before its RL filters, so
+        # action_space.low is 0.00276 — an off/night row no episode contains. The
+        # real operating range is [0.4, 1.3] (p0.5 of the actions is already
+        # 0.400; only 0.2-0.4% of rows sit below, down to 0.381). Taking the
+        # declared low let PPO's ClipAction explore two orders of magnitude below
+        # anything observed, where the dynamics model only extrapolates: policies
+        # trained that way put 18% of a (log-area x day) grid at *negative*
+        # intensity and were only rescued by the deployment-side clip.
+        act_low = jnp.min(all_transitions.action, axis=0)
+        act_high = jnp.max(all_transitions.action, axis=0)
+        obs_all = jnp.concatenate(
+            [all_transitions.obs, all_transitions.info["next_obs"]], axis=0
+        )
         env_params = PlantEnvParams(
-            area_min=float(observation_space.low[AREA_INDEX]),
-            area_max=float(observation_space.high[AREA_INDEX]),
-            act_low=jnp.asarray(action_space.low, dtype=jnp.float32),
-            act_high=jnp.asarray(action_space.high, dtype=jnp.float32),
+            area_min=float(jnp.min(obs_all[:, 0])),
+            area_max=float(jnp.max(obs_all[:, 0])),
+            act_low=jnp.asarray(act_low, dtype=jnp.float32),
+            act_high=jnp.asarray(act_high, dtype=jnp.float32),
             max_steps_in_episode=14,
         )
 
