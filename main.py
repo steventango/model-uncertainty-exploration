@@ -129,8 +129,19 @@ def main():
 
         obs_dim = env.obs_dim
         in_features = obs_dim + action_dim
-        out_features = obs_dim
+        # Dynamics outputs cover only the stochastic obs dims; the plant day is a
+        # deterministic clock that PlantEnv.compose_next_obs sets.
+        dyn_dim = env.dyn_dim
+        # Plant termination is purely "day >= horizon" and comes from the
+        # oracle, so no run predicts termination (or reward) — a learned head
+        # would both waste capacity and inject its logit variance into the
+        # exploration bonus.
         predict_reward_terminated = False
+        predict_terminated = False
+        out_features = dyn_dim
+        # Bonus dims: the dynamics outputs only. Never the day (deterministic)
+        # and never termination.
+        uncertainty_dims = tuple(range(out_features))
         discrete = False
 
         num_steps = 14
@@ -148,6 +159,8 @@ def main():
             "N_train": N,
             "action_dim": action_dim,
             "obs_includes_time": include_time,
+            "dyn_dim": dyn_dim,
+            "uncertainty_dims": list(uncertainty_dims),
         }
         hparams_extra = {}
 
@@ -166,6 +179,11 @@ def main():
             )
         else:
             predict_reward_terminated = args.predict_reward_terminated
+        # Online envs keep the historical coupled behaviour: both extra heads or
+        # neither, dynamics over the full observation, bonus over every output.
+        predict_terminated = None
+        dyn_dim = None
+        uncertainty_dims = None
         oracle_reward_terminated = not predict_reward_terminated
         # The state-reconstruction wrapper is only needed when the model env uses the
         # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
@@ -291,6 +309,8 @@ def main():
         act_dim,
         model_keys,
         predict_reward_terminated=predict_reward_terminated,
+        predict_terminated=predict_terminated,
+        dyn_dim=dyn_dim,
     )
     seed_keys, train_model_seed = vsplit(seed_keys)
     batched_rngs = make_batched_rngs(train_model_seed)
@@ -330,7 +350,11 @@ def main():
         loggers.append(logger)
 
     if args.offline:
+        # The day-count termination always stays with the oracle.
         oracle_reward_terminated = True
+        oracle_terminated = True
+    else:
+        oracle_terminated = None  # follow oracle_reward_terminated
     # Offline has no real env to reset; "env" falls back to the dataset's
     # initial-state distribution ("init").
     reset_source = (
@@ -342,6 +366,8 @@ def main():
         prediction_mode=args.model_env_mode,
         explore_bonus=args.explore_bonus,
         oracle_reward_terminated=oracle_reward_terminated,
+        oracle_terminated=oracle_terminated,
+        uncertainty_dims=uncertainty_dims,
         reset_source=reset_source,
         max_steps_in_episode=args.rollout_length,
         uncertainty_threshold=args.uncertainty_threshold,
@@ -549,6 +575,7 @@ def main():
                 reward_fn=env.compute_reward,
                 reward_days=env.landscape_reward_days,
                 gate_log_area_fn=env.landscape_gate_log_area,
+                compose_next_obs_fn=env.compose_next_obs,
             )
         eval_s = time.perf_counter() - t0
         for b in range(B):

@@ -170,22 +170,48 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         act_dim: int,
         reward_mode: RewardMode = "analytic",
         include_time: bool = False,
+        dyn_dim: int | None = None,
     ):
         self._act_dim = act_dim
+        # Width of the dynamics output. Defaults to 1 (log-area only). It is a
+        # property of the *trained checkpoint*, not of the env, so deployments
+        # restoring a model trained before the day was dropped from the target
+        # must pass the old width explicitly.
+        self._dyn_dim = dyn_dim
         self._reward_mode: RewardMode = reward_mode
         self._include_time = include_time
+
+    @property
+    def dyn_dim(self) -> int:
+        """Number of dynamics outputs — the *stochastic* obs dims only.
+
+        The day is part of the observation (day-dependent rewards need it) but is
+        a deterministic clock that :meth:`compose_next_obs` sets, so it is never
+        a prediction target: predicting it would waste capacity and put a
+        deterministic quantity into the exploration bonus.
+
+        Overridable for checkpoints trained before that change, which predicted
+        the full observation delta.
+        """
+        return 1 if self._dyn_dim is None else self._dyn_dim
 
     def compose_next_obs(self, obs: jax.Array, dyn_pred: jax.Array) -> jax.Array:
         """Build the resulting observation from the model's dynamics output.
 
-        The model predicts the whole observation delta. When the obs carries the
-        day, the predicted day is overwritten with the exact clock.
+        The model predicts the log-area delta only. The day, when the obs carries
+        it, is a deterministic clock advanced here rather than predicted.
         """
-        obs_next = obs + dyn_pred
+        if self.dyn_dim >= self.obs_dim and self.obs_includes_time:
+            # Legacy width: the model predicted the whole observation delta. Add
+            # it, then overwrite the day, which is what the earlier code did.
+            obs_next = obs + dyn_pred
+            day = jnp.asarray(obs[..., 1:2], dtype=obs_next.dtype) + 1.0
+            return jnp.concatenate([obs_next[..., :1], day], axis=-1)
+        area = obs[..., :1] + dyn_pred[..., :1]
         if not self.obs_includes_time:
-            return obs_next
-        day = jnp.asarray(obs[..., 1:2], dtype=obs_next.dtype) + 1.0
-        return jnp.concatenate([obs_next[..., :1], day], axis=-1)
+            return area
+        day = jnp.asarray(obs[..., 1:2], dtype=area.dtype) + 1.0
+        return jnp.concatenate([area, day], axis=-1)
 
     @property
     def obs_includes_time(self) -> bool:
