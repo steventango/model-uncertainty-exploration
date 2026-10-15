@@ -866,6 +866,7 @@ dependencies = [
     { name = "minari" },
     { name = "optax" },
     { name = "orbax-checkpoint" },
+    { name = "pinball-jax" },
     { name = "pyyaml" },
     { name = "seaborn" },
     { name = "setuptools" },
@@ -895,6 +896,7 @@ requires-dist = [
     { name = "minari", specifier = ">=0.5.3" },
     { name = "optax", specifier = ">=0.2.0" },
     { name = "orbax-checkpoint", specifier = ">=0.5.0" },
+    { name = "pinball-jax", git = "https://github.com/panahiparham/pinball-jax" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "setuptools", specifier = "<84" },
@@ -1303,6 +1305,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/f9/066794cca041b969964f779ee5fa66a9498bbf34248ac39c5d7954e4198f/pillow-12.3.0-cp313-cp313-win32.whl", hash = "sha256:a876864214e136f0eb367788dbd7df045f4806801518e2cfe9e13229cfe06d8f", size = 6473287, upload-time = "2026-07-01T11:54:44.9Z" },
     { url = "https://files.pythonhosted.org/packages/a6/9b/7a58e61d62be561da3a356fe2384d4059a6345fc130e23ef1c36a5b81d24/pillow-12.3.0-cp313-cp313-win_amd64.whl", hash = "sha256:1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8", size = 7239691, upload-time = "2026-07-01T11:54:47.141Z" },
     { url = "https://files.pythonhosted.org/packages/aa/b0/c4ed4f0ef8f8fa5ee8351537db6650bb8189f7e118842978dd6589065692/pillow-12.3.0-cp313-cp313-win_arm64.whl", hash = "sha256:b629de27fda84b42cde7edef0d85f13b958b47f6e9bbcbba9b673c562a89bd8b", size = 2568185, upload-time = "2026-07-01T11:54:49.137Z" },
+]
+
+[[package]]
+name = "pinball-jax"
+version = "0.1.0"
+source = { git = "https://github.com/panahiparham/pinball-jax#3031381731eec53d8d6acdf731a1170031b59f55" }
+dependencies = [
+    { name = "jax" },
 ]
 
 [[package]]

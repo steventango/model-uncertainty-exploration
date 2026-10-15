@@ -18,7 +18,13 @@ import plotting
 import validation
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
+from environments import (
+    BRAX_BACKENDS,
+    BRAX_ENVS,
+    PINBALL_ENVS,
+    PinballGymnaxEnv,
+    make_state_reconstruction_wrapper,
+)
 from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
@@ -129,9 +135,13 @@ def main():
 
     else:
         is_brax = args.env in BRAX_ENVS
+        is_pinball = args.env in PINBALL_ENVS
         if is_brax:
             backend = BRAX_BACKENDS.get(args.env, "positional")
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
+            env_params = base_env.default_params
+        elif is_pinball:
+            base_env = PinballGymnaxEnv(args.env.removeprefix("Pinball-"))
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)
@@ -156,14 +166,14 @@ def main():
         env = _wrap_env(base_env, discrete)
 
         env_name = args.env
-        if is_brax:
+        if is_brax or is_pinball:
             (
                 val_obs,
                 val_act,
                 val_true_delta_obs,
                 val_true_reward,
                 val_true_terminated,
-            ) = validation.generate_brax_validation_data(base_env, env_params)
+            ) = validation.generate_rollout_validation_data(base_env, env_params)
         else:
             (
                 val_obs,
