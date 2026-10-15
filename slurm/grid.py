@@ -169,7 +169,7 @@ def _override_tokens(key: str, value: str | int | float | bool | tuple) -> list[
         ("ppo.use_layer_norm", False) -> ["--ppo.no-use-layer-norm"]
 
     Top-level (undotted) keys become ``--kebab-case`` flags:
-        ("num_rollouts", 100) -> ["--num-rollouts", "100"]
+        ("max_steps", 100) -> ["--max-steps", "100"]
     """
     if "." not in key:
         flag = f"--{key.lower().replace('_', '-')}"

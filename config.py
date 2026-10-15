@@ -80,7 +80,7 @@ class Args:
     rollout_length: int | None = None
     steps_per_rollout: int | None = None
     uncertainty_threshold: float | None = None
-    num_rollouts: int | None = None
+    max_steps: int | None = None
     offline: bool = False
     dataset: str = "plant-data/visu-v27"
     debug: bool = False
