@@ -6,7 +6,7 @@ set -euo pipefail
 # combined learning curves with scripts/plot_learning_curves.py.
 #
 # Overridable via env vars:
-#   ENV=hopper  MODEL=model:enn  SEEDS=3  NUM_ROLLOUTS=20  ROOT=runs/hopper_reset_sweep
+#   ENV=hopper  MODEL=model:enn  SEEDS=3  MAX_STEPS=20000  ROOT=runs/hopper_reset_sweep
 #
 # Usage:
 #   scripts/run_hopper_reset_sweep.sh
@@ -14,7 +14,7 @@ set -euo pipefail
 ENV="${ENV:-hopper}"
 MODEL="${MODEL:-model:enn}"
 SEEDS="${SEEDS:-3}"
-NUM_ROLLOUTS="${NUM_ROLLOUTS:-20}"
+MAX_STEPS="${MAX_STEPS:-20000}"  # 20 episodes of 1000 steps
 ROOT="${ROOT:-runs/hopper_reset_sweep}"
 
 RESET_SOURCES=(buffer init env)
@@ -35,14 +35,14 @@ for src in "${RESET_SOURCES[@]}"; do
             rl_arg=(--rollout-length "$rl")
         fi
 
-        echo "=== Running ${tag} (env=${ENV}, seeds=${SEEDS}, rollouts=${NUM_ROLLOUTS}) ==="
+        echo "=== Running ${tag} (env=${ENV}, seeds=${SEEDS}, max_steps=${MAX_STEPS}) ==="
         uv run python main.py \
             --env "$ENV" \
             --alpha 1.0 \
             --reset-source "$src" \
             "${rl_arg[@]}" \
             --num-seeds "$SEEDS" \
-            --num-rollouts "$NUM_ROLLOUTS" \
+            --max-steps "$MAX_STEPS" \
             --label "$label" \
             --log-dir "$log_dir" \
             "$MODEL"

@@ -118,7 +118,7 @@ def main():
         # derived from this same value (see model_config_dict).
         dataset_size = total_timesteps
 
-        num_rollouts = args.num_rollouts if args.num_rollouts is not None else 1
+        num_rollouts = 1
         log_prefix = f"plant_{args.dataset.replace('/', '_')}"
         hparams_run = {
             "num_rollouts": num_rollouts,
@@ -177,22 +177,19 @@ def main():
         in_features = obs_dim + action_dim
         out_features = obs_dim + 2 if predict_reward_terminated else obs_dim
 
-        rollout_steps = env_params.max_steps_in_episode # // 10
+        # Real-env steps between re-plans: one episode by default, 1 to re-plan
+        # after every real step.
+        rollout_steps = args.steps_per_rollout or env_params.max_steps_in_episode
         num_steps = 10
-        model_minibatch_size = rollout_steps
-        # Floor of the episode count: aim for roughly max_steps env-steps of data,
-        # but this is NOT a step-count guarantee. Integer division never rounds up
-        # and the max(1, ...) floor means a single episode for envs with
-        # max_steps_in_episode in the upper half of the range.
-        max_steps = 100_000 if is_brax else 1000
-        num_episodes = max(1, max_steps // env_params.max_steps_in_episode)
-        total_timesteps = env_params.max_steps_in_episode * num_episodes
+        # Tied to episode length so plan-every-step does not shrink it to 1.
+        model_minibatch_size = env_params.max_steps_in_episode
+        max_steps = args.max_steps or (100_000 if is_brax else 1000)
+        num_rollouts = max_steps // rollout_steps
+        total_timesteps = num_rollouts * rollout_steps
         # Cap the rolling dataset buffer; the RBF feature bank places one center
         # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
         # value (see model_config_dict) to keep the two in lockstep.
         dataset_size = min(10000, total_timesteps)
-
-        num_rollouts = args.num_rollouts or int(total_timesteps // rollout_steps)
         log_prefix = env_name
         hparams_run = {
             "num_rollouts": num_rollouts,

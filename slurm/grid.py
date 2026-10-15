@@ -41,6 +41,8 @@ class Experiment:
     base_seed: int = 0
     num_seeds: int = 30
     description: str = ""
+    time_limit: str = "3:00:00"
+    mem_per_cpu: str = "32G"
 
     @property
     def num_tasks(self) -> int:
@@ -165,7 +167,15 @@ def _override_tokens(key: str, value: str | int | float | bool | tuple) -> list[
     ``--flag value`` pairs, so booleans need their own no-value token:
         ("ppo.use_layer_norm", True)  -> ["--ppo.use-layer-norm"]
         ("ppo.use_layer_norm", False) -> ["--ppo.no-use-layer-norm"]
+
+    Top-level (undotted) keys become ``--kebab-case`` flags:
+        ("max_steps", 100) -> ["--max-steps", "100"]
     """
+    if "." not in key:
+        flag = f"--{key.lower().replace('_', '-')}"
+        if isinstance(value, bool):
+            return [flag if value else f"--no-{key.lower().replace('_', '-')}"]
+        return [flag] + _flag_values(value)
     if isinstance(value, bool):
         section, field = key.split(".", 1)
         flag_field = field.lower().replace("_", "-")
@@ -202,8 +212,9 @@ def _main_argv(exp: Experiment, task_id: int) -> list[str]:
         argv += ["--label", cfg.label]
 
     for key, value in cfg.overrides:
-        if key.startswith("ppo."):
-            argv += _override_tokens(key, value)
+        if key.startswith("model."):
+            continue
+        argv += _override_tokens(key, value)
 
     argv.append(f"model:{cfg.model}")
     for key, value in cfg.overrides:

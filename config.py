@@ -18,6 +18,7 @@ class ENNConfig:
     index_dim: int | tuple[int, ...] = 8
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
+    use_layer_norm: bool = False
 
 
 @dataclass(frozen=True)
@@ -77,8 +78,9 @@ class Args:
     predict_reward_terminated: bool = False
     reset_source: Literal["env", "buffer", "init"] = "env"
     rollout_length: int | None = None
+    steps_per_rollout: int | None = None
     uncertainty_threshold: float | None = None
-    num_rollouts: int | None = None
+    max_steps: int | None = None
     offline: bool = False
     dataset: str = "plant-data/visu-v27"
     debug: bool = False

@@ -13,10 +13,11 @@ ENVS=(
 )
 
 EXTRA_ARGS="${@}"
+# 600 steps = 3 Pendulum episodes (one re-plan each); longer envs get fewer.
 
 for ENV in "${ENVS[@]}"; do
     echo "=== $ENV ==="
-    uv run python main.py --env "$ENV" --num-seeds 1 --num-rollouts 3 --debug $EXTRA_ARGS --log-dir "$OUTPUT_DIR/${ENV}/blr" model:blr
-    uv run python main.py --env "$ENV" --num-seeds 1 --num-rollouts 3 --debug $EXTRA_ARGS --log-dir "$OUTPUT_DIR/${ENV}/enn" model:enn
+    uv run python main.py --env "$ENV" --num-seeds 1 --max-steps 600 --debug $EXTRA_ARGS --log-dir "$OUTPUT_DIR/${ENV}/blr" model:blr
+    uv run python main.py --env "$ENV" --num-seeds 1 --max-steps 600 --debug $EXTRA_ARGS --log-dir "$OUTPUT_DIR/${ENV}/enn" model:enn
     echo ""
 done
