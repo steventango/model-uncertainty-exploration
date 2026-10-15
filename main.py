@@ -23,7 +23,12 @@ from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import load_offline_transitions
-from plant_env import PlantEnv, PlantEnvParams, reward_mode_requires_time
+from plant_env import (
+    PlantEnv,
+    PlantEnvParams,
+    reward_mode_is_learned,
+    reward_mode_requires_time,
+)
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -132,15 +137,16 @@ def main():
         # Dynamics outputs cover only the stochastic obs dims; the plant day is a
         # deterministic clock that PlantEnv.compose_next_obs sets.
         dyn_dim = env.dyn_dim
-        # Plant termination is purely "day >= horizon" and comes from the
-        # oracle, so no run predicts termination (or reward) — a learned head
-        # would both waste capacity and inject its logit variance into the
-        # exploration bonus.
-        predict_reward_terminated = False
+        # reward_mode="learned" is the only mode needing a reward head. Plant
+        # termination is purely "day >= horizon" and comes from the oracle, so no
+        # run predicts termination — a learned head would both waste capacity and
+        # inject its logit variance into the exploration bonus.
+        learned_reward = reward_mode_is_learned(args.reward_mode)
+        predict_reward_terminated = learned_reward
         predict_terminated = False
-        out_features = dyn_dim
-        # Bonus dims: the dynamics outputs only. Never the day (deterministic)
-        # and never termination.
+        out_features = dyn_dim + (1 if learned_reward else 0)
+        # Bonus dims: the dynamics outputs, plus the reward head when there is
+        # one. Never the day (deterministic) and never termination.
         uncertainty_dims = tuple(range(out_features))
         discrete = False
 
@@ -159,6 +165,7 @@ def main():
             "N_train": N,
             "action_dim": action_dim,
             "obs_includes_time": include_time,
+            "learned_reward": learned_reward,
             "dyn_dim": dyn_dim,
             "uncertainty_dims": list(uncertainty_dims),
         }
@@ -350,8 +357,9 @@ def main():
         loggers.append(logger)
 
     if args.offline:
-        # The day-count termination always stays with the oracle.
-        oracle_reward_terminated = True
+        # Reward from the model's head only for reward_mode="learned"; the
+        # day-count termination always stays with the oracle.
+        oracle_reward_terminated = not learned_reward
         oracle_terminated = True
     else:
         oracle_terminated = None  # follow oracle_reward_terminated
@@ -572,7 +580,9 @@ def main():
                 j=j,
                 run_dir=seed_dirs[0],
                 explore_bonus=args.explore_bonus,
-                reward_fn=env.compute_reward,
+                # reward_mode="learned" has no closed-form reward; passing None
+                # makes the landscape use the model's own reward head instead.
+                reward_fn=None if learned_reward else env.compute_reward,
                 reward_days=env.landscape_reward_days,
                 gate_log_area_fn=env.landscape_gate_log_area,
                 compose_next_obs_fn=env.compose_next_obs,

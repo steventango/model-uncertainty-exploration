@@ -110,6 +110,7 @@ RewardMode = Literal[
     "masked_log",
     "masked_log_e21",
     "masked_growth",
+    "learned",
 ]
 _MASKED_MODES = frozenset({"masked_log", "masked_log_e21", "masked_growth"})
 # Area-level gates and the Zone-11 baseline each is pinned to, with the
@@ -122,16 +123,36 @@ _LOG_GATES = {
         _SURPLUS_LOG_MAX_E21,
     ),
 }
+# Reward modes with no closed form: the reward comes from the dynamics model's
+# reward head, fit to the dataset's own reward column. Required for the
+# differential (in-batch control-normalized) reward of
+# ``plant-data/e18e21-daily-diff-v29``:
+#
+#   R_t = (Δlog A_pol − Δlog A_ctl) − λ·(E_t − E_ctl)/E_ctl
+#
+# with the control resolved per (experiment, day) — E18 rows against E18 Z11,
+# E21 rows against E21 Z11. The experiment id is not part of the observation, so
+# no function of (obs, action, next_obs) can reproduce that reward; see the
+# module docstring of :class:`PlantEnv` for the measured gap.
+_LEARNED_MODES = frozenset({"learned"})
 
 
 def reward_mode_requires_time(reward_mode: RewardMode) -> bool:
     """Whether ``reward_mode`` *needs* the day index in the observation.
 
     Masked modes gate on a day-dependent baseline, so their obs must carry
-    time. Other modes may still opt in (``PlantEnv(include_time=True)``) to let
-    the policy and dynamics model condition on the day.
+    time. ``learned`` needs it too: the differential reward it is used for subtracts a
+    per-(experiment, day) control, so a reward head without the day can only fit
+    the day-averaged control. Other modes may still opt in
+    (``PlantEnv(include_time=True)``) to let the policy and dynamics model
+    condition on the day.
     """
-    return reward_mode in _MASKED_MODES
+    return reward_mode in _MASKED_MODES or reward_mode in _LEARNED_MODES
+
+
+def reward_mode_is_learned(reward_mode: RewardMode) -> bool:
+    """Whether the reward comes from the model's reward head, not this env."""
+    return reward_mode in _LEARNED_MODES
 
 
 @struct.dataclass
@@ -163,6 +184,17 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
     policy can condition on the day; otherwise it is ``[log_area]`` unless
     ``include_time`` opts in. The day comes from the dataset's ``wall_time``
     (see :mod:`offline_data`), not from the position in the episode.
+
+    ``reward_mode="learned"`` has no oracle reward at all: ``compute_reward``
+    raises and the reward is taken from the dynamics model's reward head, fit to
+    the dataset's own reward column. That is the only faithful option for the
+    differential reward of ``plant-data/e18e21-daily-diff-v29``. Measured on that
+    dataset's 15411 transitions, reconstructing its stored reward from
+    ``(growth, action, day)`` plus the true per-(experiment, day) control table
+    still leaves a residual of std 0.106 against a reward whose own std is 0.081
+    (R² < 0) — partly because the experiment id is unobserved, partly because
+    plant-data drops gap-bridged rows so ``next_obs - obs`` across a kept pair is
+    not always the one-day ``area_reward`` the stored reward was built from.
     """
 
     def __init__(
@@ -325,6 +357,12 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         ``time`` is omitted (e.g. reward-landscape plots) day 0 is used.
         """
         mode = self._reward_mode
+        if reward_mode_is_learned(mode):
+            raise RuntimeError(
+                f"reward_mode={mode!r} has no oracle reward — it is supplied by the "
+                "model's reward head (main.py sets predict_reward_terminated and "
+                "ModelEnvironment(oracle_reward=False) for it)."
+            )
         growth = (next_obs - obs)[..., 0]
         # Current day: explicit ``time`` wins, else read it off the obs when it
         # carries one, else day 0 (reward-landscape plots pass neither).
