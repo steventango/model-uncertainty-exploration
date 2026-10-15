@@ -88,9 +88,14 @@ class Args:
     # for rewards with no closed form in (obs, action, next_obs) — notably the
     # differential reward of plant-data/e18e21-daily-diff-v29, whose control is
     # resolved per (experiment, day) and whose experiment id is not observed.
+    # "analytic_diff" is the differential setup: the dynamics model regresses the
+    # de-confounded growth advantage over the same-batch, same-day control and
+    # the reward is that advantage minus an energy cost referenced to the
+    # control's own energy. Needs a dataset carrying area_reward_diff.
     reward_mode: Literal[
         "area",
         "analytic",
+        "analytic_diff",
         "masked_log",
         "masked_log_e21",
         "masked_growth",

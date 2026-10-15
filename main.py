@@ -88,8 +88,22 @@ def main():
     if args.offline:
         print(f"Loading offline dataset: {args.dataset}")
         include_time = args.include_time or reward_mode_requires_time(args.reward_mode)
-        all_transitions, action_space, observation_space, _ = (
-            load_offline_transitions(args.dataset, include_time=include_time)
+        # The env decides what the dynamics model should regress: the raw
+        # observation delta, or (differential setup) the de-confounded growth
+        # advantage over the same-batch, same-day control.
+        probe_env = PlantEnv(1, reward_mode=args.reward_mode, include_time=include_time,
+                             ctl_growth=jnp.zeros(1), ctl_energy=jnp.ones(1))
+        (
+            all_transitions,
+            action_space,
+            observation_space,
+            _,
+            ctl_growth,
+            ctl_energy,
+        ) = load_offline_transitions(
+            args.dataset,
+            include_time=include_time,
+            dyn_target=probe_env.dyn_target,
         )
         action_dim = action_space.shape[0]
         act_dim = None  # continuous action — no one-hot encoding
@@ -103,6 +117,8 @@ def main():
             action_dim,
             reward_mode=args.reward_mode,
             include_time=include_time,
+            ctl_growth=ctl_growth,
+            ctl_energy=ctl_energy,
         )
         # Bounds from the transitions actually loaded, not from the dataset's
         # declared spaces. plant-data derives the Minari action space from
@@ -166,6 +182,7 @@ def main():
             "action_dim": action_dim,
             "obs_includes_time": include_time,
             "learned_reward": learned_reward,
+            "dyn_target": probe_env.dyn_target,
             "dyn_dim": dyn_dim,
             "uncertainty_dims": list(uncertainty_dims),
         }

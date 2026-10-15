@@ -14,6 +14,7 @@ _EP_LEN = 14.0
 # *off-target rows only*, shifted to [-1, 0]. The Zone-11 baselines below are
 # pinned to E18 Z11 and so are unchanged from the v27 parquet; only the energy
 # range and the surplus ranges move with the added E20 data.
+_CTL_TABLE_DAYS = 15
 _MASK_F = 0.9
 _E_MIN_WH = 260.484666666669
 _E_MAX_WH = 798.6427500000027
@@ -107,6 +108,7 @@ _SURPLUS_LOG_MIN_E21, _SURPLUS_LOG_MAX_E21 = -4.02999452243816, -0.0001485832558
 RewardMode = Literal[
     "area",
     "analytic",
+    "analytic_diff",
     "masked_log",
     "masked_log_e21",
     "masked_growth",
@@ -123,6 +125,11 @@ _LOG_GATES = {
         _SURPLUS_LOG_MAX_E21,
     ),
 }
+# Differential setup: the dynamics model predicts the growth *advantage* over
+# the same-batch, same-day control and the reward is that advantage minus an
+# energy cost referenced to the control's own energy. Day-dependent, so its obs
+# must carry the day.
+_DIFF_MODES = frozenset({"analytic_diff"})
 # Reward modes with no closed form: the reward comes from the dynamics model's
 # reward head, fit to the dataset's own reward column. Required for the
 # differential (in-batch control-normalized) reward of
@@ -140,14 +147,19 @@ _LEARNED_MODES = frozenset({"learned"})
 def reward_mode_requires_time(reward_mode: RewardMode) -> bool:
     """Whether ``reward_mode`` *needs* the day index in the observation.
 
-    Masked modes gate on a day-dependent baseline, so their obs must carry
-    time. ``learned`` needs it too: the differential reward it is used for subtracts a
+    Masked modes gate on a day-dependent baseline and ``analytic_diff``
+    references a per-day control, so their obs must carry time.
+    ``learned`` needs it too: the differential reward it is used for subtracts a
     per-(experiment, day) control, so a reward head without the day can only fit
     the day-averaged control. Other modes may still opt in
     (``PlantEnv(include_time=True)``) to let the policy and dynamics model
     condition on the day.
     """
-    return reward_mode in _MASKED_MODES or reward_mode in _LEARNED_MODES
+    return (
+        reward_mode in _MASKED_MODES
+        or reward_mode in _DIFF_MODES
+        or reward_mode in _LEARNED_MODES
+    )
 
 
 def reward_mode_is_learned(reward_mode: RewardMode) -> bool:
@@ -202,6 +214,8 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         act_dim: int,
         reward_mode: RewardMode = "analytic",
         include_time: bool = False,
+        ctl_growth: jax.Array | None = None,
+        ctl_energy: jax.Array | None = None,
         dyn_dim: int | None = None,
     ):
         self._act_dim = act_dim
@@ -212,6 +226,30 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         self._dyn_dim = dyn_dim
         self._reward_mode: RewardMode = reward_mode
         self._include_time = include_time
+        if reward_mode in _DIFF_MODES and (ctl_growth is None or ctl_energy is None):
+            raise ValueError(
+                f"reward_mode={reward_mode!r} needs the per-day control tables; "
+                "pass ctl_growth/ctl_energy from load_offline_transitions."
+            )
+        self._ctl_growth = (
+            None if ctl_growth is None else jnp.asarray(ctl_growth, dtype=jnp.float32)
+        )
+        self._ctl_energy = (
+            None if ctl_energy is None else jnp.asarray(ctl_energy, dtype=jnp.float32)
+        )
+
+    @property
+    def dyn_target(self) -> str:
+        """What the dynamics model predicts for this reward mode.
+
+        ``"advantage"`` for the differential setup: the target is
+        ``Δlog A − Δlog A_ctl[experiment, day]``, which plant-data builds per row
+        with the true experiment id. The shared unobserved batch factor is
+        therefore already removed from the target, so the model does not need to
+        observe the experiment to be unconfounded — and the action's effect is
+        estimated free of the action/experiment correlation in the data.
+        """
+        return "advantage" if self._reward_mode in _DIFF_MODES else "delta_obs"
 
     @property
     def dyn_dim(self) -> int:
@@ -227,19 +265,43 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         """
         return 1 if self._dyn_dim is None else self._dyn_dim
 
+    def _next_day_index(self, day: jax.Array | int) -> jax.Array:
+        """Control-table index for the day a transition *lands on*."""
+        d = jnp.asarray(day, dtype=jnp.int32)
+        return jnp.clip(d + 1, 0, _CTL_TABLE_DAYS - 1)
+
     def compose_next_obs(self, obs: jax.Array, dyn_pred: jax.Array) -> jax.Array:
         """Build the resulting observation from the model's dynamics output.
 
-        The model predicts the log-area delta only. The day, when the obs carries
-        it, is a deterministic clock advanced here rather than predicted.
+        For ``dyn_target == "advantage"`` the model predicts the growth advantage
+        over the control, so the absolute area needs the control's own growth
+        added back:
+
+            log A_{t+1} = log A_t + ĝ_diff(s, a) + C(day + 1)
+
+        ``C`` is indexed by *day* rather than by state on purpose. The day is
+        exogenous — it advances no matter what the policy does — so ``C(day)`` is
+        a fixed additive schedule the policy cannot steer. Indexing it by area
+        would put a term the policy *can* influence, and which is not
+        de-confounded, back into the controllable part of the dynamics. The
+        plant's own size dependence is already carried by ``ĝ_diff``, which is
+        fit at ``(log_area, day, action)``.
+
+        Note ``C`` cancels out of the reward: ``compute_reward`` recomputes
+        growth as ``next_obs - obs`` and subtracts ``C(day + 1)`` again, so the
+        reward is exactly ``ĝ_diff - energy cost`` whatever ``C`` is. The choice
+        of ``C`` therefore only shifts the simulated trajectory, never the reward
+        at a given transition.
         """
         if self.dyn_dim >= self.obs_dim and self.obs_includes_time:
             # Legacy width: the model predicted the whole observation delta. Add
-            # it, then overwrite the day, which is what the earlier code did.
+            # it, then overwrite the day, which is what the pre-advantage code did.
             obs_next = obs + dyn_pred
             day = jnp.asarray(obs[..., 1:2], dtype=obs_next.dtype) + 1.0
             return jnp.concatenate([obs_next[..., :1], day], axis=-1)
         area = obs[..., :1] + dyn_pred[..., :1]
+        if self.dyn_target == "advantage":
+            area = area + self._ctl_growth[self._next_day_index(obs[..., 1])][..., None]
         if not self.obs_includes_time:
             return area
         day = jnp.asarray(obs[..., 1:2], dtype=area.dtype) + 1.0
@@ -381,6 +443,24 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
             power = _P0 + _P_SLOPE * action[..., 0]
             energy = power * _HOURS
             return growth - (energy - _E_CONST_WH) / _E_CONST_WH / _EP_LEN
+
+        if mode == "analytic_diff":
+            # plant-data ``reward_diff``:
+            #   (Δlog A − Δlog A_ctl) − (E − E_ctl)/E_ctl/N
+            # Both terms reference the control on the *resulting* day, so the
+            # action is scored against what the control did over the same
+            # interval. Subtracting the control growth here undoes the add-back
+            # in ``compose_next_obs``, leaving exactly the model's predicted
+            # advantage — no dependence on the control table survives into the
+            # reward.
+            nd = self._next_day_index(day)
+            ctl_energy = self._ctl_energy[nd]
+            energy = (_P0 + _P_SLOPE * action[..., 0]) * _HOURS
+            return (
+                growth
+                - self._ctl_growth[nd]
+                - (energy - ctl_energy) / ctl_energy / _EP_LEN
+            )
 
         day = jnp.clip(day, 0, _BASELINE_AREA.shape[0] - 1)
         # Both masked modes gate the resulting quantity against the next day's
