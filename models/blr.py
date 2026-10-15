@@ -22,6 +22,8 @@ class BLRModel(WorldModel):
         act_dim=None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
+        predict_terminated: bool | None = None,
+        dyn_dim: int | None = None,
     ):
         super().__init__(
             in_features=in_features,
@@ -29,6 +31,8 @@ class BLRModel(WorldModel):
             act_dim=act_dim,
             eps=eps,
             predict_reward_terminated=predict_reward_terminated,
+            predict_terminated=predict_terminated,
+            dyn_dim=dyn_dim,
         )
         self.out_features = out_features
         self.num_features = features.num_features
@@ -92,7 +96,7 @@ def _train_model(
 
     Y = (
         model.build_targets(
-            dataset.obs, dataset.info["next_obs"], dataset.reward, dataset.terminated
+            model.dyn_target(dataset), dataset.reward, dataset.terminated
         )
         * mask
     )
@@ -144,6 +148,8 @@ def _make_batched_model(
     act_dim,
     keys,
     predict_reward_terminated: bool = True,
+    predict_terminated: bool | None = None,
+    dyn_dim: int | None = None,
 ):
     use_rff = model_config.get("FEATURE_TYPE", "rbf") == "rff"
 
@@ -172,6 +178,8 @@ def _make_batched_model(
             key=key,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
+            predict_terminated=predict_terminated,
+            dyn_dim=dyn_dim,
         )
 
     return build(keys), None
