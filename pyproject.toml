@@ -17,7 +17,7 @@ dependencies = [
     "optax>=0.2.0",
     "pyyaml>=6.0",
     "seaborn>=0.13.2",
-    "setuptools<82",
+    "setuptools<84",
     "tensorboard>=2.20.0",
     "tensorboardx>=2.6.5",
     "tqdm>=4.67.3",
