@@ -23,7 +23,7 @@ from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import load_offline_transitions
-from plant_env import PlantEnv, PlantEnvParams
+from plant_env import PlantEnv, PlantEnvParams, reward_mode_requires_time
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -82,15 +82,23 @@ def main():
 
     if args.offline:
         print(f"Loading offline dataset: {args.dataset}")
+        include_time = args.include_time or reward_mode_requires_time(args.reward_mode)
         all_transitions, action_space, observation_space, _ = (
-            load_offline_transitions(args.dataset)
+            load_offline_transitions(args.dataset, include_time=include_time)
         )
         action_dim = action_space.shape[0]
         act_dim = None  # continuous action — no one-hot encoding
         N = all_transitions.obs.shape[0]
-        print(f"  N={N} | action_dim={action_dim}")
+        print(
+            f"  N={N} | action_dim={action_dim} | obs_dim={all_transitions.obs.shape[-1]}"
+            + (" (area+time)" if include_time else " (area)")
+        )
 
-        env = PlantEnv(action_dim)
+        env = PlantEnv(
+            action_dim,
+            reward_mode=args.reward_mode,
+            include_time=include_time,
+        )
         # Bounds from the transitions actually loaded, not from the dataset's
         # declared spaces. plant-data derives the Minari action space from
         # stats["intensity"] over the whole parquet, before its RL filters, so
@@ -119,7 +127,7 @@ def main():
             all_transitions,
         )
 
-        obs_dim = 1
+        obs_dim = env.obs_dim
         in_features = obs_dim + action_dim
         out_features = obs_dim
         predict_reward_terminated = False
@@ -129,7 +137,7 @@ def main():
         model_minibatch_size = min(N, 256)
         total_timesteps = N
         # Single source of truth for the dataset buffer size; the RBF feature
-        # bank places one center per stored datapoint, so NUM_FEATURES (rbf) is
+        # bank places one center per datapoint, so NUM_FEATURES (rbf) is
         # derived from this same value (see model_config_dict).
         dataset_size = total_timesteps
 
@@ -139,6 +147,7 @@ def main():
             "num_rollouts": num_rollouts,
             "N_train": N,
             "action_dim": action_dim,
+            "obs_includes_time": include_time,
         }
         hparams_extra = {}
 
@@ -538,6 +547,8 @@ def main():
                 run_dir=seed_dirs[0],
                 explore_bonus=args.explore_bonus,
                 reward_fn=env.compute_reward,
+                reward_days=env.landscape_reward_days,
+                gate_log_area_fn=env.landscape_gate_log_area,
             )
         eval_s = time.perf_counter() - t0
         for b in range(B):

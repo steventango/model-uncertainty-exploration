@@ -9,6 +9,88 @@ from gymnax.environments import environment, spaces
 _P0, _P_SLOPE, _E_CONST_WH, _HOURS = 3.3, 44.9, 571.6, 12.0
 _EP_LEN = 14.0
 
+# Masked-reward constants from plant-data join_zones on the mixed-e18-e19-e20
+# subsampled-daily-v28 parquet (f=0.9). Off-target uses min-max of surplus over
+# *off-target rows only*, shifted to [-1, 0]. The Zone-11 baselines below are
+# pinned to E18 Z11 and so are unchanged from the v27 parquet; only the energy
+# range and the surplus ranges move with the added E20 data.
+_MASK_F = 0.9
+_E_MIN_WH = 260.484666666669
+_E_MAX_WH = 798.6427500000027
+_BASELINE_AREA = jnp.asarray(
+    [
+        0.2845042592930029,
+        0.3284751958819242,
+        0.39459030479991536,
+        0.4607054137179065,
+        0.5444416299786043,
+        0.6836635044642857,
+        0.8751163645901909,
+        1.067246196613726,
+        1.3329055916721526,
+        1.584624743852459,
+        1.9470720207725947,
+        2.3683627075317832,
+        2.693766793346437,
+        3.0285379335706057,
+        3.3639775088462804,
+    ],
+    dtype=jnp.float32,
+)
+# Day 0 has no growth baseline in Zone 11; fill with day-1 so t=0 is defined.
+_BASELINE_GROWTH = jnp.asarray(
+    [
+        0.1421117135405597,
+        0.1421117135405597,
+        0.15580959582492587,
+        0.16950747810929206,
+        0.1605959316147196,
+        0.22425637565680395,
+        0.23983826627754173,
+        0.19295724752200866,
+        0.21528826847931462,
+        0.15564769239622256,
+        0.2212170144759219,
+        0.18150758488490198,
+        0.1418429854491252,
+        0.10674979721340086,
+        0.08709036905965564,
+    ],
+    dtype=jnp.float32,
+)
+# Off-target-only surplus ranges (max ≈ 0 just below the gate), from
+# scripts/recompute_masked_surplus.py over the visu-v28 training transitions.
+# Both modes gate against the *next* day's baseline: masked_log gates the
+# resulting area (next_obs vs the next-day area baseline, off-target next-obs
+# rows only — excludes each trajectory's day-0 start, which is never a
+# resulting area); masked_growth gates the resulting growth against the
+# next day's growth baseline.
+_SURPLUS_LOG_MIN, _SURPLUS_LOG_MAX = -3.548095226287842, -2.7120113372802734e-06
+_SURPLUS_GROWTH_MIN, _SURPLUS_GROWTH_MAX = -1.5482633113861084, -3.904104232788086e-06
+
+RewardMode = Literal[
+    "area",
+    "analytic",
+    "masked_log",
+    "masked_growth",
+]
+_MASKED_MODES = frozenset({"masked_log", "masked_growth"})
+# Area-level gates and the Zone-11 baseline each is pinned to, with the
+# off-target surplus range measured under that same baseline.
+_LOG_GATES = {
+    "masked_log": (_BASELINE_AREA, _SURPLUS_LOG_MIN, _SURPLUS_LOG_MAX),
+}
+
+
+def reward_mode_requires_time(reward_mode: RewardMode) -> bool:
+    """Whether ``reward_mode`` *needs* the day index in the observation.
+
+    Masked modes gate on a day-dependent baseline, so their obs must carry
+    time. Other modes may still opt in (``PlantEnv(include_time=True)``) to let
+    the policy and dynamics model condition on the day.
+    """
+    return reward_mode in _MASKED_MODES
+
 
 @struct.dataclass
 class PlantEnvState(environment.EnvState):
@@ -34,15 +116,47 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
     It is therefore only meaningful when driven by a ``ModelEnvironment`` that
     supplies predicted transitions and uses the oracle reward (the env's
     ``compute_reward``); it has no standalone ``default_params``.
+
+    For day-dependent reward modes the observation is ``[log_area, day]`` so the
+    policy can condition on the day; otherwise it is ``[log_area]`` unless
+    ``include_time`` opts in. The day comes from the dataset's ``wall_time``
+    (see :mod:`offline_data`), not from the position in the episode.
     """
 
     def __init__(
         self,
         act_dim: int,
-        reward_mode: Literal["area", "analytic"] = "analytic",
+        reward_mode: RewardMode = "analytic",
+        include_time: bool = False,
     ):
         self._act_dim = act_dim
-        self._reward_mode = reward_mode
+        self._reward_mode: RewardMode = reward_mode
+        self._include_time = include_time
+
+    def compose_next_obs(self, obs: jax.Array, dyn_pred: jax.Array) -> jax.Array:
+        """Build the resulting observation from the model's dynamics output.
+
+        The model predicts the whole observation delta. When the obs carries the
+        day, the predicted day is overwritten with the exact clock.
+        """
+        obs_next = obs + dyn_pred
+        if not self.obs_includes_time:
+            return obs_next
+        day = jnp.asarray(obs[..., 1:2], dtype=obs_next.dtype) + 1.0
+        return jnp.concatenate([obs_next[..., :1], day], axis=-1)
+
+    @property
+    def obs_includes_time(self) -> bool:
+        """True when obs is ``[log_area, time]``.
+
+        Forced on for masked modes, which cannot compute their gate without the
+        day; otherwise controlled by ``include_time``.
+        """
+        return self._include_time or reward_mode_requires_time(self._reward_mode)
+
+    @property
+    def obs_dim(self) -> int:
+        return 2 if self.obs_includes_time else 1
 
     @property
     def default_params(self) -> PlantEnvParams:
@@ -52,6 +166,18 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         )
 
     def observation_space(self, params: PlantEnvParams) -> spaces.Box:
+        if self.obs_includes_time:
+            return spaces.Box(
+                low=jnp.asarray([params.area_min, 0.0], dtype=jnp.float32),
+                high=jnp.stack(
+                    [
+                        jnp.asarray(params.area_max, dtype=jnp.float32),
+                        jnp.asarray(params.max_steps_in_episode, dtype=jnp.float32),
+                    ]
+                ),
+                shape=(2,),
+                dtype=jnp.float32,
+            )
         return spaces.Box(
             low=params.area_min,
             high=params.area_max,
@@ -67,6 +193,13 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
             dtype=jnp.float32,
         )
 
+    def _pack_obs(self, area: jax.Array, time: jax.Array | int) -> jax.Array:
+        area = jnp.asarray(area, dtype=jnp.float32).reshape(-1)[:1]
+        if not self.obs_includes_time:
+            return area
+        t = jnp.asarray(time, dtype=jnp.float32).reshape(())
+        return jnp.concatenate([area, t[None]])
+
     def reset_env(
         self, key: jax.Array, params: PlantEnvParams
     ) -> tuple[jax.Array, PlantEnvState]:
@@ -79,8 +212,9 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         area = jax.random.uniform(
             key, (1,), minval=params.area_min, maxval=params.area_max
         )
-        state = PlantEnvState(obs=area, next_obs=jnp.zeros_like(area), time=0)
-        return area, state
+        obs = self._pack_obs(area, 0)
+        state = PlantEnvState(obs=obs, next_obs=jnp.zeros_like(obs), time=0)
+        return obs, state
 
     def get_state(
         self,
@@ -101,7 +235,7 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         params: PlantEnvParams,
     ) -> tuple[jax.Array, PlantEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         next_obs = state.next_obs
-        reward = self.compute_reward(state.obs, action, next_obs)
+        reward = self.compute_reward(state.obs, action, next_obs, time=state.time)
         terminated = jnp.asarray(state.time + 1 >= params.max_steps_in_episode)
         new_state = PlantEnvState(
             obs=next_obs, next_obs=jnp.zeros_like(next_obs), time=state.time + 1
@@ -109,16 +243,90 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         return next_obs, new_state, reward, terminated, {}
 
     def compute_reward(
-        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+        self,
+        obs: jax.Array,
+        action: jax.Array,
+        next_obs: jax.Array,
+        time: jax.Array | int | None = None,
     ) -> jax.Array:
-        """Reward callable for external use (e.g. visualization)."""
+        """Oracle reward for model-based rollouts and visualization.
+
+        ``time`` is the current day index (0..14). Masked modes evaluate the
+        *resulting* area (``next_obs``) against the *next* day's Zone-11 baseline
+        (``time + 1``), so the action is credited for the area it produces; when
+        ``time`` is omitted (e.g. reward-landscape plots) day 0 is used.
+        """
+        mode = self._reward_mode
         growth = (next_obs - obs)[..., 0]
-        if self._reward_mode == "analytic":
+        # Current day: explicit ``time`` wins, else read it off the obs when it
+        # carries one, else day 0 (reward-landscape plots pass neither).
+        if time is not None:
+            day = jnp.asarray(time, dtype=jnp.int32)
+        elif self.obs_includes_time:
+            day = jnp.asarray(obs[..., 1], dtype=jnp.int32)
+        else:
+            day = jnp.zeros((), dtype=jnp.int32)
+        if mode == "area":
+            return growth
+        if mode == "analytic":
+            # plant-data ``reward_linear``: area growth minus the *linear* energy
+            # cost ``energy_reward_linear_1 = (energy - e_const) / e_const / N_STEPS``
+            # (join_zones.py), with energy = power * hours (Wh) and N_STEPS = _EP_LEN.
             power = _P0 + _P_SLOPE * action[..., 0]
-            return growth - 1 / _EP_LEN * (
-                jnp.log(power * _HOURS) - jnp.log(_E_CONST_WH)
-            )
-        return growth
+            energy = power * _HOURS
+            return growth - (energy - _E_CONST_WH) / _E_CONST_WH / _EP_LEN
+
+        day = jnp.clip(day, 0, _BASELINE_AREA.shape[0] - 1)
+        # Both masked modes gate the resulting quantity against the next day's
+        # baseline: masked_log gates the resulting area, masked_growth gates
+        # the resulting growth.
+        next_day = jnp.clip(day + 1, 0, _BASELINE_AREA.shape[0] - 1)
+        energy = (_P0 + _P_SLOPE * action[..., 0]) * _HOURS
+        energy_norm = (energy - _E_MIN_WH) / (_E_MAX_WH - _E_MIN_WH)
+        on_reward = 1.0 - energy_norm
+
+        if mode in _LOG_GATES:
+            table, s_min, s_max = _LOG_GATES[mode]
+            threshold = _MASK_F * table[next_day]
+            clean_area = jnp.exp(next_obs[..., 0])
+            on_target = clean_area >= threshold
+            surplus = next_obs[..., 0] - jnp.log(threshold)
+        elif mode == "masked_growth":
+            baseline = _BASELINE_GROWTH[next_day]
+            threshold = _MASK_F * baseline
+            on_target = growth >= threshold
+            surplus = growth - threshold
+            s_min, s_max = _SURPLUS_GROWTH_MIN, _SURPLUS_GROWTH_MAX
+        else:
+            raise ValueError(f"Unknown reward_mode: {mode!r}")
+
+        off_reward = (surplus - s_min) / (s_max - s_min) - 1.0
+        return jnp.where(on_target, on_reward, off_reward)
+
+    @property
+    def landscape_reward_days(self) -> tuple[int, ...] | None:
+        """Days to facet landscape panels; ``None`` when nothing is day-dependent.
+
+        Keyed on the observation rather than the reward: once obs carries time,
+        the dynamics model and policy are day-dependent even for a day-invariant
+        reward like ``analytic``, so a single day-0 panel would hide that.
+        """
+        if self.obs_includes_time:
+            return tuple(range(14))  # days 0–13
+        return None
+
+    def landscape_gate_log_area(self, day: int) -> float | None:
+        """Vertical gate in log-area for ``masked_log``; else ``None``.
+
+        Masked reward gates the resulting area against the next day's baseline,
+        so the overlay shows the ``day + 1`` threshold (approximate: the true
+        gate in current-area space is action-dependent via growth).
+        """
+        if self._reward_mode not in _LOG_GATES:
+            return None
+        table = _LOG_GATES[self._reward_mode][0]
+        d = int(jnp.clip(jnp.asarray(day) + 1, 0, table.shape[0] - 1))
+        return float(jnp.log(_MASK_F * table[d]))
 
     def get_obs(self, state: PlantEnvState, params=None, key=None) -> jax.Array:
         return state.obs

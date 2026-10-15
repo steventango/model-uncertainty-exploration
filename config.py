@@ -83,6 +83,16 @@ class Args:
     max_steps: int | None = None
     offline: bool = False
     dataset: str = "plant-data/visu-v27"
+    reward_mode: Literal[
+        "area",
+        "analytic",
+        "masked_log",
+        "masked_growth",
+    ] = "analytic"
+    # Put the day index in the plant obs (``[log_area, time]``). Masked reward
+    # modes need it for their gate and enable it regardless; other modes can opt
+    # in so the policy and dynamics model may condition on the day.
+    include_time: bool = False
     debug: bool = False
     log_dir: str | None = None
     label: str = ""
