@@ -91,10 +91,10 @@ def evaluate_and_plot_uncertainty(
         pred_delta = model.denormalize_delta_obs(mean_y[..., :obs_dim])
         if model.predict_reward_terminated:
             pred_rew_grids.append(
-                model.denormalize_reward(mean_y[..., -2]).reshape(num_grid, num_grid)
+                model.denormalize_reward(mean_y[..., model.reward_index]).reshape(num_grid, num_grid)
             )
             pred_term_grids.append(
-                jax.nn.sigmoid(mean_y[..., -1]).reshape(num_grid, num_grid)
+                jax.nn.sigmoid(mean_y[..., model.terminated_index]).reshape(num_grid, num_grid)
             )
         # Store all obs dims: list[n_actions] of list[obs_dim] of (G, G) grids
         pred_dyn_grids.append(

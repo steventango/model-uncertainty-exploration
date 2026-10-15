@@ -76,11 +76,11 @@ def validation_metrics(
     dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
 
     if model.predict_reward_terminated:
-        pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
-        pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., -1])
+        pred_reward_val = model.denormalize_reward(mean_y_val[..., model.reward_index])
+        pred_terminated_val = jax.nn.sigmoid(mean_y_val[..., model.terminated_index])
         rew_mae = jnp.mean(jnp.abs(val_true_reward - pred_reward_val))
         term_bce = jnp.mean(
-            optax.sigmoid_binary_cross_entropy(mean_y_val[..., -1], val_true_terminated)
+            optax.sigmoid_binary_cross_entropy(mean_y_val[..., model.terminated_index], val_true_terminated)
         )
         pred_pos = pred_terminated_val > 0.5
         true_pos = val_true_terminated.astype(bool)
@@ -141,12 +141,12 @@ def evaluate_validation(
         mean_y = jax.vmap(model.predict_mean)(x_data)
         pred_delta_obs = model.denormalize_delta_obs(mean_y[..., : model.obs_dim])
         pred_reward = (
-            model.denormalize_reward(mean_y[..., -2])
+            model.denormalize_reward(mean_y[..., model.reward_index])
             if model.predict_reward_terminated
             else None
         )
         pred_terminated = (
-            jax.nn.sigmoid(mean_y[..., -1]) if model.predict_reward_terminated else None
+            jax.nn.sigmoid(mean_y[..., model.terminated_index]) if model.predict_reward_terminated else None
         )
 
         true_delta_obs = batch.info["next_obs"] - batch.obs
@@ -165,12 +165,12 @@ def evaluate_validation(
             mean_y_rand[..., : model.obs_dim]
         )
         pred_reward_rand = (
-            model.denormalize_reward(mean_y_rand[..., -2])
+            model.denormalize_reward(mean_y_rand[..., model.reward_index])
             if model.predict_reward_terminated
             else None
         )
         pred_terminated_rand = (
-            jax.nn.sigmoid(mean_y_rand[..., -1])
+            jax.nn.sigmoid(mean_y_rand[..., model.terminated_index])
             if model.predict_reward_terminated
             else None
         )
@@ -193,11 +193,11 @@ def evaluate_validation(
         unc_rand = model.batch_uncertainty(x_rand, idx_rand, reduce_output=False)
         unc_delta_obs = unc_data[..., : model.obs_dim]
         unc_delta_obs_rand = unc_rand[..., : model.obs_dim]
-        unc_reward = unc_data[..., -2] if model.predict_reward_terminated else None
-        unc_reward_rand = unc_rand[..., -2] if model.predict_reward_terminated else None
-        unc_terminated = unc_data[..., -1] if model.predict_reward_terminated else None
+        unc_reward = unc_data[..., model.reward_index] if model.predict_reward_terminated else None
+        unc_reward_rand = unc_rand[..., model.reward_index] if model.predict_reward_terminated else None
+        unc_terminated = unc_data[..., model.terminated_index] if model.predict_reward_terminated else None
         unc_terminated_rand = (
-            unc_rand[..., -1] if model.predict_reward_terminated else None
+            unc_rand[..., model.terminated_index] if model.predict_reward_terminated else None
         )
 
         plotting.plot_true_vs_predicted(
