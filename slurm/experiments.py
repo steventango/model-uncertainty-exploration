@@ -392,6 +392,27 @@ classic_plan_every_cheap_model_long_variants = Experiment(
     ),
 )
 
+pinball_plan_every_explore_sample_eig = Experiment(
+    name="pinball_plan_every_explore_sample_eig",
+    configs=sweep(
+        env="Pinball-easy",
+        alpha=0.0,
+        beta=1.0,
+        mode="sample",
+        bonus="eig",
+        label="explore_sample_eig",
+        steps_per_rollout=1,
+        max_steps=1000,
+        model__update_steps=1000,
+    ),
+    time_limit="24:00:00",
+    mem_per_cpu="128G",
+    description=(
+        "Pinball-easy explore_sample_eig (plan-every, cheap ENN + full PPO); "
+        "same arm as classic_plan_every_cheap_model_long_variants, one env"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -409,5 +430,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_ppo_ent,
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
+        pinball_plan_every_explore_sample_eig,
     )
 }

@@ -6,6 +6,10 @@ import jax
 import jax.numpy as jnp
 from gymnax.environments import spaces
 
+from environments import PinballEnvState
+
+_PINBALL_CONFIGS = ("box", "empty", "easy", "medium", "hard")
+_PINBALL_ENVS = tuple(f"Pinball-{c}" for c in _PINBALL_CONFIGS)
 
 SUPPORTED_ENVS = (
     "Pendulum-v1",
@@ -13,6 +17,7 @@ SUPPORTED_ENVS = (
     "MountainCarContinuous-v0",
     "CartPole-v1",
     "Acrobot-v1",
+    *_PINBALL_ENVS,
 )
 
 
@@ -126,6 +131,27 @@ def get_env_config(env_name: str) -> EnvConfig:
             dynamics_err_label=r"$|\Delta\dot{\theta}_2 - \widehat{\Delta\dot{\theta}_2}|$",
         ),
     }
+    configs.update(
+        {
+            name: EnvConfig(
+                name=name,
+                dynamics_dim=3,
+                delta_obs_labels=(
+                    r"$\Delta x$",
+                    r"$\Delta y$",
+                    r"$\Delta \dot{x}$",
+                    r"$\Delta \dot{y}$",
+                ),
+                representative_actions=(0.0, 1.0, 2.0, 3.0, 4.0),
+                x_label=r"$x$",
+                y_label=r"$y$",
+                dynamics_label=r"$\Delta \dot{y}$",
+                dynamics_pred_label=r"$\widehat{\Delta \dot{y}}$",
+                dynamics_err_label=r"$|\Delta \dot{y} - \widehat{\Delta \dot{y}}|$",
+            )
+            for name in _PINBALL_ENVS
+        }
+    )
     if env_name not in configs:
         raise ValueError(f"Unsupported env: {env_name}. Supported: {list(configs)}")
     return configs[env_name]
@@ -165,6 +191,12 @@ def make_state(env_name: str, s1, s2):
             velocity_2=jnp.zeros_like(s2),
             time=0,
         )
+    if env_name in _PINBALL_ENVS:
+        # (s1, s2) = (x, y); the ball is momentarily at rest at each grid point,
+        # mirroring how CartPole/Acrobot zero out the velocity components here.
+        return PinballEnvState(
+            x=s1, y=s2, xdot=jnp.zeros_like(s1), ydot=jnp.zeros_like(s2), time=0
+        )
     raise ValueError(env_name)
 
 
@@ -187,6 +219,8 @@ def obs_from_coords(env_name: str, s1, s2):
             ],
             axis=-1,
         )
+    if env_name in _PINBALL_ENVS:
+        return jnp.stack([s1, s2, jnp.zeros_like(s1), jnp.zeros_like(s2)], axis=-1)
     raise ValueError(env_name)
 
 
@@ -213,6 +247,9 @@ def grid_coords(env_name: str, env_params, num_grid: int = 100):
     elif env_name == "Acrobot-v1":
         s1 = jnp.linspace(-jnp.pi, jnp.pi, num_grid)
         s2 = jnp.linspace(-jnp.pi, jnp.pi, num_grid)
+    elif env_name in _PINBALL_ENVS:
+        s1 = jnp.linspace(0.0, 1.0, num_grid)
+        s2 = jnp.linspace(0.0, 1.0, num_grid)
     else:
         raise ValueError(env_name)
     return s1, s2
@@ -290,6 +327,11 @@ def sample_validation_batch(rng, env, env_params, env_name: str, num_samples: in
         s1 = jax.random.uniform(key_s1, (num_samples,), minval=-jnp.pi, maxval=jnp.pi)
         s2 = jax.random.uniform(key_s2, (num_samples,), minval=-jnp.pi, maxval=jnp.pi)
         act = jax.random.randint(key_act, (num_samples, 1), 0, n_act)
+    elif env_name in _PINBALL_ENVS:
+        rng, key_s1, key_s2, key_act = jax.random.split(rng, 4)
+        s1 = jax.random.uniform(key_s1, (num_samples,), minval=0.0, maxval=1.0)
+        s2 = jax.random.uniform(key_s2, (num_samples,), minval=0.0, maxval=1.0)
+        act = jax.random.randint(key_act, (num_samples, 1), 0, n_act)
     else:
         raise ValueError(env_name)
 
@@ -320,6 +362,8 @@ def visited_coords_from_obs(env_name: str, obs):
         return obs[:, 0], obs[:, 2]
     if env_name == "Acrobot-v1":
         return jnp.arctan2(obs[:, 1], obs[:, 0]), jnp.arctan2(obs[:, 3], obs[:, 2])
+    if env_name in _PINBALL_ENVS:
+        return obs[:, 0], obs[:, 1]
     raise ValueError(env_name)
 
 

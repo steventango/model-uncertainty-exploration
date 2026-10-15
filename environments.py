@@ -1,4 +1,9 @@
+import jax
 import jax.numpy as jnp
+from flax import struct
+from gymnax.environments import environment, spaces
+from pinball_jax import Pinball, PinballParams as _RawPinballParams, PinballState as _RawPinballState
+from pinball_jax.pinball import NUM_ACTIONS, OBSERVATION_SHAPE
 
 from wrappers import StateReconstructionWrapper
 
@@ -200,6 +205,106 @@ class GenericBraxWrapper(BraxStateReconstructionWrapper):
     """Brax envs where reward/termination cannot be derived from obs alone."""
 
 
+# ---------------------------------------------------------------------------
+# Pinball
+# ---------------------------------------------------------------------------
+
+PINBALL_CONFIGS = ("box", "empty", "easy", "medium", "hard")
+PINBALL_ENVS = frozenset(f"Pinball-{c}" for c in PINBALL_CONFIGS)
+
+
+@struct.dataclass
+class PinballEnvState(environment.EnvState):
+    x: jax.Array
+    y: jax.Array
+    xdot: jax.Array
+    ydot: jax.Array
+
+
+@struct.dataclass
+class PinballEnvParams(environment.EnvParams):
+    max_steps_in_episode: int = 1000
+
+
+class PinballGymnaxEnv(environment.Environment[PinballEnvState, PinballEnvParams]):
+    """Gymnax-compatible adapter around ``pinball_jax.Pinball``.
+
+    ``pinball_jax``'s own protocol already returns gymnax-shaped step/reset
+    tuples; this only translates its bare state/spaces into gymnax's
+    ``EnvState``/``EnvParams``/``spaces`` types so Pinball can drop into this
+    repo's env-agnostic machinery (``LogWrapper``, ``VecEnv``,
+    ``ModelEnvironment``, ...) the same way the classic-control and brax envs
+    do.
+    """
+
+    def __init__(self, config: str):
+        self._pinball = Pinball(config)
+
+    @property
+    def default_params(self) -> PinballEnvParams:
+        return PinballEnvParams()
+
+    @property
+    def num_actions(self) -> int:
+        return NUM_ACTIONS
+
+    def action_space(self, params: PinballEnvParams | None = None) -> spaces.Discrete:
+        return spaces.Discrete(NUM_ACTIONS)
+
+    def observation_space(self, params: PinballEnvParams | None = None) -> spaces.Box:
+        # obs = [x, y, xdot, ydot]; x/y live in [0, 1], xdot/ydot are clipped to [-1, 1].
+        low = jnp.asarray([0.0, 0.0, -1.0, -1.0], dtype=jnp.float32)
+        high = jnp.asarray([1.0, 1.0, 1.0, 1.0], dtype=jnp.float32)
+        return spaces.Box(low=low, high=high, shape=OBSERVATION_SHAPE, dtype=jnp.float32)
+
+    def reset_env(
+        self, key: jax.Array, params: PinballEnvParams
+    ) -> tuple[jax.Array, PinballEnvState]:
+        obs, raw_state = self._pinball.reset(key)
+        state = PinballEnvState(
+            x=raw_state.x,
+            y=raw_state.y,
+            xdot=raw_state.xdot,
+            ydot=raw_state.ydot,
+            time=jnp.zeros((), dtype=jnp.int32),
+        )
+        return obs, state
+
+    def step_env(
+        self,
+        key: jax.Array,
+        state: PinballEnvState,
+        action: jax.Array,
+        params: PinballEnvParams,
+    ) -> tuple[jax.Array, PinballEnvState, jax.Array, jax.Array, dict]:
+        raw_state = _RawPinballState(
+            x=state.x, y=state.y, xdot=state.xdot, ydot=state.ydot, timestep=state.time
+        )
+        raw_params = _RawPinballParams(max_steps_in_episode=params.max_steps_in_episode)
+        # Discard pinball_jax's own `truncated`: gymnax's Environment.step (the
+        # public entry point wrapping this method) recomputes it from
+        # state.time vs. params.max_steps_in_episode itself.
+        obs, raw_next, reward, terminated, _truncated, info = self._pinball.step(
+            key, raw_state, action, raw_params
+        )
+        next_state = PinballEnvState(
+            x=raw_next.x,
+            y=raw_next.y,
+            xdot=raw_next.xdot,
+            ydot=raw_next.ydot,
+            time=state.time + 1,
+        )
+        return obs, next_state, reward, terminated, info
+
+    def get_obs(self, state: PinballEnvState, params=None, key=None) -> jax.Array:
+        return jnp.stack([state.x, state.y, state.xdot, state.ydot]).astype(jnp.float32)
+
+
+class PinballWrapper(StateReconstructionWrapper):
+    def get_state(self, obs, last_action, time, next_obs=None):
+        return PinballEnvState(x=obs[0], y=obs[1], xdot=obs[2], ydot=obs[3], time=time)
+
+
 _WRAPPER_MAP = {
     "Pendulum-v1": PendulumWrapper,
     "MountainCar-v0": MountainCarWrapper,
@@ -218,6 +323,7 @@ _WRAPPER_MAP = {
     "inverted_double_pendulum": InvertedDoublePendulumBraxWrapper,
     "humanoid": GenericBraxWrapper,
     "humanoidstandup": GenericBraxWrapper,
+    **{name: PinballWrapper for name in PINBALL_ENVS},
 }
 
 BRAX_ENVS = frozenset({

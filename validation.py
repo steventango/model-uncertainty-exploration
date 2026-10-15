@@ -7,10 +7,13 @@ import ground_truth
 from env_config import get_env_config, sample_validation_batch
 
 
-def generate_brax_validation_data(env, env_params, num_val=1000):
-    """Generate validation data for brax envs by running rollout transitions.
+def generate_rollout_validation_data(env, env_params, num_val=1000):
+    """Generate validation data by running rollout transitions.
 
-    Returns the same 5-tuple as generate_validation_data().
+    Env-agnostic (no per-env coordinate-grid config needed, unlike
+    generate_validation_data()): used for brax and other envs without an
+    env_config.py entry, e.g. Pinball. Returns the same 5-tuple as
+    generate_validation_data().
     """
     rng = jax.random.PRNGKey(42)
     all_keys = jax.random.split(rng, num_val * 3).reshape(num_val, 3, -1)
@@ -25,7 +28,11 @@ def generate_brax_validation_data(env, env_params, num_val=1000):
         action = env.action_space(env_params).sample(k_act)
         _, _, reward, terminated, _, info = env.step(k_step, state, action, env_params)
         delta_obs = info["next_obs"] - obs
-        return obs, action, delta_obs, reward, terminated.astype(jnp.float32)
+        # Discrete spaces sample a bare scalar; models/base.py's encode_action
+        # indexes actions as (N, 1) (matching env_config.sample_validation_batch's
+        # convention), so lift it to at least 1-D before stacking. Continuous
+        # action vectors are already >=1-D and pass through unchanged.
+        return obs, jnp.atleast_1d(action), delta_obs, reward, terminated.astype(jnp.float32)
 
     val_obs, val_act, val_delta_obs, val_reward, val_terminated = jax.vmap(
         sample_transition

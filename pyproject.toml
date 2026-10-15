@@ -24,11 +24,13 @@ dependencies = [
     "tyro>=1.0.12",
     "orbax-checkpoint>=0.5.0",
     "brax>=0.14.2",
+    "pinball-jax",
 ]
 
 [tool.uv.sources]
 gpjax = { git = "https://github.com/thomaspinder/GPJax.git" }
 gymnax = { git = "https://github.com/steventango/gymnax" }
+pinball-jax = { git = "https://github.com/panahiparham/pinball-jax" }
 
 [dependency-groups]
 dev = [
