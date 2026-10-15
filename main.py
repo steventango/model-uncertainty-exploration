@@ -22,8 +22,13 @@ from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wra
 from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
-from offline_data import AREA_INDEX, load_offline_transitions
-from plant_env import PlantEnv, PlantEnvParams
+from offline_data import load_offline_transitions
+from plant_env import (
+    PlantEnv,
+    PlantEnvParams,
+    reward_mode_is_learned,
+    reward_mode_requires_time,
+)
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -82,20 +87,59 @@ def main():
 
     if args.offline:
         print(f"Loading offline dataset: {args.dataset}")
-        all_transitions, action_space, observation_space, _ = (
-            load_offline_transitions(args.dataset)
+        include_time = args.include_time or reward_mode_requires_time(args.reward_mode)
+        # The env decides what the dynamics model should regress: the raw
+        # observation delta, or (differential setup) the de-confounded growth
+        # advantage over the same-batch, same-day control.
+        probe_env = PlantEnv(1, reward_mode=args.reward_mode, include_time=include_time,
+                             ctl_growth=jnp.zeros(1), ctl_energy=jnp.ones(1))
+        (
+            all_transitions,
+            action_space,
+            observation_space,
+            _,
+            ctl_growth,
+            ctl_energy,
+        ) = load_offline_transitions(
+            args.dataset,
+            include_time=include_time,
+            dyn_target=probe_env.dyn_target,
         )
         action_dim = action_space.shape[0]
         act_dim = None  # continuous action — no one-hot encoding
         N = all_transitions.obs.shape[0]
-        print(f"  N={N} | action_dim={action_dim}")
+        print(
+            f"  N={N} | action_dim={action_dim} | obs_dim={all_transitions.obs.shape[-1]}"
+            + (" (area+time)" if include_time else " (area)")
+        )
 
-        env = PlantEnv(action_dim)
+        env = PlantEnv(
+            action_dim,
+            reward_mode=args.reward_mode,
+            include_time=include_time,
+            ctl_growth=ctl_growth,
+            ctl_energy=ctl_energy,
+        )
+        # Bounds from the transitions actually loaded, not from the dataset's
+        # declared spaces. plant-data derives the Minari action space from
+        # stats["intensity"] over the whole parquet, before its RL filters, so
+        # action_space.low is 0.00276 — an off/night row no episode contains. The
+        # real operating range is [0.4, 1.3] (p0.5 of the actions is already
+        # 0.400; only 0.2-0.4% of rows sit below, down to 0.381). Taking the
+        # declared low let PPO's ClipAction explore two orders of magnitude below
+        # anything observed, where the dynamics model only extrapolates: policies
+        # trained that way put 18% of a (log-area x day) grid at *negative*
+        # intensity and were only rescued by the deployment-side clip.
+        act_low = jnp.min(all_transitions.action, axis=0)
+        act_high = jnp.max(all_transitions.action, axis=0)
+        obs_all = jnp.concatenate(
+            [all_transitions.obs, all_transitions.info["next_obs"]], axis=0
+        )
         env_params = PlantEnvParams(
-            area_min=float(observation_space.low[AREA_INDEX]),
-            area_max=float(observation_space.high[AREA_INDEX]),
-            act_low=jnp.asarray(action_space.low, dtype=jnp.float32),
-            act_high=jnp.asarray(action_space.high, dtype=jnp.float32),
+            area_min=float(jnp.min(obs_all[:, 0])),
+            area_max=float(jnp.max(obs_all[:, 0])),
+            act_low=jnp.asarray(act_low, dtype=jnp.float32),
+            act_high=jnp.asarray(act_high, dtype=jnp.float32),
             max_steps_in_episode=14,
         )
 
@@ -104,17 +148,29 @@ def main():
             all_transitions,
         )
 
-        obs_dim = 1
+        obs_dim = env.obs_dim
         in_features = obs_dim + action_dim
-        out_features = obs_dim
-        predict_reward_terminated = False
+        # Dynamics outputs cover only the stochastic obs dims; the plant day is a
+        # deterministic clock that PlantEnv.compose_next_obs sets.
+        dyn_dim = env.dyn_dim
+        # reward_mode="learned" is the only mode needing a reward head. Plant
+        # termination is purely "day >= horizon" and comes from the oracle, so no
+        # run predicts termination — a learned head would both waste capacity and
+        # inject its logit variance into the exploration bonus.
+        learned_reward = reward_mode_is_learned(args.reward_mode)
+        predict_reward_terminated = learned_reward
+        predict_terminated = False
+        out_features = dyn_dim + (1 if learned_reward else 0)
+        # Bonus dims: the dynamics outputs, plus the reward head when there is
+        # one. Never the day (deterministic) and never termination.
+        uncertainty_dims = tuple(range(out_features))
         discrete = False
 
         num_steps = 14
         model_minibatch_size = min(N, 256)
         total_timesteps = N
         # Single source of truth for the dataset buffer size; the RBF feature
-        # bank places one center per stored datapoint, so NUM_FEATURES (rbf) is
+        # bank places one center per datapoint, so NUM_FEATURES (rbf) is
         # derived from this same value (see model_config_dict).
         dataset_size = total_timesteps
 
@@ -124,6 +180,11 @@ def main():
             "num_rollouts": num_rollouts,
             "N_train": N,
             "action_dim": action_dim,
+            "obs_includes_time": include_time,
+            "learned_reward": learned_reward,
+            "dyn_target": probe_env.dyn_target,
+            "dyn_dim": dyn_dim,
+            "uncertainty_dims": list(uncertainty_dims),
         }
         hparams_extra = {}
 
@@ -142,6 +203,11 @@ def main():
             )
         else:
             predict_reward_terminated = args.predict_reward_terminated
+        # Online envs keep the historical coupled behaviour: both extra heads or
+        # neither, dynamics over the full observation, bonus over every output.
+        predict_terminated = None
+        dyn_dim = None
+        uncertainty_dims = None
         oracle_reward_terminated = not predict_reward_terminated
         # The state-reconstruction wrapper is only needed when the model env uses the
         # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
@@ -267,6 +333,8 @@ def main():
         act_dim,
         model_keys,
         predict_reward_terminated=predict_reward_terminated,
+        predict_terminated=predict_terminated,
+        dyn_dim=dyn_dim,
     )
     seed_keys, train_model_seed = vsplit(seed_keys)
     batched_rngs = make_batched_rngs(train_model_seed)
@@ -306,7 +374,12 @@ def main():
         loggers.append(logger)
 
     if args.offline:
-        oracle_reward_terminated = True
+        # Reward from the model's head only for reward_mode="learned"; the
+        # day-count termination always stays with the oracle.
+        oracle_reward_terminated = not learned_reward
+        oracle_terminated = True
+    else:
+        oracle_terminated = None  # follow oracle_reward_terminated
     # Offline has no real env to reset; "env" falls back to the dataset's
     # initial-state distribution ("init").
     reset_source = (
@@ -318,6 +391,8 @@ def main():
         prediction_mode=args.model_env_mode,
         explore_bonus=args.explore_bonus,
         oracle_reward_terminated=oracle_reward_terminated,
+        oracle_terminated=oracle_terminated,
+        uncertainty_dims=uncertainty_dims,
         reset_source=reset_source,
         max_steps_in_episode=args.rollout_length,
         uncertainty_threshold=args.uncertainty_threshold,
@@ -522,7 +597,12 @@ def main():
                 j=j,
                 run_dir=seed_dirs[0],
                 explore_bonus=args.explore_bonus,
-                reward_fn=env.compute_reward,
+                # reward_mode="learned" has no closed-form reward; passing None
+                # makes the landscape use the model's own reward head instead.
+                reward_fn=None if learned_reward else env.compute_reward,
+                reward_days=env.landscape_reward_days,
+                gate_log_area_fn=env.landscape_gate_log_area,
+                compose_next_obs_fn=env.compose_next_obs,
             )
         eval_s = time.perf_counter() - t0
         for b in range(B):
