@@ -1,15 +1,23 @@
+import distrax
 import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
 from jax.scipy.stats import norm
 
-from models.base import WorldModel, register_model
+from models.base import WorldModel, head_out_features, register_model
 from networks import ENN
 
 
 class ENNModel(WorldModel):
-    """ENN-based dynamics model. Epistemic uncertainty via index-variable sampling."""
+    """ENN-based dynamics model. Epistemic uncertainty via index-variable sampling.
+
+    ``head`` selects the output:
+      deterministic: point estimate of the normalized delta-obs (+ reward/terminated).
+      normal: diagonal Gaussian over the normalized delta-obs (aleatoric noise).
+    For the distributional head each epistemic index z yields a full predictive
+    distribution; exploration uses only the disagreement across z (epistemic).
+    """
 
     def __init__(
         self,
@@ -19,6 +27,8 @@ class ENNModel(WorldModel):
         act_dim: int | None = None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
+        head: str = "deterministic",
+        min_scale: float = 1e-3,
     ):
         super().__init__(
             in_features=in_features,
@@ -27,6 +37,9 @@ class ENNModel(WorldModel):
             eps=eps,
             predict_reward_terminated=predict_reward_terminated,
         )
+        head_out_features(head, obs_dim, predict_reward_terminated)  # validates
+        self.head = head
+        self.min_scale = min_scale
         self.enn = enn
 
     @property
@@ -41,12 +54,85 @@ class ENNModel(WorldModel):
         return jax.random.normal(key, (num_samples, self.index_dim))
 
     def predict_mean(self, x):
-        """Deterministic base-network output for a single normalized input."""
+        """Expected normalized delta-obs from the base network for a single input.
+
+        normal: the Gaussian loc.
+        """
         y, _ = self.enn.base(x)
+        if self.head == "normal":
+            return y[..., : self.obs_dim]
         return y
+
+    # --- Distributional head ---
+
+    def _loc_scale(self, y):
+        loc, raw_scale = y[..., : self.obs_dim], y[..., self.obs_dim :]
+        return loc, jax.nn.softplus(raw_scale) + self.min_scale
+
+    def dist_from_output(self, y) -> distrax.Distribution:
+        """Raw network output → distrax predictive distribution."""
+        if self.head == "normal":
+            return distrax.MultivariateNormalDiag(*self._loc_scale(y))
+        raise ValueError("deterministic head has no predictive distribution")
+
+    def sample_delta(self, x, index, key):
+        if self.head == "deterministic":
+            return super().sample_delta(x, index, key)
+        return self.dist_from_output(self.predict_sample(x, index)).sample(seed=key)
+
+    def _targets(self, obs, next_obs):
+        """Distribution-space targets: the normalized delta-obs."""
+        return self.normalize_delta_obs(next_obs - obs)
+
+    def nll(self, x, obs, next_obs):
+        if self.head == "deterministic":
+            return super().nll(x, obs, next_obs)
+        y, _ = self.enn.base(x)
+        return -self.dist_from_output(y).log_prob(self._targets(obs, next_obs))
+
+    def uncertainty(self, x, z, kind="std", reduce_output=True):
+        """Epistemic-only uncertainty at a single x over S indices z.
+
+        Aleatoric noise is excluded: it is the spread *within* each index's
+        predictive distribution, while these measure disagreement *across* z.
+          eig: ½ log(1 + Var_z[μ] / E_z[σ²]) per obs dim (Gaussian information
+            gain with the predicted aleatoric noise).
+          std: sqrt(Var_z) of the mean μ.
+        """
+        if self.head == "deterministic":
+            return super().uncertainty(x, z, kind, reduce_output)
+        loc, scale = self._loc_scale(self.predict_samples(x, z))  # (S, obs_dim)
+        if kind == "eig":
+            u = 0.5 * jnp.log1p(loc.var(axis=0) / (scale**2).mean(axis=0))
+        else:
+            u = jnp.sqrt(loc.var(axis=0))
+        return u.sum(axis=-1) if reduce_output else u
+
+
+def _projections(model: ENNModel, n, z, rngs: nnx.Rngs):
+    """Per-datapoint ENN perturbation c_iᵀz with c_i uniform on the sphere (~N(0,1))."""
+    c = jax.random.normal(rngs(), shape=(n, model.index_dim))
+    c = c / jnp.linalg.norm(c, axis=-1, keepdims=True)
+    return (c * z).sum(axis=-1)
+
+
+def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
+    """NLL of the predictive distribution at one sampled epistemic index z."""
+    x = model.normalize_input(model.build_input(batch.obs, batch.action))
+    z = jax.random.normal(rngs(), shape=(model.index_dim,))
+    y = model.batch_predict_sample(x, z)
+    target = model._targets(batch.obs, batch.info["next_obs"])
+    proj = _projections(model, batch.obs.shape[0], z, rngs)
+    # ENN target perturbation at the observation-noise level (predicted σ).
+    loc, scale = model._loc_scale(y)
+    target = target + jax.lax.stop_gradient(scale) * proj[:, None]
+    return -distrax.MultivariateNormalDiag(loc, scale).log_prob(target).mean()
 
 
 def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
+    if model.head != "deterministic":
+        nll = _distribution_loss(model, batch, rngs)
+        return nll, (nll, jnp.zeros(()), jnp.zeros(()))
     sigma = 1.0
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
@@ -175,6 +261,7 @@ def _make_batched_model(
     act_dim,
     keys,
     predict_reward_terminated: bool = True,
+    head: str = "deterministic",
 ):
     @nnx.vmap
     def build(key):
@@ -194,6 +281,8 @@ def _make_batched_model(
             obs_dim,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
+            head=head,
+            min_scale=model_config.get("MIN_SCALE", 1e-3),
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))

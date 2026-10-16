@@ -193,8 +193,13 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         x = model.single_input(state.obs, action)
         if self.prediction_mode == "mean":
             y = model.predict_mean(x)
+            delta_norm = y[..., : model.obs_dim]
         else:
+            # Epistemic index fixed per episode; distributional models also draw
+            # aleatoric noise from their predictive distribution here.
+            key, key_sample = jax.random.split(key)
             y = model.predict_sample(x, state.z[0])
+            delta_norm = model.sample_delta(x, state.z[0], key_sample)
         # NOTE: the "eig" and "std" bonuses are on different scales and are NOT
         # magnitude-matched. "std" is the posterior standard deviation (linear,
         # in normalized output units) while "eig" is ½ log(1 + σ²_ep) nats
@@ -203,7 +208,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         # switching between them.
         r_intrinsic = model.uncertainty(x, state.z, self.explore_bonus)
 
-        delta_obs = model.denormalize_delta_obs(y[..., : model.obs_dim])
+        delta_obs = model.denormalize_delta_obs(delta_norm)
         obs = state.obs + delta_obs
         obs = jnp.clip(
             obs,

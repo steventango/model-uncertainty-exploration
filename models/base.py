@@ -5,6 +5,24 @@ import jax.numpy as jnp
 from flax import nnx
 
 
+def head_out_features(head: str, obs_dim: int, predict_reward_terminated: bool) -> int:
+    """Network output width for a dynamics output head.
+
+    deterministic: delta_obs (+ reward, terminated logits).
+    normal: [loc | raw_scale] of the normalized delta_obs, per obs dim.
+    """
+    if head == "deterministic":
+        return obs_dim + 2 if predict_reward_terminated else obs_dim
+    if predict_reward_terminated:
+        raise NotImplementedError(
+            f"head={head!r} models next-obs only; use the oracle reward "
+            "(predict_reward_terminated=False)."
+        )
+    if head == "normal":
+        return 2 * obs_dim
+    raise ValueError(f"unknown head {head!r}")
+
+
 class WorldModel(nnx.Module):
     """Base class for learned dynamics models with shared normalization."""
 
@@ -40,6 +58,19 @@ class WorldModel(nnx.Module):
     def predict_mean(self, x):
         """Deterministic posterior mean for a single normalized input."""
         raise NotImplementedError
+
+    def sample_delta(self, x, index, key):
+        """Normalized delta-obs (obs_dim,) at epistemic index ``index``.
+
+        Point-estimate models have no aleatoric noise, so ``key`` is unused;
+        distributional models override this to sample their predictive distribution.
+        """
+        return self.predict_sample(x, index)[..., : self.obs_dim]
+
+    def nll(self, x, obs, next_obs):
+        """Negative log-likelihood of ``next_obs`` under the mean predictive
+        distribution at a single input. Zero for point-estimate models."""
+        return jnp.zeros(())
 
     # --- Concrete uncertainty helpers ---
 
