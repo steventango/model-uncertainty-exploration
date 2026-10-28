@@ -442,6 +442,28 @@ classic_ppo_every_tenth = Experiment(
     ),
 )
 
+classic_ppo_every_tenth_epochs = Experiment(
+    name="classic_ppo_every_tenth_epochs",
+    configs=tuple(
+        cfg
+        for epochs in (10, 30, 100)
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            label=f"epochs{epochs}",
+            model_free=True,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+            ppo__update_epochs=epochs,
+        )
+    ),
+    description=(
+        "classic_ppo_every_tenth with more PPO update epochs per round "
+        "(10, 30, 100; the base experiment uses the default 4)"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -461,5 +483,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long_variants,
         classic_plan_every_tenth,
         classic_ppo_every_tenth,
+        classic_ppo_every_tenth_epochs,
     )
 }
