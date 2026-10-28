@@ -392,6 +392,60 @@ classic_plan_every_cheap_model_long_variants = Experiment(
     ),
 )
 
+inac_mc_growing_batch = Experiment(
+    name="inac_mc_growing_batch",
+    configs=tuple(
+        cfg
+        for tau in (0.01, 0.1, 0.5, 1.0)
+        for cfg in sweep(
+            env="MountainCar-v0",
+            label=f"inac_model_free_tau{tau}",
+            solver="inac",
+            model_free=True,
+            inac__offline_updates=10_000,
+            inac__tau=tau,
+        )
+    ),
+    description=(
+        "model-free growing batch: InAC policy collects one real episode per "
+        "round, InAC trains (warm-started) on all real data; tau sweep"
+    ),
+)
+
+inac_mc_model_env = Experiment(
+    name="inac_mc_model_env",
+    configs=(
+        *(
+            cfg
+            for tau in (0.1, 0.5)
+            for cfg in sweep(
+                env="MountainCar-v0",
+                alpha=0.0,
+                beta=1.0,
+                mode="sample",
+                bonus="eig",
+                label=f"inac_tau{tau}",
+                solver="inac",
+                inac__num_iters=20_000,
+                inac__tau=tau,
+            )
+        ),
+        *sweep(
+            env="MountainCar-v0",
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="ppo",
+            solver="ppo",
+        ),
+    ),
+    description=(
+        "InAC vs PPO as the ModelEnv solver; explore-only (alpha=0 beta=1) "
+        "eig bonus, sample mode"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -409,5 +463,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_ppo_ent,
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
+        inac_mc_growing_batch,
+        inac_mc_model_env,
     )
 }

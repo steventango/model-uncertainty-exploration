@@ -60,6 +60,28 @@ class PPOConfig:
     debug: bool = False
 
 
+@dataclass(frozen=True)
+class InACConfig:
+    """In-Sample Actor-Critic hyperparameters (see inac.py)."""
+
+    lr: float = 3e-4
+    hidden_dim: int = 256
+    batch_size: int = 256
+    tau: float = 0.1
+    gamma: float = 0.99
+    polyak: float = 0.995
+    eps: float = 1e-8
+    exp_threshold: float = 1e4
+    # Growing batch (--model-free): gradient steps per real-data round.
+    offline_updates: int = 2000
+    # ModelEnv solver: online replay loop against the model env.
+    num_envs: int = 16
+    num_iters: int = 5000
+    updates_per_iter: int = 1
+    buffer_size: int = 100_000
+    learning_starts: int = 1000
+
+
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
@@ -73,7 +95,7 @@ class Args:
     num_seeds: int = 1
     alpha: float = 0.0
     beta: float = 1.0
-    solver: Literal["ppo"] = "ppo"
+    solver: Literal["ppo", "inac"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig"] = "eig"
@@ -89,6 +111,7 @@ class Args:
     log_dir: str | None = None
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
+    inac: InACConfig = field(default_factory=InACConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
 
     def __post_init__(self):
@@ -157,4 +180,27 @@ def ppo_config_dict(
     d["SEED"] = seed
     d["NUM_UPDATES"] = int(d["TOTAL_TIMESTEPS"]) // d["NUM_STEPS"] // d["NUM_ENVS"]
     d["MINIBATCH_SIZE"] = d["NUM_ENVS"] * d["NUM_STEPS"] // d["NUM_MINIBATCHES"]
+    return d
+
+
+def inac_config_dict(
+    c: InACConfig,
+    *,
+    env_name: str,
+    seed: int,
+    offline: bool,
+) -> dict:
+    """Convert InAC config to the UPPERCASE dict inac.py expects.
+
+    Adds the keys ``ppo.make_rollout`` and ``logger.log_ppo_returns`` read, in
+    PPO's units: one env step per update (NUM_STEPS=1, NUM_UPDATES=NUM_ITERS).
+    """
+    d: dict = {k.upper(): v for k, v in dataclasses.asdict(c).items()}
+    if not offline:
+        d["ENV_NAME"] = env_name
+    d["SEED"] = seed
+    d["NORMALIZE_ENV"] = False
+    d["NUM_STEPS"] = 1
+    d["NUM_UPDATES"] = d["NUM_ITERS"]
+    d["TOTAL_TIMESTEPS"] = d["NUM_ITERS"] * d["NUM_ENVS"]
     return d

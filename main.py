@@ -14,9 +14,10 @@ from flax import nnx
 from gymnax.environments import spaces
 
 import evaluation
+import inac
 import plotting
 import validation
-from config import Args, model_config_dict, ppo_config_dict
+from config import Args, inac_config_dict, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_validation
@@ -28,6 +29,7 @@ from ppo import (
     make_batched_train,
     make_batched_train_state,
     make_rollout,
+    make_train,
     make_train_state,
     make_update,
     select_config_train_state,
@@ -207,9 +209,19 @@ def main():
     model_config = model_config_dict(
         args.model, max_data=dataset_size, minibatch_size=model_minibatch_size
     )
-    config = ppo_config_dict(
-        args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
-    )
+    if args.solver == "inac":
+        config = inac_config_dict(
+            args.inac, env_name=args.env, seed=args.seed, offline=args.offline
+        )
+        solver_make_train_state, solver_make_train = (
+            inac.make_train_state,
+            inac.make_train,
+        )
+    else:
+        config = ppo_config_dict(
+            args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
+        )
+        solver_make_train_state, solver_make_train = make_train_state, make_train
 
     if not args.offline:
         rollout_config = {
@@ -225,7 +237,11 @@ def main():
             "NUM_STEPS": env_params.max_steps_in_episode,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
-        if args.model_free and rollout_steps % args.ppo.num_minibatches:
+        if (
+            args.model_free
+            and args.solver == "ppo"
+            and rollout_steps % args.ppo.num_minibatches
+        ):
             raise ValueError(
                 f"--model-free: --ppo.num-minibatches ({args.ppo.num_minibatches})"
                 f" must divide the real steps per rollout ({rollout_steps})"
@@ -235,7 +251,7 @@ def main():
 
         @nnx.vmap(in_axes=0, out_axes=0)
         def _build_rollout_train_state(key):
-            return make_train_state(
+            return solver_make_train_state(
                 rollout_config if args.model_free else config,
                 env,
                 env_params,
@@ -366,28 +382,44 @@ def main():
     betas = jnp.array([args.beta, 0.0])
     num_configs = alphas.shape[0]
     batched_train_jit = nnx.jit(
-        make_batched_train(model_env, model_env.default_params, config)
+        make_batched_train(
+            model_env,
+            model_env.default_params,
+            config,
+            make_train=solver_make_train,
+        )
     )
     if args.model_free:
-        online_config = {
-            **rollout_config,
-            "MINIBATCH_SIZE": rollout_config["NUM_STEPS"]
-            * rollout_config["NUM_ENVS"]
-            // rollout_config["NUM_MINIBATCHES"],
-        }
-        ppo_update = make_update(online_config)
+        if args.solver == "inac":
+            # Growing batch: OFFLINE_UPDATES InAC steps on all real data so far.
+            inac_offline_train = inac.make_offline_train(config)
 
-        def model_free_train(train_state, traj_batch, dataset, count, rng):
-            _, (total, (value, actor, entropy)) = ppo_update(
-                train_state, traj_batch, rng
-            )
-            losses = {
-                "total": total,
-                "value": value,
-                "actor": actor,
-                "entropy": entropy,
+            def model_free_train(train_state, traj_batch, dataset, count, rng):
+                train_state, losses = inac_offline_train(
+                    train_state, dataset, count, rng
+                )
+                return train_state, jax.tree_util.tree_map(inac.tail_mean, losses)
+
+        else:
+            online_config = {
+                **rollout_config,
+                "MINIBATCH_SIZE": rollout_config["NUM_STEPS"]
+                * rollout_config["NUM_ENVS"]
+                // rollout_config["NUM_MINIBATCHES"],
             }
-            return train_state, jax.tree_util.tree_map(jnp.mean, losses)
+            ppo_update = make_update(online_config)
+
+            def model_free_train(train_state, traj_batch, dataset, count, rng):
+                _, (total, (value, actor, entropy)) = ppo_update(
+                    train_state, traj_batch, rng
+                )
+                losses = {
+                    "total": total,
+                    "value": value,
+                    "actor": actor,
+                    "entropy": entropy,
+                }
+                return train_state, jax.tree_util.tree_map(jnp.mean, losses)
 
         batched_model_free_train = nnx.jit(
             nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
@@ -511,7 +543,11 @@ def main():
             seed_keys, ts_seed = vsplit(seed_keys)
             ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
             batched_train_state_ppo = make_batched_train_state(
-                config, model_env, model_env.default_params, ts_keys
+                config,
+                model_env,
+                model_env.default_params,
+                ts_keys,
+                make_train_state=solver_make_train_state,
             )
             # model varies per seed (B axis); alpha/beta vary per config (C axis).
             model_env_params_b = model_env.default_params.replace(
@@ -565,6 +601,15 @@ def main():
                         config["NUM_STEPS"],
                         int(config["TOTAL_TIMESTEPS"]),
                     )
+                if "losses" in out:
+                    for tag, index in (("explore", EXPLORE), ("eval", EVAL)):
+                        losses = _seed_slice(out["losses"], (b, index))
+                        for name, series in losses.items():
+                            loggers[b].log_scalar(
+                                f"{args.solver}_{tag}/{name}",
+                                float(inac.tail_mean(series)),
+                                data_count,
+                            )
 
         else:
             seed_keys, train_keys = vsplit(seed_keys)
