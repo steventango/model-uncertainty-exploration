@@ -83,8 +83,6 @@ def vsplit(keys, num=2):
 
 def main():
     args = tyro.cli(Args)
-    if args.model_free and args.offline:
-        raise ValueError("--model-free needs an online env")
 
     B = args.num_seeds
     seeds = args.seed + jnp.arange(B)

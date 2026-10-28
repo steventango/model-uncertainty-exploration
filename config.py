@@ -91,6 +91,10 @@ class Args:
     ppo: PPOConfig = field(default_factory=PPOConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
 
+    def __post_init__(self):
+        if self.model_free and self.offline:
+            raise ValueError("--model-free needs an online env")
+
 
 def candidate_configs(m):
     """Expand tuple fields into all scalar candidate configs (Cartesian product).
