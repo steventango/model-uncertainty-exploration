@@ -57,7 +57,7 @@ def make_rollout(config, env, env_params, training=True):
             if config["NORMALIZE_ENV"]:
                 if training:
                     normalize_vec_obs.train()
-                    normalize_vec_obs(obsv)  # update the stats with the new obs
+                    normalize_vec_obs(obsv)
                 normalize_vec_obs.eval()
                 next_obs = normalize_vec_obs(next_obs)
                 if training:
@@ -212,17 +212,6 @@ def make_update(config):
         return update_state[-1], loss_info
 
     return update
-
-
-def make_online_train(config):
-    _update = make_update(config)
-
-    def train(train_state, traj_batch, rng):
-        _, (total, (value, actor, entropy)) = _update(train_state, traj_batch, rng)
-        losses = {"total": total, "value": value, "actor": actor, "entropy": entropy}
-        return train_state, jax.tree_util.tree_map(jnp.ravel, losses)
-
-    return train
 
 
 def make_train(env, config):

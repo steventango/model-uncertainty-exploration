@@ -27,8 +27,8 @@ from plant_env import PlantEnv, PlantEnvParams
 from ppo import (
     make_batched_train,
     make_batched_train_state,
-    make_online_train,
     make_rollout,
+    make_update,
     make_train_state,
     select_config_train_state,
     unstack_train_state,
@@ -394,13 +394,22 @@ def main():
             * rollout_config["NUM_ENVS"]
             // rollout_config["NUM_MINIBATCHES"],
         }
-        ppo_online_train = make_online_train(online_config)
+        ppo_update = make_update(online_config)
 
         def model_free_train(train_state, traj_batch, dataset, count, rng):
             """(train_state, losses) from this round's (T, E) ``traj_batch`` and
             the first ``count`` rows of the growing ``dataset``: an online
             solver uses the former, a growing-batch solver the latter."""
-            return ppo_online_train(train_state, traj_batch, rng)
+            _, (total, (value, actor, entropy)) = ppo_update(
+                train_state, traj_batch, rng
+            )
+            losses = {
+                "total": total,
+                "value": value,
+                "actor": actor,
+                "entropy": entropy,
+            }
+            return train_state, jax.tree_util.tree_map(jnp.ravel, losses)
 
         batched_model_free_train = nnx.jit(
             nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
