@@ -422,6 +422,26 @@ classic_plan_every_tenth = Experiment(
     ),
 )
 
+classic_ppo_every_tenth = Experiment(
+    name="classic_ppo_every_tenth",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            model_free=True,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+        )
+    ),
+    description=(
+        "model-free online PPO, one update every 10% of the truncation length, "
+        "10 episodes of real steps (100 updates); the PPO baseline for "
+        "classic_plan_every_tenth"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -440,5 +460,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
         classic_plan_every_tenth,
+        classic_ppo_every_tenth,
     )
 }
