@@ -262,8 +262,24 @@ def main():
         reset_rng = vsplit(reset_seed, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
         obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
 
+        if args.model_free and config["NORMALIZE_ENV"]:
+            # Seed the obs stats with the reset obs, as make_train does.
+            @nnx.jit
+            @nnx.vmap
+            def _init_obs_stats(train_state, obs):
+                normalize_vec_obs = train_state[2]
+                normalize_vec_obs.train()
+                normalize_vec_obs(obs)
+                normalize_vec_obs.eval()
+
+            _init_obs_stats(batched_rollout_train_state, obsv)
+
+        # --model-free trains on this rollout, so it updates the normalizer
+        # stats per step like make_train; otherwise it only collects data.
         _rollout = nnx.jit(
-            nnx.vmap(make_rollout(rollout_config, env, env_params, training=False))
+            nnx.vmap(
+                make_rollout(rollout_config, env, env_params, training=args.model_free)
+            )
         )
 
         seed_keys, mock_rng = vsplit(seed_keys)

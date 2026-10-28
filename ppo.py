@@ -21,6 +21,9 @@ class Transition(NamedTuple):
     log_prob: jnp.ndarray
     obs: jnp.ndarray
     info: jnp.ndarray
+    raw_obs: jnp.ndarray
+    raw_action: jnp.ndarray
+    raw_reward: jnp.ndarray
 
 
 def make_rollout(config, env, env_params, training=True):
@@ -33,7 +36,7 @@ def make_rollout(config, env, env_params, training=True):
             network, _, normalize_vec_obs, normalize_vec_reward = train_state
             # SELECT ACTION
             rng, _rng = jax.random.split(rng)
-            if config["NORMALIZE_ENV"] and not training:
+            if config["NORMALIZE_ENV"]:
                 normalize_vec_obs.eval()
                 network_last_obs = normalize_vec_obs(last_obs)
             else:
@@ -49,11 +52,12 @@ def make_rollout(config, env, env_params, training=True):
                 rng_step, env_state, action, env_params
             )
             next_obs = info["next_obs"]
+            raw_reward = reward
 
             if config["NORMALIZE_ENV"]:
                 if training:
                     normalize_vec_obs.train()
-                    obsv = normalize_vec_obs(obsv)
+                    normalize_vec_obs(obsv)  # update the stats with the new obs
                 normalize_vec_obs.eval()
                 next_obs = normalize_vec_obs(next_obs)
                 if training:
@@ -62,12 +66,15 @@ def make_rollout(config, env, env_params, training=True):
 
             _, next_value = network(next_obs)
 
-            if not discrete and not training:
-                action = jnp.clip(
+            env_action = action
+            if not discrete:
+                env_action = jnp.clip(
                     action,
                     env.action_space(env_params).low,
                     env.action_space(env_params).high,
                 )
+            if not training:
+                action = env_action
 
             transition = Transition(
                 terminated,
@@ -77,8 +84,11 @@ def make_rollout(config, env, env_params, training=True):
                 next_value,
                 reward,
                 log_prob,
-                last_obs,
+                network_last_obs if training else last_obs,
                 info,
+                last_obs,
+                env_action,
+                raw_reward,
             )
             runner_state = (train_state, env_state, obsv, rng)
             return runner_state, transition
@@ -207,31 +217,8 @@ def make_update(config):
 def make_online_train(config):
     _update = make_update(config)
 
-    def _normalize_reward(normalize_vec_reward, xs):
-        reward, terminated, truncated = xs
-        return normalize_vec_reward, normalize_vec_reward(reward, terminated, truncated)
-
     def train(train_state, traj_batch, rng):
-        _, _, normalize_vec_obs, normalize_vec_reward = train_state
-        raw_obs = traj_batch.obs
-        if config["NORMALIZE_ENV"]:
-            normalize_vec_obs.eval()
-            normalize_vec_reward.train()
-            # The reward stats track a running discounted return, so they are
-            # updated one step at a time, as in make_train's rollout.
-            _, reward = nnx.scan(_normalize_reward)(
-                normalize_vec_reward,
-                (traj_batch.reward, traj_batch.terminated, traj_batch.truncated),
-            )
-            normalize_vec_reward.eval()
-            traj_batch = traj_batch._replace(
-                obs=normalize_vec_obs(raw_obs), reward=reward
-            )
         _, (total, (value, actor, entropy)) = _update(train_state, traj_batch, rng)
-        if config["NORMALIZE_ENV"]:
-            normalize_vec_obs.train()
-            normalize_vec_obs(raw_obs.reshape((-1,) + raw_obs.shape[2:]))
-            normalize_vec_obs.eval()
         losses = {"total": total, "value": value, "actor": actor, "entropy": entropy}
         return train_state, jax.tree_util.tree_map(jnp.ravel, losses)
 
@@ -258,7 +245,7 @@ def make_train(env, config):
 
         if config["NORMALIZE_ENV"]:
             normalize_vec_obs.train()
-            obsv = normalize_vec_obs(obsv)
+            normalize_vec_obs(obsv)
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
