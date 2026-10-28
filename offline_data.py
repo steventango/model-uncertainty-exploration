@@ -82,6 +82,9 @@ def load_offline_transitions(
         log_prob=zeros,
         obs=obs,
         info={"next_obs": next_obs},
+        raw_obs=obs,
+        raw_action=action,
+        raw_reward=reward,
     )
 
     return transitions, action_space, observation_space, max_ep_len
