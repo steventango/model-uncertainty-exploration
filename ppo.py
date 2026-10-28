@@ -93,10 +93,6 @@ def make_rollout(config, env, env_params, training=True):
 
 
 def make_update(config):
-    """``update(train_state, traj_batch, rng) -> (rng, loss_info)``: GAE plus
-    ``UPDATE_EPOCHS`` x ``NUM_MINIBATCHES`` PPO steps on one ``(NUM_STEPS,
-    NUM_ENVS)`` trajectory batch, applied to ``train_state`` in place."""
-
     def update(train_state, traj_batch, rng):
         # CALCULATE ADVANTAGE
         def _calculate_gae(traj_batch):
@@ -209,21 +205,11 @@ def make_update(config):
 
 
 def make_online_train(config):
-    """``train(train_state, traj_batch, rng) -> (train_state, losses)``: one PPO
-    update on a real-env ``traj_batch`` from ``make_rollout(..., training=False)``.
-
-    That rollout feeds the network eval-normalized obs but stores raw obs and
-    raw rewards, and never updates the running stats. So here the obs are
-    normalized with the stats the rollout used (keeping the stored values and
-    log-probs consistent), the rewards are normalized in train mode as
-    ``make_train`` does, and the obs stats are updated with this batch after
-    the update, ready for the next rollout.
-    """
     _update = make_update(config)
 
     def _normalize_reward(normalize_vec_reward, xs):
         reward, terminated, truncated = xs
-        return normalize_vec_reward(reward, terminated, truncated)
+        return normalize_vec_reward, normalize_vec_reward(reward, terminated, truncated)
 
     def train(train_state, traj_batch, rng):
         _, _, normalize_vec_obs, normalize_vec_reward = train_state
@@ -231,7 +217,9 @@ def make_online_train(config):
         if config["NORMALIZE_ENV"]:
             normalize_vec_obs.eval()
             normalize_vec_reward.train()
-            _, reward = nnx.scan(lambda n, xs: (n, _normalize_reward(n, xs)))(
+            # The reward stats track a running discounted return, so they are
+            # updated one step at a time, as in make_train's rollout.
+            _, reward = nnx.scan(_normalize_reward)(
                 normalize_vec_reward,
                 (traj_batch.reward, traj_batch.terminated, traj_batch.truncated),
             )
