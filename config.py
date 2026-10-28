@@ -73,6 +73,8 @@ class Args:
     num_seeds: int = 1
     alpha: float = 0.0
     beta: float = 1.0
+    solver: Literal["ppo"] = "ppo"
+    model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig"] = "eig"
     predict_reward_terminated: bool = False
@@ -88,6 +90,10 @@ class Args:
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
+
+    def __post_init__(self):
+        if self.model_free and self.offline:
+            raise ValueError("--model-free needs an online env")
 
 
 def candidate_configs(m):

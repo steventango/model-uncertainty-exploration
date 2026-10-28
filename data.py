@@ -12,6 +12,11 @@ def _batch_action(action):
 
 def collate_rollout(traj_batch):
     """Flatten (T, E, …) PPO transition batch → (T*E, …) with model action layout."""
+    traj_batch = traj_batch._replace(
+        obs=traj_batch.raw_obs,
+        action=traj_batch.raw_action,
+        reward=traj_batch.raw_reward,
+    )
     traj_batch = jax.tree_util.tree_map(
         lambda x: x.reshape((-1,) + x.shape[2:]), traj_batch
     )
