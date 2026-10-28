@@ -24,6 +24,7 @@ dependencies = [
     "tyro>=1.0.12",
     "orbax-checkpoint>=0.5.0",
     "brax>=0.14.2",
+    "mujoco-mjx>=3.10.0",
 ]
 
 [tool.uv.sources]
@@ -32,12 +33,14 @@ gymnax = { git = "https://github.com/steventango/gymnax" }
 
 [dependency-groups]
 dev = [
+    "gymnasium[mujoco]>=1.2.3",
     "pytest>=8.0",
     "ruff>=0.15.9",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
