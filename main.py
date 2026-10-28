@@ -621,6 +621,13 @@ def main():
             for b in range(B):
                 loggers[b].log_scalar("time/eval_s", eval_s, data_count)
 
+    if not args.offline:
+        # Grid points past the last round: the policy has not changed since.
+        first = (data_count // eval_every + 1) * eval_every
+        for step in range(first, max_steps + 1, eval_every):
+            seed_keys, eval_keys = vsplit(seed_keys)
+            log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
+
     if num_rollouts > 0:
         t0 = time.perf_counter()
         for b in range(B):
