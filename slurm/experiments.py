@@ -518,6 +518,30 @@ classic_ppo_rollout = Experiment(
     ),
 )
 
+classic_ppo_tune_40 = Experiment(
+    name="classic_ppo_tune_40",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for lr in (3e-4, 1e-3, 3e-3)
+        for ent in (0.0, 0.01)
+        for cfg in sweep(
+            env=env,
+            label=f"lr{lr:g}_ep40_ent{ent:g}",
+            model_free=True,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+            ppo__lr=lr,
+            ppo__update_epochs=40,
+            ppo__ent_coef=ent,
+        )
+    ),
+    base_seed=1000,
+    num_seeds=10,
+    description="classic_ppo_tune extended to 40 update epochs (same grid otherwise)",
+)
+
 # (steps per rollout, update epochs, minibatches) for 20-step, one-episode and 2048-step rollouts
 PENDULUM_ROLLOUTS = ((20, 30, 1), (200, 10, 1), (2048, 10, 32))
 
@@ -568,6 +592,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_every_tenth,
         classic_ppo_every_tenth_epochs,
         classic_ppo_tune,
+        classic_ppo_tune_40,
         classic_ppo_rollout,
         pendulum_learn,
     )
