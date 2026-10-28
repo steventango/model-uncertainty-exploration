@@ -518,6 +518,35 @@ classic_ppo_rollout = Experiment(
     ),
 )
 
+# (steps per rollout, update epochs, minibatches) for 20-step, one-episode and 2048-step rollouts
+PENDULUM_ROLLOUTS = ((20, 30, 1), (200, 10, 1), (2048, 10, 32))
+
+pendulum_learn = Experiment(
+    name="pendulum_learn",
+    configs=tuple(
+        cfg
+        for gamma in (0.99, 0.9)
+        for rollout, epochs, minibatches in PENDULUM_ROLLOUTS
+        for cfg in sweep(
+            env="Pendulum-v1",
+            label=f"g{gamma:g}_r{rollout}",
+            model_free=True,
+            steps_per_rollout=rollout,
+            eval_every=1000,
+            max_steps=50_000,
+            ppo__gamma=gamma,
+            ppo__update_epochs=epochs,
+            ppo__num_minibatches=minibatches,
+        )
+    ),
+    base_seed=1000,
+    num_seeds=10,
+    description=(
+        "what makes online PPO learn Pendulum: 50k real steps, discount "
+        "0.99 vs 0.9 x rollout 20 / 200 / 2048, on tuning seeds 1000-1009"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -540,5 +569,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_every_tenth_epochs,
         classic_ppo_tune,
         classic_ppo_rollout,
+        pendulum_learn,
     )
 }
