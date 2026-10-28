@@ -318,8 +318,9 @@ def make_train_state(config, env, env_params, rngs):
     return train_state
 
 
-def make_batched_train(env, env_params, config):
-    """Vmap PPO ``train`` over B seeds (outer) and C configs (inner).
+def make_batched_train(env, env_params, config, make_train=make_train):
+    """Vmap ``make_train(env, config)`` (PPO by default) over B seeds (outer) and
+    C configs (inner).
 
     ``env_params`` carries everything that varies: its ``model`` subtree has a
     leading B (seed) axis and its ``alpha``/``beta`` weights have a leading C
@@ -335,8 +336,11 @@ def make_batched_train(env, env_params, config):
     return nnx.vmap(inner, in_axes=(0, env_params.seed_vmap_axes(), 0), out_axes=0)
 
 
-def make_batched_train_state(config, env, env_params, keys):
-    """Build a (B, C) grid of independent PPO train states. ``keys`` is (B, C)."""
+def make_batched_train_state(
+    config, env, env_params, keys, make_train_state=make_train_state
+):
+    """Build a (B, C) grid of independent train states (PPO by default).
+    ``keys`` is (B, C)."""
 
     @nnx.vmap
     def build_seed(seed_keys):  # seed_keys: (C,) keys
