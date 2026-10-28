@@ -76,14 +76,6 @@ def _save_checkpoint(
     checkpointer.wait_until_finished()
 
 
-def _log_losses(logger, losses, prefix, step):
-    """Log each loss averaged over its last 10% of updates."""
-    for name, series in losses.items():
-        series = jnp.asarray(series)
-        tail = series[-max(1, series.shape[0] // 10) :]
-        logger.log_scalar(f"{prefix}/{name}", float(jnp.mean(tail)), step)
-
-
 @partial(jax.jit, static_argnums=1)
 def vsplit(keys, num=2):
     return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
@@ -399,7 +391,8 @@ def main():
         def model_free_train(train_state, traj_batch, dataset, count, rng):
             """(train_state, losses) from this round's (T, E) ``traj_batch`` and
             the first ``count`` rows of the growing ``dataset``: an online
-            solver uses the former, a growing-batch solver the latter."""
+            solver uses the former, a growing-batch solver the latter.
+            ``losses`` is a dict of scalars summarizing the round."""
             _, (total, (value, actor, entropy)) = ppo_update(
                 train_state, traj_batch, rng
             )
@@ -409,7 +402,7 @@ def main():
                 "actor": actor,
                 "entropy": entropy,
             }
-            return train_state, jax.tree_util.tree_map(jnp.ravel, losses)
+            return train_state, jax.tree_util.tree_map(jnp.mean, losses)
 
         batched_model_free_train = nnx.jit(
             nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
@@ -605,7 +598,10 @@ def main():
                 loggers[b].log_scalar(
                     f"time/{args.solver}_train_s", train_s, data_count
                 )
-                _log_losses(loggers[b], _seed_slice(losses, b), args.solver, data_count)
+                for name, loss in _seed_slice(losses, b).items():
+                    loggers[b].log_scalar(
+                        f"{args.solver}/{name}", float(loss), data_count
+                    )
             explore_train_state, eval_train_state = None, runner_state[0]
 
         seed_keys, eval_keys = vsplit(seed_keys)
