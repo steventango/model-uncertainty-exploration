@@ -165,9 +165,16 @@ class MLP(nnx.Module):
         rngs: nnx.Rngs,
         zero_out_init: bool = False,
         use_layer_norm: bool = False,
+        nonzero_bias: bool = False,
     ):
         self.use_layer_norm = use_layer_norm
-        self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
+        if nonzero_bias:
+            bias_init = nnx.initializers.truncated_normal(stddev=in_features**-0.5)
+        else:
+            bias_init = nnx.initializers.zeros
+        self.linear1 = nnx.Linear(
+            in_features, hidden_features, bias_init=bias_init, rngs=rngs
+        )
         if use_layer_norm:
             self.ln1 = nnx.LayerNorm(hidden_features, rngs=rngs)
         if zero_out_init:
@@ -227,6 +234,9 @@ class MLPEnsemble(nnx.Module):
                 hidden_features,
                 out_features,
                 use_layer_norm=False,
+                # Like deepmind/enn EnsembleMLP: a random first-layer bias, so
+                # each prior member is not an odd function that is zero at x=0.
+                nonzero_bias=True,
                 rngs=nnx.Rngs(params=key),
             )
 
