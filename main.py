@@ -27,7 +27,9 @@ from plant_env import PlantEnv, PlantEnvParams
 from ppo import (
     make_batched_train,
     make_batched_train_state,
+    make_online_train,
     make_rollout,
+    make_train,
     make_train_state,
     select_config_train_state,
     unstack_train_state,
@@ -47,17 +49,24 @@ def _seed_slice(tree, idx):
     return jax.tree_util.tree_map(lambda x: x[idx], tree)
 
 
-def _save_checkpoint(seed_dir, models, explore_train_state, eval_train_state, seed_idx):
+def _save_checkpoint(
+    seed_dir, models, explore_train_state, eval_train_state, seed_idx, solver="ppo"
+):
     checkpointer = ocp.StandardCheckpointer()
     abs_seed_dir = os.path.abspath(seed_dir)
 
-    _, model_state = nnx.split(unstack_train_state(models, seed_idx))
-    checkpointer.save(os.path.join(abs_seed_dir, "checkpoint", "model"), model_state)
+    if models is not None:
+        _, model_state = nnx.split(unstack_train_state(models, seed_idx))
+        checkpointer.save(
+            os.path.join(abs_seed_dir, "checkpoint", "model"), model_state
+        )
 
     for tag, batched_ts in [
-        ("ppo_explore", explore_train_state),
-        ("ppo_eval", eval_train_state),
+        (f"{solver}_explore", explore_train_state),
+        (f"{solver}_eval", eval_train_state),
     ]:
+        if batched_ts is None:
+            continue
         network, _, normalize_vec_obs, _ = unstack_train_state(batched_ts, seed_idx)
         _, network_state = nnx.split(network)
         _, obs_norm_state = nnx.split(normalize_vec_obs)
@@ -68,6 +77,76 @@ def _save_checkpoint(seed_dir, models, explore_train_state, eval_train_state, se
     checkpointer.wait_until_finished()
 
 
+def _log_losses(logger, losses, prefix, step):
+    """Log each loss averaged over its last 10% of updates."""
+    for name, series in losses.items():
+        series = jnp.asarray(series)
+        tail = series[-max(1, series.shape[0] // 10) :]
+        logger.log_scalar(f"{prefix}/{name}", float(jnp.mean(tail)), step)
+
+
+def _run_model_free(
+    solver,
+    train,
+    loggers,
+    num_rollouts,
+    rollout,
+    append_dataset,
+    batched_eval,
+    train_state,
+    env_state,
+    obsv,
+    dataset,
+    seed_keys,
+):
+    """Online / growing-batch training without a model: each round the current
+    policy collects real data, which is appended to the dataset; the solver
+    then updates (warm-started) and the result is evaluated.
+
+    ``train(train_state, traj_batch, dataset, count, rng) -> (train_state,
+    losses)`` gets this round's ``(T, E)`` trajectory and the first ``count``
+    rows of the growing dataset; an online solver uses the former, a growing
+    batch solver the latter.
+    """
+    B = len(loggers)
+    batched_train = nnx.jit(nnx.vmap(train, in_axes=(0, 0, 0, None, 0)))
+    seed_keys, runner_seed = vsplit(seed_keys)
+    runner_state = (train_state, env_state, obsv, runner_seed)
+    seed_keys, eval_keys = vsplit(seed_keys)
+    log_eval(loggers, batched_eval, train_state, eval_keys, 0)
+    data_count = 0
+    for _ in range(num_rollouts):
+        t0 = time.perf_counter()
+        runner_state, traj_batch = rollout(runner_state)
+        jax.block_until_ready(traj_batch)
+        rollout_s = time.perf_counter() - t0
+
+        collated = jax.vmap(collate_rollout)(traj_batch)
+        dataset = append_dataset(dataset, collated, jnp.asarray(data_count))
+        for b in range(B):
+            loggers[b].log_dataset(_seed_slice(collated, b), data_count)
+        data_count += collated.obs.shape[1]
+
+        seed_keys, train_keys = vsplit(seed_keys)
+        t0 = time.perf_counter()
+        _, losses = batched_train(
+            runner_state[0], traj_batch, dataset, jnp.asarray(data_count), train_keys
+        )
+        jax.block_until_ready(losses)
+        train_s = time.perf_counter() - t0
+
+        seed_keys, eval_keys = vsplit(seed_keys)
+        t0 = time.perf_counter()
+        log_eval(loggers, batched_eval, runner_state[0], eval_keys, data_count)
+        eval_s = time.perf_counter() - t0
+        for b in range(B):
+            loggers[b].log_scalar("time/rollout_s", rollout_s, data_count)
+            loggers[b].log_scalar(f"time/{solver}_train_s", train_s, data_count)
+            loggers[b].log_scalar("time/eval_s", eval_s, data_count)
+            _log_losses(loggers[b], _seed_slice(losses, b), solver, data_count)
+    return runner_state[0]
+
+
 @partial(jax.jit, static_argnums=1)
 def vsplit(keys, num=2):
     return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
@@ -75,6 +154,8 @@ def vsplit(keys, num=2):
 
 def main():
     args = tyro.cli(Args)
+    if args.model_free and args.offline:
+        raise ValueError("--model-free needs an online env")
 
     B = args.num_seeds
     seeds = args.seed + jnp.arange(B)
@@ -204,6 +285,7 @@ def main():
     config = ppo_config_dict(
         args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
     )
+    solver_make_train_state, solver_make_train = make_train_state, make_train
 
     if not args.offline:
         rollout_config = {
@@ -219,12 +301,19 @@ def main():
             "NUM_STEPS": env_params.max_steps_in_episode,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
+        if args.model_free and rollout_steps % args.ppo.num_minibatches:
+            raise ValueError(
+                f"--model-free: --ppo.num-minibatches ({args.ppo.num_minibatches})"
+                f" must divide the real steps per rollout ({rollout_steps})"
+            )
 
         seed_keys, policy_keys = vsplit(seed_keys)
 
         @nnx.vmap(in_axes=0, out_axes=0)
         def _build_rollout_train_state(key):
-            return make_train_state(config, env, env_params, nnx.Rngs(params=key))
+            return solver_make_train_state(
+                config, env, env_params, nnx.Rngs(params=key)
+            )
 
         batched_rollout_train_state = _build_rollout_train_state(policy_keys)
 
@@ -258,6 +347,8 @@ def main():
             return jax.tree_util.tree_map(jax.vmap(append), dataset, traj_batch)
 
     seed_keys, model_keys = vsplit(seed_keys)
+    # Built (cheaply, never trained) in --model-free runs too so the shared
+    # setup below stays linear; _run_model_free ignores them.
     models, train_state = make_batched_model(
         args.model.name,
         model_config,
@@ -297,7 +388,7 @@ def main():
         args_flat["seed"] = int(seeds[b])
         logger.log_hparams(
             args=args_flat,
-            ppo=config,
+            **{args.solver: config},
             model=model_config,
             run=hparams_run,
             **hparams_extra,
@@ -336,8 +427,49 @@ def main():
     betas = jnp.array([args.beta, 0.0])
     num_configs = alphas.shape[0]
     batched_train_jit = nnx.jit(
-        make_batched_train(model_env, model_env.default_params, config)
+        make_batched_train(
+            model_env,
+            model_env.default_params,
+            config,
+            make_train=solver_make_train,
+        )
     )
+    if args.model_free:
+        # Online PPO: one update per rollout on that rollout's real data.
+        online_config = {
+            **rollout_config,
+            "MINIBATCH_SIZE": rollout_config["NUM_STEPS"]
+            * rollout_config["NUM_ENVS"]
+            // rollout_config["NUM_MINIBATCHES"],
+        }
+        ppo_online_train = make_online_train(online_config)
+
+        def model_free_train(train_state, traj_batch, dataset, count, rng):
+            return ppo_online_train(train_state, traj_batch, rng)
+
+        final_train_state = _run_model_free(
+            args.solver,
+            model_free_train,
+            loggers,
+            num_rollouts,
+            _rollout,
+            append_dataset,
+            batched_eval,
+            batched_rollout_train_state,
+            env_state,
+            obsv,
+            dataset,
+            seed_keys,
+        )
+        if num_rollouts > 0:
+            for b in range(B):
+                _save_checkpoint(
+                    seed_dirs[b], None, None, final_train_state, b, args.solver
+                )
+        for logger in loggers:
+            logger.close()
+        open(os.path.join(log_dir, "COMPLETE"), "w").close()
+        return
     if not args.offline:
         seed_keys, val_keys = vsplit(seed_keys)
         log_validation(
@@ -453,7 +585,11 @@ def main():
         seed_keys, ts_seed = vsplit(seed_keys)
         ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
         batched_train_state_ppo = make_batched_train_state(
-            config, model_env, model_env.default_params, ts_keys
+            config,
+            model_env,
+            model_env.default_params,
+            ts_keys,
+            make_train_state=solver_make_train_state,
         )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         model_env_params_b = model_env.default_params.replace(
@@ -475,7 +611,9 @@ def main():
         jax.block_until_ready(out)
         ppo_train_s = time.perf_counter() - t0
         for b in range(B):
-            loggers[b].log_scalar("time/ppo_train_s", ppo_train_s, data_count)
+            loggers[b].log_scalar(
+                f"time/{args.solver}_train_s", ppo_train_s, data_count
+            )
         batched_out_train_state = out["runner_state"][0]
         explore_train_state = select_config_train_state(
             batched_out_train_state, EXPLORE
@@ -492,8 +630,8 @@ def main():
 
         for b in range(B):
             for tag, index in (
-                ("ppo/explore_return", EXPLORE),
-                ("ppo/eval_return", EVAL),
+                (f"{args.solver}/explore_return", EXPLORE),
+                (f"{args.solver}/eval_return", EVAL),
             ):
                 loggers[b].log_ppo_returns(
                     _seed_slice(out["metrics"], (b, index)),
@@ -537,6 +675,7 @@ def main():
                 explore_train_state,
                 eval_train_state,
                 b,
+                args.solver,
             )
         checkpoint_s = time.perf_counter() - t0
         for b in range(B):

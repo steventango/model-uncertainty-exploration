@@ -73,6 +73,10 @@ class Args:
     num_seeds: int = 1
     alpha: float = 0.0
     beta: float = 1.0
+    solver: Literal["ppo"] = "ppo"
+    # Train the solver on real data only (online / growing batch): no world
+    # model or ModelEnv. Each round the policy collects real data, then updates.
+    model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig"] = "eig"
     predict_reward_terminated: bool = False
