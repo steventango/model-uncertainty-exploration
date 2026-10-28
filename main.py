@@ -64,8 +64,6 @@ def _save_checkpoint(
         (f"{solver}_explore", explore_train_state),
         (f"{solver}_eval", eval_train_state),
     ]:
-        if batched_ts is None:
-            continue
         network, _, normalize_vec_obs, _ = unstack_train_state(batched_ts, seed_idx)
         _, network_state = nnx.split(network)
         _, obs_norm_state = nnx.split(normalize_vec_obs)
@@ -588,7 +586,7 @@ def main():
                     loggers[b].log_scalar(
                         f"{args.solver}/{name}", float(loss), data_count
                     )
-            explore_train_state, eval_train_state = None, runner_state[0]
+            explore_train_state = eval_train_state = runner_state[0]
 
         seed_keys, eval_keys = vsplit(seed_keys)
         t0 = time.perf_counter()
