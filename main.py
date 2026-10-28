@@ -238,8 +238,6 @@ def main():
         @nnx.vmap(in_axes=0, out_axes=0)
         def _build_rollout_train_state(key):
             return make_train_state(
-                # --model-free trains on the real rollout, so the reward
-                # normalizer tracks its NUM_ENVS (1), not the ModelEnv PPO's.
                 rollout_config if args.model_free else config,
                 env,
                 env_params,
@@ -253,7 +251,7 @@ def main():
         obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
 
         if args.model_free and config["NORMALIZE_ENV"]:
-            # Seed the obs stats with the reset obs, as make_train does.
+
             @nnx.jit
             @nnx.vmap
             def _init_obs_stats(train_state, obs):
@@ -264,8 +262,6 @@ def main():
 
             _init_obs_stats(batched_rollout_train_state, obsv)
 
-        # --model-free trains on this rollout, so it updates the normalizer
-        # stats per step like make_train; otherwise it only collects data.
         _rollout = nnx.jit(
             nnx.vmap(
                 make_rollout(rollout_config, env, env_params, training=args.model_free)
@@ -276,7 +272,7 @@ def main():
         _, traj_batch = _rollout(
             (batched_rollout_train_state, env_state, obsv, mock_rng)
         )
-        sample = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
+        sample = jax.vmap(collate_rollout)(traj_batch)
 
         dataset = jax.tree_util.tree_map(
             lambda x: jnp.zeros(
@@ -294,8 +290,6 @@ def main():
             return jax.tree_util.tree_map(jax.vmap(append), dataset, traj_batch)
 
     seed_keys, model_keys = vsplit(seed_keys)
-    # Built (cheaply, never trained) in --model-free runs too so the shared
-    # setup below stays linear.
     models, train_state = make_batched_model(
         args.model.name,
         model_config,
@@ -377,7 +371,6 @@ def main():
         make_batched_train(model_env, model_env.default_params, config)
     )
     if args.model_free:
-        # Online PPO: one update per rollout on that rollout's real data.
         online_config = {
             **rollout_config,
             "MINIBATCH_SIZE": rollout_config["NUM_STEPS"]
@@ -387,10 +380,6 @@ def main():
         ppo_update = make_update(online_config)
 
         def model_free_train(train_state, traj_batch, dataset, count, rng):
-            """(train_state, losses) from this round's (T, E) ``traj_batch`` and
-            the first ``count`` rows of the growing ``dataset``: an online
-            solver uses the former, a growing-batch solver the latter.
-            ``losses`` is a dict of scalars summarizing the round."""
             _, (total, (value, actor, entropy)) = ppo_update(
                 train_state, traj_batch, rng
             )
@@ -580,7 +569,6 @@ def main():
                     )
 
         else:
-            # ONLINE TRAIN: update the real policy in place on this round's data.
             seed_keys, train_keys = vsplit(seed_keys)
             t0 = time.perf_counter()
             _, losses = batched_model_free_train(
