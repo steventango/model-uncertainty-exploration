@@ -28,8 +28,8 @@ from ppo import (
     make_batched_train,
     make_batched_train_state,
     make_rollout,
-    make_update,
     make_train_state,
+    make_update,
     select_config_train_state,
     unstack_train_state,
 )
