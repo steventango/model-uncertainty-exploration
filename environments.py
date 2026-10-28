@@ -200,6 +200,16 @@ class GenericBraxWrapper(BraxStateReconstructionWrapper):
     """Brax envs where reward/termination cannot be derived from obs alone."""
 
 
+class ReacherGymnasiumWrapper(BraxStateReconstructionWrapper):
+    """obs[-2:] = fingertip-to-target xy; both bodies sit at z=0.01, so the xy
+    norm equals Gymnasium's 3-D one. reward = -norm(vec) - sum(action^2)."""
+
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        reward = -jnp.linalg.norm(next_obs[-2:]) - jnp.sum(jnp.square(action))
+        terminated = jnp.bool_(False)
+        return reward, terminated
+
+
 _WRAPPER_MAP = {
     "Pendulum-v1": PendulumWrapper,
     "MountainCar-v0": MountainCarWrapper,
@@ -218,6 +228,11 @@ _WRAPPER_MAP = {
     "inverted_double_pendulum": InvertedDoublePendulumBraxWrapper,
     "humanoid": GenericBraxWrapper,
     "humanoidstandup": GenericBraxWrapper,
+    # Gymnasium v5 tasks on MJX (gymnasium_mjx.py). Cheetah/swimmer obs layouts
+    # match brax's, so their (approximate, qvel-based) oracles carry over.
+    "Reacher-v5": ReacherGymnasiumWrapper,
+    "Swimmer-v5": SwimmerBraxWrapper,
+    "HalfCheetah-v5": HalfCheetahBraxWrapper,
 }
 
 BRAX_ENVS = frozenset({

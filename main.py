@@ -19,6 +19,7 @@ import validation
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
+from gymnasium_mjx import GYMNASIUM_MJX_ENVS, make_gymnasium_mjx_env
 from logger import ExperimentLogger, log_eval, log_validation
 from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
@@ -128,10 +129,15 @@ def main():
         hparams_extra = {}
 
     else:
-        is_brax = args.env in BRAX_ENVS
-        if is_brax:
+        # Brax and Gymnasium-on-MJX envs share one path: physics state not
+        # reconstructible from obs, validation data from rollout transitions.
+        is_brax = args.env in BRAX_ENVS or args.env in GYMNASIUM_MJX_ENVS
+        if args.env in BRAX_ENVS:
             backend = BRAX_BACKENDS.get(args.env, "positional")
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
+            env_params = base_env.default_params
+        elif args.env in GYMNASIUM_MJX_ENVS:
+            base_env = make_gymnasium_mjx_env(args.env)
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)
