@@ -29,7 +29,6 @@ from ppo import (
     make_batched_train_state,
     make_online_train,
     make_rollout,
-    make_train,
     make_train_state,
     select_config_train_state,
     unstack_train_state,
@@ -285,7 +284,6 @@ def main():
     config = ppo_config_dict(
         args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
     )
-    solver_make_train_state, solver_make_train = make_train_state, make_train
 
     if not args.offline:
         rollout_config = {
@@ -311,8 +309,13 @@ def main():
 
         @nnx.vmap(in_axes=0, out_axes=0)
         def _build_rollout_train_state(key):
-            return solver_make_train_state(
-                config, env, env_params, nnx.Rngs(params=key)
+            return make_train_state(
+                # --model-free trains on the real rollout, so the reward
+                # normalizer tracks its NUM_ENVS (1), not the ModelEnv PPO's.
+                rollout_config if args.model_free else config,
+                env,
+                env_params,
+                nnx.Rngs(params=key),
             )
 
         batched_rollout_train_state = _build_rollout_train_state(policy_keys)
@@ -427,12 +430,7 @@ def main():
     betas = jnp.array([args.beta, 0.0])
     num_configs = alphas.shape[0]
     batched_train_jit = nnx.jit(
-        make_batched_train(
-            model_env,
-            model_env.default_params,
-            config,
-            make_train=solver_make_train,
-        )
+        make_batched_train(model_env, model_env.default_params, config)
     )
     if args.model_free:
         # Online PPO: one update per rollout on that rollout's real data.
@@ -585,11 +583,7 @@ def main():
         seed_keys, ts_seed = vsplit(seed_keys)
         ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
         batched_train_state_ppo = make_batched_train_state(
-            config,
-            model_env,
-            model_env.default_params,
-            ts_keys,
-            make_train_state=solver_make_train_state,
+            config, model_env, model_env.default_params, ts_keys
         )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         model_env_params_b = model_env.default_params.replace(

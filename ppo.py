@@ -212,17 +212,38 @@ def make_online_train(config):
     """``train(train_state, traj_batch, rng) -> (train_state, losses)``: one PPO
     update on a real-env ``traj_batch`` from ``make_rollout(..., training=False)``.
 
-    That rollout feeds the network eval-normalized obs but stores raw obs, so
-    the obs are normalized the same way here before the update.
+    That rollout feeds the network eval-normalized obs but stores raw obs and
+    raw rewards, and never updates the running stats. So here the obs are
+    normalized with the stats the rollout used (keeping the stored values and
+    log-probs consistent), the rewards are normalized in train mode as
+    ``make_train`` does, and the obs stats are updated with this batch after
+    the update, ready for the next rollout.
     """
     _update = make_update(config)
 
+    def _normalize_reward(normalize_vec_reward, xs):
+        reward, terminated, truncated = xs
+        return normalize_vec_reward(reward, terminated, truncated)
+
     def train(train_state, traj_batch, rng):
-        _, _, normalize_vec_obs, _ = train_state
+        _, _, normalize_vec_obs, normalize_vec_reward = train_state
+        raw_obs = traj_batch.obs
         if config["NORMALIZE_ENV"]:
             normalize_vec_obs.eval()
-            traj_batch = traj_batch._replace(obs=normalize_vec_obs(traj_batch.obs))
+            normalize_vec_reward.train()
+            _, reward = nnx.scan(lambda n, xs: (n, _normalize_reward(n, xs)))(
+                normalize_vec_reward,
+                (traj_batch.reward, traj_batch.terminated, traj_batch.truncated),
+            )
+            normalize_vec_reward.eval()
+            traj_batch = traj_batch._replace(
+                obs=normalize_vec_obs(raw_obs), reward=reward
+            )
         _, (total, (value, actor, entropy)) = _update(train_state, traj_batch, rng)
+        if config["NORMALIZE_ENV"]:
+            normalize_vec_obs.train()
+            normalize_vec_obs(raw_obs.reshape((-1,) + raw_obs.shape[2:]))
+            normalize_vec_obs.eval()
         losses = {"total": total, "value": value, "actor": actor, "entropy": entropy}
         return train_state, jax.tree_util.tree_map(jnp.ravel, losses)
 
@@ -333,9 +354,8 @@ def make_train_state(config, env, env_params, rngs):
     return train_state
 
 
-def make_batched_train(env, env_params, config, make_train=make_train):
-    """Vmap ``make_train(env, config)`` (PPO by default) over B seeds (outer) and
-    C configs (inner).
+def make_batched_train(env, env_params, config):
+    """Vmap PPO ``train`` over B seeds (outer) and C configs (inner).
 
     ``env_params`` carries everything that varies: its ``model`` subtree has a
     leading B (seed) axis and its ``alpha``/``beta`` weights have a leading C
@@ -351,11 +371,8 @@ def make_batched_train(env, env_params, config, make_train=make_train):
     return nnx.vmap(inner, in_axes=(0, env_params.seed_vmap_axes(), 0), out_axes=0)
 
 
-def make_batched_train_state(
-    config, env, env_params, keys, make_train_state=make_train_state
-):
-    """Build a (B, C) grid of independent train states (PPO by default).
-    ``keys`` is (B, C)."""
+def make_batched_train_state(config, env, env_params, keys):
+    """Build a (B, C) grid of independent PPO train states. ``keys`` is (B, C)."""
 
     @nnx.vmap
     def build_seed(seed_keys):  # seed_keys: (C,) keys
