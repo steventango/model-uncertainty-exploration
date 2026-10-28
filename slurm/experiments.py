@@ -492,6 +492,32 @@ classic_ppo_tune = Experiment(
     ),
 )
 
+classic_ppo_rollout = Experiment(
+    name="classic_ppo_rollout",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for rollout, label in ((64, "rollout64"), (trunc, "rolloutfull"))
+        for cfg in sweep(
+            env=env,
+            label=label,
+            model_free=True,
+            steps_per_rollout=rollout,
+            eval_every=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+            ppo__update_epochs=30,
+        )
+    ),
+    base_seed=1000,
+    num_seeds=10,
+    description=(
+        "rollout-length ablation for online PPO with the tuned config "
+        "(lr 3e-4, 30 epochs, ent 0): 64 steps and one full episode per "
+        "update, evaluated every 10% of truncation on tuning seeds 1000-1009"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -513,5 +539,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_every_tenth,
         classic_ppo_every_tenth_epochs,
         classic_ppo_tune,
+        classic_ppo_rollout,
     )
 }
