@@ -464,6 +464,34 @@ classic_ppo_every_tenth_epochs = Experiment(
     ),
 )
 
+classic_ppo_tune = Experiment(
+    name="classic_ppo_tune",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for lr in (3e-4, 1e-3, 3e-3)
+        for epochs in (4, 10, 30)
+        for ent in (0.0, 0.01)
+        for cfg in sweep(
+            env=env,
+            label=f"lr{lr:g}_ep{epochs}_ent{ent:g}",
+            model_free=True,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+            ppo__lr=lr,
+            ppo__update_epochs=epochs,
+            ppo__ent_coef=ent,
+        )
+    ),
+    base_seed=1000,
+    num_seeds=10,
+    description=(
+        "tune model-free online PPO (lr x epochs x ent_coef) at the 10% rollout "
+        "of classic_plan_every_tenth, on tuning seeds 1000-1009"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -484,5 +512,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_tenth,
         classic_ppo_every_tenth,
         classic_ppo_every_tenth_epochs,
+        classic_ppo_tune,
     )
 }
