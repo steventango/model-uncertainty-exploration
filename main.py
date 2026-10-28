@@ -186,6 +186,7 @@ def main():
         # Real-env steps between re-plans: one episode by default, 1 to re-plan
         # after every real step.
         rollout_steps = args.steps_per_rollout or env_params.max_steps_in_episode
+        eval_every = args.eval_every or rollout_steps
         num_steps = 10
         # Tied to episode length so plan-every-step does not shrink it to 1.
         model_minibatch_size = env_params.max_steps_in_episode
@@ -411,6 +412,7 @@ def main():
         runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
         seed_keys, eval_keys = vsplit(seed_keys)
         log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
+        eval_policy = batched_rollout_train_state
 
     if args.offline:
         data_count = N
@@ -428,9 +430,14 @@ def main():
             dataset = append_dataset(dataset, collated, jnp.asarray(data_count))
             for b in range(B):
                 loggers[b].log_dataset(_seed_slice(collated, b), data_count)
-            data_count += collated.obs.shape[1]
+            prev_count, data_count = data_count, data_count + collated.obs.shape[1]
             for b in range(B):
                 loggers[b].log_scalar("time/rollout_s", rollout_s, data_count)
+            # Eval points inside this round: the policy has not been updated yet.
+            first = (prev_count // eval_every + 1) * eval_every
+            for step in range(first, data_count, eval_every):
+                seed_keys, eval_keys = vsplit(seed_keys)
+                log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
 
         if not args.model_free:
             # TRAIN MODEL (B seeds in parallel)
@@ -588,29 +595,31 @@ def main():
                     )
             explore_train_state = eval_train_state = runner_state[0]
 
-        seed_keys, eval_keys = vsplit(seed_keys)
-        t0 = time.perf_counter()
-        if not args.offline:
-            log_eval(loggers, batched_eval, eval_train_state, eval_keys, data_count)
-        else:
-            plotting.plot_offline_visualization(
-                models,
-                explore_train_state,
-                eval_train_state,
-                model_env,
-                config,
-                num_steps,
-                rng=eval_keys[0],
-                dataset=_seed_slice(dataset, 0),
-                env_params=env_params,
-                j=j,
-                run_dir=seed_dirs[0],
-                explore_bonus=args.explore_bonus,
-                reward_fn=env.compute_reward,
-            )
-        eval_s = time.perf_counter() - t0
-        for b in range(B):
-            loggers[b].log_scalar("time/eval_s", eval_s, data_count)
+        eval_policy = eval_train_state
+        if args.offline or data_count % eval_every == 0 or j == num_rollouts - 1:
+            seed_keys, eval_keys = vsplit(seed_keys)
+            t0 = time.perf_counter()
+            if not args.offline:
+                log_eval(loggers, batched_eval, eval_train_state, eval_keys, data_count)
+            else:
+                plotting.plot_offline_visualization(
+                    models,
+                    explore_train_state,
+                    eval_train_state,
+                    model_env,
+                    config,
+                    num_steps,
+                    rng=eval_keys[0],
+                    dataset=_seed_slice(dataset, 0),
+                    env_params=env_params,
+                    j=j,
+                    run_dir=seed_dirs[0],
+                    explore_bonus=args.explore_bonus,
+                    reward_fn=env.compute_reward,
+                )
+            eval_s = time.perf_counter() - t0
+            for b in range(B):
+                loggers[b].log_scalar("time/eval_s", eval_s, data_count)
 
     if num_rollouts > 0:
         t0 = time.perf_counter()
