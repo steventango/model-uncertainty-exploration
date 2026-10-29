@@ -102,33 +102,35 @@ def make_rollout(config, env, env_params, training=True):
     return _rollout
 
 
+def calculate_gae(traj_batch, config):
+    def _get_advantages(gae, transition):
+        terminated, truncated, value, next_value, reward = (
+            transition.terminated,
+            transition.truncated,
+            transition.value,
+            transition.next_value,
+            transition.reward,
+        )
+        delta = reward + config["GAMMA"] * next_value * (1 - terminated) - value
+        done = terminated | truncated
+        gae = delta + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
+        return gae, gae
+
+    _, advantages = jax.lax.scan(
+        _get_advantages,
+        jnp.zeros_like(traj_batch.value[0]),
+        traj_batch,
+        reverse=True,
+        unroll=16,
+    )
+    return advantages, advantages + traj_batch.value
+
+
 def make_update(config):
-    def update(train_state, traj_batch, rng):
-        # CALCULATE ADVANTAGE
-        def _calculate_gae(traj_batch):
-            def _get_advantages(gae, transition):
-                terminated, truncated, value, next_value, reward = (
-                    transition.terminated,
-                    transition.truncated,
-                    transition.value,
-                    transition.next_value,
-                    transition.reward,
-                )
-                delta = reward + config["GAMMA"] * next_value * (1 - terminated) - value
-                done = terminated | truncated
-                gae = delta + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
-                return gae, gae
-
-            _, advantages = jax.lax.scan(
-                _get_advantages,
-                jnp.zeros_like(traj_batch.value[0]),
-                traj_batch,
-                reverse=True,
-                unroll=16,
-            )
-            return advantages, advantages + traj_batch.value
-
-        advantages, targets = _calculate_gae(traj_batch)
+    def update(train_state, traj_batch, rng, extra_advantages=None):
+        advantages, targets = calculate_gae(traj_batch, config)
+        if extra_advantages is not None:
+            advantages = advantages + extra_advantages
 
         # UPDATE NETWORK
         def _update_epoch(update_state, unused):

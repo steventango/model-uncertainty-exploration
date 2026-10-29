@@ -24,8 +24,9 @@ from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
-from rnd import make_rnd, make_train_rnd
+from rnd import make_rnd, make_train_rnd, normalize_intrinsic
 from ppo import (
+    calculate_gae,
     make_batched_train,
     make_batched_train_state,
     make_rollout,
@@ -314,9 +315,9 @@ def main():
 
         @nnx.vmap
         def _build_rnd(key):
-            return make_rnd(rnd_config, obs_dim, nnx.Rngs(params=key))
+            return make_rnd(rnd_config, obs_dim, config["GAMMA"], nnx.Rngs(params=key))
 
-        rnds, rnd_optimizers = _build_rnd(rnd_keys)
+        rnds, rnd_optimizers, rnd_critic_optimizers = _build_rnd(rnd_keys)
         train_rnd = make_train_rnd(rnd_config)
         batched_train_rnd = nnx.jit(nnx.vmap(train_rnd, in_axes=(0, 0, 0, None, 0)))
 
@@ -410,64 +411,73 @@ def main():
         )
 
         def rnd_model_free_train(
-            explore_ts, exploit_ts, rnd, rnd_optimizer, traj_batch, dataset, count, rng
+            train_state,
+            rnd,
+            rnd_optimizer,
+            critic_optimizer,
+            traj_batch,
+            dataset,
+            count,
+            rng,
         ):
-            """Explore PPO on the RND bonus, exploit PPO on the true reward, same data."""
-            rng_explore, rng_exploit, rng_rnd = jax.random.split(rng, 3)
+            """Standard RND: one PPO policy on extrinsic + intrinsic advantages.
+
+            The two returns get separate critics; the intrinsic one is
+            non-episodic (ignores terminations and truncations).
+            """
+            rng_ppo, rng_rnd = jax.random.split(rng)
             next_obs = traj_batch.info["next_obs"]
             rnd.update_stats(dataset.info["next_obs"], count)
-            # Per-round scale, like the fresh reward normalizer of model-env PPO:
-            # a running std is dominated by the untrained predictor's first round.
             raw_bonus = rnd(next_obs)
-            bonus = raw_bonus / (raw_bonus.mean() + 1e-8)
-            # Non-episodic intrinsic return: bootstrap through terminations.
-            explore_batch = traj_batch._replace(
-                reward=bonus, terminated=jnp.zeros_like(traj_batch.terminated)
-            )
-            _, explore_info = ppo_update(explore_ts, explore_batch, rng_explore)
-
-            # traj_batch.reward is already the normalized true reward. The exploit
-            # policy shares the explore observation normalizer and re-evaluates its
-            # own values and log-probs (no correction for the behaviour policy).
-            normalize_vec_obs = explore_ts[2]
-            nnx.update(exploit_ts[2], nnx.state(normalize_vec_obs))
+            bonus = normalize_intrinsic(rnd, raw_bonus)
             if config["NORMALIZE_ENV"]:
-                obs = normalize_vec_obs.normalize(traj_batch.raw_obs)
-                next_obs = normalize_vec_obs.normalize(next_obs)
-            else:
-                obs = traj_batch.raw_obs
-            pi, value = exploit_ts[0](obs)
-            _, next_value = exploit_ts[0](next_obs)
-            exploit_batch = traj_batch._replace(
-                obs=obs,
-                value=value,
-                next_value=next_value,
-                log_prob=pi.log_prob(traj_batch.action),
+                next_obs = train_state[2].normalize(next_obs)
+            never = jnp.zeros_like(traj_batch.terminated)
+            int_batch = traj_batch._replace(
+                reward=bonus,
+                value=rnd.critic(traj_batch.obs),
+                next_value=rnd.critic(next_obs),
+                terminated=never,
+                truncated=never,
             )
-            _, exploit_info = ppo_update(exploit_ts, exploit_batch, rng_exploit)
+            int_advantages, int_targets = calculate_gae(int_batch, online_config)
+            _, (total, (value, actor, entropy)) = ppo_update(
+                train_state,
+                traj_batch,
+                rng_ppo,
+                extra_advantages=rnd_config["INT_COEF"] * int_advantages,
+            )
 
+            def critic_step(carry, _):
+                critic, optimizer = carry
+                loss, grads = nnx.value_and_grad(
+                    lambda c: (
+                        0.5 * jnp.mean(jnp.square(c(traj_batch.obs) - int_targets))
+                    )
+                )(critic)
+                optimizer.update(critic, grads)
+                return (critic, optimizer), loss
+
+            _, int_value = nnx.scan(critic_step, length=config["UPDATE_EPOCHS"])(
+                (rnd.critic, critic_optimizer), None
+            )
             rnd_losses = train_rnd(
                 rnd, rnd_optimizer, dataset.info["next_obs"], count, rng_rnd
             )
-            losses = {"rnd_loss": rnd_losses[-1], "bonus": raw_bonus.mean()}
-            for prefix, (total, (value, actor, entropy)) in (
-                ("explore", explore_info),
-                ("exploit", exploit_info),
-            ):
-                losses |= {
-                    f"{prefix}_total": total,
-                    f"{prefix}_value": value,
-                    f"{prefix}_actor": actor,
-                    f"{prefix}_entropy": entropy,
-                }
+            losses = {
+                "total": total,
+                "value": value,
+                "actor": actor,
+                "entropy": entropy,
+                "int_value": int_value,
+                "rnd_loss": rnd_losses[-1],
+                "bonus": raw_bonus,
+            }
             return jax.tree_util.tree_map(jnp.mean, losses)
 
         batched_rnd_model_free_train = nnx.jit(
             nnx.vmap(rnd_model_free_train, in_axes=(0, 0, 0, 0, 0, 0, None, 0))
         )
-        if use_rnd:
-            seed_keys, exploit_keys = vsplit(seed_keys)
-            exploit_train_state = _build_rollout_train_state(exploit_keys)
     if not args.offline:
         if not args.model_free:
             seed_keys, val_keys = vsplit(seed_keys)
@@ -486,12 +496,8 @@ def main():
         seed_keys, runner_seed = vsplit(seed_keys)
         runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
         seed_keys, eval_keys = vsplit(seed_keys)
-        eval_policy = (
-            exploit_train_state
-            if args.model_free and use_rnd
-            else batched_rollout_train_state
-        )
-        log_eval(loggers, batched_eval, eval_policy, eval_keys, 0)
+        log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
+        eval_policy = batched_rollout_train_state
 
     if args.offline:
         data_count = N
@@ -672,9 +678,9 @@ def main():
             if use_rnd:
                 losses = batched_rnd_model_free_train(
                     runner_state[0],
-                    exploit_train_state,
                     rnds,
                     rnd_optimizers,
+                    rnd_critic_optimizers,
                     traj_batch,
                     dataset,
                     jnp.asarray(data_count),
@@ -698,8 +704,7 @@ def main():
                     loggers[b].log_scalar(
                         f"{args.solver}/{name}", float(loss), data_count
                     )
-            explore_train_state = runner_state[0]
-            eval_train_state = exploit_train_state if use_rnd else explore_train_state
+            explore_train_state = eval_train_state = runner_state[0]
 
         eval_policy = eval_train_state
         if args.offline or data_count % eval_every == 0 or j == num_rollouts - 1:
