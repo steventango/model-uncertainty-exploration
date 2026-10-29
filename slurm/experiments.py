@@ -630,6 +630,27 @@ classic_plan_every_tenth_rnd = Experiment(
     description="classic_plan_every_tenth with the RND bonus in place of EIG",
 )
 
+classic_plan_every_tenth_extrinsic = Experiment(
+    name="classic_plan_every_tenth_extrinsic",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            alpha=1.0,
+            beta=0.0,
+            mode="sample",
+            bonus="eig",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+        )
+    ),
+    description=(
+        "classic_plan_every_tenth with the explore policy on the extrinsic "
+        "reward only (alpha=1 beta=0): no exploration bonus"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -657,5 +678,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_rnd_every_tenth,
         classic_ppo_rnd_every_tenth_epochs,
         classic_plan_every_tenth_rnd,
+        classic_plan_every_tenth_extrinsic,
     )
 }
