@@ -571,6 +571,46 @@ pendulum_learn = Experiment(
     ),
 )
 
+classic_ppo_rnd_every_tenth = Experiment(
+    name="classic_ppo_rnd_every_tenth",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            bonus="rnd",
+            model_free=True,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+            ppo__update_epochs=30,
+        )
+    ),
+    description=(
+        "model-free PPO+RND: an explore PPO on the RND bonus collects the data, an "
+        "exploit PPO learns the true reward from the same data; otherwise "
+        "classic_ppo_every_tenth_epochs at 30 epochs"
+    ),
+)
+
+classic_plan_every_tenth_rnd = Experiment(
+    name="classic_plan_every_tenth_rnd",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="rnd",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+        )
+    ),
+    description="classic_plan_every_tenth with the RND bonus in place of EIG",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -595,5 +635,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_tune_40,
         classic_ppo_rollout,
         pendulum_learn,
+        classic_ppo_rnd_every_tenth,
+        classic_plan_every_tenth_rnd,
     )
 }

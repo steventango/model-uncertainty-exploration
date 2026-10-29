@@ -24,6 +24,7 @@ from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
+from rnd import make_rnd, make_train_rnd
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -306,6 +307,19 @@ def main():
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
 
+    use_rnd = args.explore_bonus == "rnd"
+    if use_rnd:
+        rnd_config = {k.upper(): v for k, v in dataclasses.asdict(args.rnd).items()}
+        seed_keys, rnd_keys = vsplit(seed_keys)
+
+        @nnx.vmap
+        def _build_rnd(key):
+            return make_rnd(rnd_config, obs_dim, nnx.Rngs(params=key))
+
+        rnds, rnd_optimizers = _build_rnd(rnd_keys)
+        train_rnd = make_train_rnd(rnd_config)
+        batched_train_rnd = nnx.jit(nnx.vmap(train_rnd, in_axes=(0, 0, 0, None, 0)))
+
     dt = datetime.now()
     log_dir = (
         args.log_dir
@@ -322,7 +336,7 @@ def main():
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model")
+            if k not in ("ppo", "model", "rnd")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])
@@ -331,6 +345,7 @@ def main():
             **{args.solver: config},
             model=model_config,
             run=hparams_run,
+            **({"rnd": rnd_config} if use_rnd else {}),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
@@ -393,6 +408,66 @@ def main():
         batched_model_free_train = nnx.jit(
             nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
         )
+
+        def rnd_model_free_train(
+            explore_ts, exploit_ts, rnd, rnd_optimizer, traj_batch, dataset, count, rng
+        ):
+            """Explore PPO on the RND bonus, exploit PPO on the true reward, same data."""
+            rng_explore, rng_exploit, rng_rnd = jax.random.split(rng, 3)
+            next_obs = traj_batch.info["next_obs"]
+            rnd.update_stats(dataset.info["next_obs"], count)
+            # Per-round scale, like the fresh reward normalizer of model-env PPO:
+            # a running std is dominated by the untrained predictor's first round.
+            raw_bonus = rnd(next_obs)
+            bonus = raw_bonus / (raw_bonus.mean() + 1e-8)
+            # Non-episodic intrinsic return: bootstrap through terminations.
+            explore_batch = traj_batch._replace(
+                reward=bonus, terminated=jnp.zeros_like(traj_batch.terminated)
+            )
+            _, explore_info = ppo_update(explore_ts, explore_batch, rng_explore)
+
+            # traj_batch.reward is already the normalized true reward. The exploit
+            # policy shares the explore observation normalizer and re-evaluates its
+            # own values and log-probs (no correction for the behaviour policy).
+            normalize_vec_obs = explore_ts[2]
+            nnx.update(exploit_ts[2], nnx.state(normalize_vec_obs))
+            if config["NORMALIZE_ENV"]:
+                obs = normalize_vec_obs.normalize(traj_batch.raw_obs)
+                next_obs = normalize_vec_obs.normalize(next_obs)
+            else:
+                obs = traj_batch.raw_obs
+            pi, value = exploit_ts[0](obs)
+            _, next_value = exploit_ts[0](next_obs)
+            exploit_batch = traj_batch._replace(
+                obs=obs,
+                value=value,
+                next_value=next_value,
+                log_prob=pi.log_prob(traj_batch.action),
+            )
+            _, exploit_info = ppo_update(exploit_ts, exploit_batch, rng_exploit)
+
+            rnd_losses = train_rnd(
+                rnd, rnd_optimizer, dataset.info["next_obs"], count, rng_rnd
+            )
+            losses = {"rnd_loss": rnd_losses[-1], "bonus": raw_bonus.mean()}
+            for prefix, (total, (value, actor, entropy)) in (
+                ("explore", explore_info),
+                ("exploit", exploit_info),
+            ):
+                losses |= {
+                    f"{prefix}_total": total,
+                    f"{prefix}_value": value,
+                    f"{prefix}_actor": actor,
+                    f"{prefix}_entropy": entropy,
+                }
+            return jax.tree_util.tree_map(jnp.mean, losses)
+
+        batched_rnd_model_free_train = nnx.jit(
+            nnx.vmap(rnd_model_free_train, in_axes=(0, 0, 0, 0, 0, 0, None, 0))
+        )
+        if use_rnd:
+            seed_keys, exploit_keys = vsplit(seed_keys)
+            exploit_train_state = _build_rollout_train_state(exploit_keys)
     if not args.offline:
         if not args.model_free:
             seed_keys, val_keys = vsplit(seed_keys)
@@ -411,8 +486,12 @@ def main():
         seed_keys, runner_seed = vsplit(seed_keys)
         runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
         seed_keys, eval_keys = vsplit(seed_keys)
-        log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
-        eval_policy = batched_rollout_train_state
+        eval_policy = (
+            exploit_train_state
+            if args.model_free and use_rnd
+            else batched_rollout_train_state
+        )
+        log_eval(loggers, batched_eval, eval_policy, eval_keys, 0)
 
     if args.offline:
         data_count = N
@@ -514,6 +593,20 @@ def main():
                         data_count,
                     )
 
+            if use_rnd:
+                seed_keys, rnd_keys = vsplit(seed_keys)
+                rnd_losses = batched_train_rnd(
+                    rnds,
+                    rnd_optimizers,
+                    dataset.info["next_obs"],
+                    jnp.asarray(data_count),
+                    rnd_keys,
+                )
+                for b in range(B):
+                    loggers[b].log_scalar(
+                        "rnd/loss", float(rnd_losses[b, -1]), data_count
+                    )
+
             # BATCHED PPO TRAIN (B seeds x C configs)
             seed_keys, ts_seed = vsplit(seed_keys)
             ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
@@ -522,7 +615,7 @@ def main():
             )
             # model varies per seed (B axis); alpha/beta vary per config (C axis).
             model_env_params_b = model_env.default_params.replace(
-                model=models, alpha=alphas, beta=betas
+                model=models, rnd=rnds if use_rnd else None, alpha=alphas, beta=betas
             )
             if reset_source != "env":
                 # Per-seed buffer + reset sampling weights (uniform over the full
@@ -576,13 +669,25 @@ def main():
         else:
             seed_keys, train_keys = vsplit(seed_keys)
             t0 = time.perf_counter()
-            _, losses = batched_model_free_train(
-                runner_state[0],
-                traj_batch,
-                dataset,
-                jnp.asarray(data_count),
-                train_keys,
-            )
+            if use_rnd:
+                losses = batched_rnd_model_free_train(
+                    runner_state[0],
+                    exploit_train_state,
+                    rnds,
+                    rnd_optimizers,
+                    traj_batch,
+                    dataset,
+                    jnp.asarray(data_count),
+                    train_keys,
+                )
+            else:
+                _, losses = batched_model_free_train(
+                    runner_state[0],
+                    traj_batch,
+                    dataset,
+                    jnp.asarray(data_count),
+                    train_keys,
+                )
             jax.block_until_ready(losses)
             train_s = time.perf_counter() - t0
             for b in range(B):
@@ -593,7 +698,8 @@ def main():
                     loggers[b].log_scalar(
                         f"{args.solver}/{name}", float(loss), data_count
                     )
-            explore_train_state = eval_train_state = runner_state[0]
+            explore_train_state = runner_state[0]
+            eval_train_state = exploit_train_state if use_rnd else explore_train_state
 
         eval_policy = eval_train_state
         if args.offline or data_count % eval_every == 0 or j == num_rollouts - 1:
