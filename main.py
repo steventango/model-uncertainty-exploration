@@ -24,6 +24,7 @@ from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
+from rnd import make_rnd, make_train_rnd
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -306,6 +307,19 @@ def main():
     )
     batched_val_metrics = validation.make_batched_validation_metrics()
 
+    use_rnd = args.explore_bonus == "rnd"
+    if use_rnd:
+        rnd_config = {k.upper(): v for k, v in dataclasses.asdict(args.rnd).items()}
+        seed_keys, rnd_keys = vsplit(seed_keys)
+
+        @nnx.vmap
+        def _build_rnd(key):
+            return make_rnd(rnd_config, obs_dim, nnx.Rngs(params=key))
+
+        rnds, rnd_optimizers = _build_rnd(rnd_keys)
+        train_rnd = make_train_rnd(rnd_config)
+        batched_train_rnd = nnx.jit(nnx.vmap(train_rnd, in_axes=(0, 0, 0, None, 0)))
+
     dt = datetime.now()
     log_dir = (
         args.log_dir
@@ -322,7 +336,7 @@ def main():
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model")
+            if k not in ("ppo", "model", "rnd")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])
@@ -331,6 +345,7 @@ def main():
             **{args.solver: config},
             model=model_config,
             run=hparams_run,
+            **({"rnd": rnd_config} if use_rnd else {}),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
@@ -514,6 +529,20 @@ def main():
                         data_count,
                     )
 
+            if use_rnd:
+                seed_keys, rnd_keys = vsplit(seed_keys)
+                rnd_losses = batched_train_rnd(
+                    rnds,
+                    rnd_optimizers,
+                    dataset.info["next_obs"],
+                    jnp.asarray(data_count),
+                    rnd_keys,
+                )
+                for b in range(B):
+                    loggers[b].log_scalar(
+                        "rnd/loss", float(rnd_losses[b, -1]), data_count
+                    )
+
             # BATCHED PPO TRAIN (B seeds x C configs)
             seed_keys, ts_seed = vsplit(seed_keys)
             ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
@@ -522,7 +551,7 @@ def main():
             )
             # model varies per seed (B axis); alpha/beta vary per config (C axis).
             model_env_params_b = model_env.default_params.replace(
-                model=models, alpha=alphas, beta=betas
+                model=models, rnd=rnds if use_rnd else None, alpha=alphas, beta=betas
             )
             if reset_source != "env":
                 # Per-seed buffer + reset sampling weights (uniform over the full
