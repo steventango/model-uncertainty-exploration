@@ -5,6 +5,9 @@ import jax.numpy as jnp
 import optax
 from flax import nnx
 
+from networks import Critic
+from normalization import NormalizeVecReward
+
 
 class MLP(nnx.Module):
     def __init__(self, in_dim, hidden_dim, out_dim, *, rngs):
@@ -25,11 +28,15 @@ class RND(nnx.Module):
     to [-5, 5] before both networks, as in the paper.
     """
 
-    def __init__(self, obs_dim, hidden_dim, out_dim, *, rngs):
+    def __init__(self, obs_dim, hidden_dim, out_dim, gamma, *, rngs):
         self.target = MLP(obs_dim, hidden_dim, out_dim, rngs=rngs)
         self.predictor = MLP(obs_dim, hidden_dim, out_dim, rngs=rngs)
         self.obs_mean = nnx.Variable(jnp.zeros(obs_dim))
         self.obs_std = nnx.Variable(jnp.ones(obs_dim))
+        # Value of the intrinsic return, on PPO-normalized observations (model-free).
+        self.critic = Critic(obs_dim, hidden_dim, rngs=rngs)
+        # Running std of the non-episodic intrinsic return (one real env).
+        self.reward_norm = NormalizeVecReward(jnp.zeros(1), gamma)
 
     def _features(self, obs):
         x = jnp.clip((obs - self.obs_mean) / self.obs_std, -5.0, 5.0)
@@ -45,10 +52,13 @@ class RND(nnx.Module):
         self.obs_std[...] = jnp.std(obs, axis=0, where=mask) + 1e-8
 
 
-def make_rnd(config, obs_dim, rngs):
-    rnd = RND(obs_dim, config["HIDDEN_DIM"], config["OUT_DIM"], rngs=rngs)
+def make_rnd(config, obs_dim, gamma, rngs):
+    rnd = RND(obs_dim, config["HIDDEN_DIM"], config["OUT_DIM"], gamma, rngs=rngs)
     optimizer = nnx.Optimizer(rnd.predictor, optax.adam(config["LR"]), wrt=nnx.Param)
-    return rnd, optimizer
+    critic_optimizer = nnx.Optimizer(
+        rnd.critic, optax.adam(config["LR"]), wrt=nnx.Param
+    )
+    return rnd, optimizer, critic_optimizer
 
 
 def make_train_rnd(config):
@@ -74,3 +84,14 @@ def make_train_rnd(config):
         return losses
 
     return train
+
+
+def normalize_intrinsic(rnd, reward):
+    """Divide (T, E) bonuses by the running std of the non-episodic intrinsic return."""
+
+    def step(rnd, r):
+        never = jnp.zeros_like(r, dtype=bool)
+        return rnd, rnd.reward_norm(r, never, never)
+
+    _, normalized = nnx.scan(step)(rnd, reward)
+    return normalized

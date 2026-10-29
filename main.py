@@ -24,8 +24,9 @@ from model_env import ModelEnvironment, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
-from rnd import make_rnd, make_train_rnd
+from rnd import make_rnd, make_train_rnd, normalize_intrinsic
 from ppo import (
+    calculate_gae,
     make_batched_train,
     make_batched_train_state,
     make_rollout,
@@ -314,9 +315,9 @@ def main():
 
         @nnx.vmap
         def _build_rnd(key):
-            return make_rnd(rnd_config, obs_dim, nnx.Rngs(params=key))
+            return make_rnd(rnd_config, obs_dim, config["GAMMA"], nnx.Rngs(params=key))
 
-        rnds, rnd_optimizers = _build_rnd(rnd_keys)
+        rnds, rnd_optimizers, rnd_critic_optimizers = _build_rnd(rnd_keys)
         train_rnd = make_train_rnd(rnd_config)
         batched_train_rnd = nnx.jit(nnx.vmap(train_rnd, in_axes=(0, 0, 0, None, 0)))
 
@@ -407,6 +408,75 @@ def main():
 
         batched_model_free_train = nnx.jit(
             nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
+        )
+
+        def rnd_model_free_train(
+            train_state,
+            rnd,
+            rnd_optimizer,
+            critic_optimizer,
+            traj_batch,
+            dataset,
+            count,
+            rng,
+        ):
+            """Standard RND: one PPO policy on extrinsic + intrinsic advantages.
+
+            The two returns get separate critics; the intrinsic one is
+            non-episodic (ignores terminations and truncations).
+            """
+            rng_ppo, rng_rnd = jax.random.split(rng)
+            next_obs = traj_batch.info["next_obs"]
+            rnd.update_stats(dataset.info["next_obs"], count)
+            raw_bonus = rnd(next_obs)
+            bonus = normalize_intrinsic(rnd, raw_bonus)
+            if config["NORMALIZE_ENV"]:
+                next_obs = train_state[2].normalize(next_obs)
+            never = jnp.zeros_like(traj_batch.terminated)
+            int_batch = traj_batch._replace(
+                reward=bonus,
+                value=rnd.critic(traj_batch.obs),
+                next_value=rnd.critic(next_obs),
+                terminated=never,
+                truncated=never,
+            )
+            int_advantages, int_targets = calculate_gae(int_batch, online_config)
+            _, (total, (value, actor, entropy)) = ppo_update(
+                train_state,
+                traj_batch,
+                rng_ppo,
+                extra_advantages=rnd_config["INT_COEF"] * int_advantages,
+            )
+
+            def critic_step(carry, _):
+                critic, optimizer = carry
+                loss, grads = nnx.value_and_grad(
+                    lambda c: (
+                        0.5 * jnp.mean(jnp.square(c(traj_batch.obs) - int_targets))
+                    )
+                )(critic)
+                optimizer.update(critic, grads)
+                return (critic, optimizer), loss
+
+            _, int_value = nnx.scan(critic_step, length=config["UPDATE_EPOCHS"])(
+                (rnd.critic, critic_optimizer), None
+            )
+            rnd_losses = train_rnd(
+                rnd, rnd_optimizer, dataset.info["next_obs"], count, rng_rnd
+            )
+            losses = {
+                "total": total,
+                "value": value,
+                "actor": actor,
+                "entropy": entropy,
+                "int_value": int_value,
+                "rnd_loss": rnd_losses[-1],
+                "bonus": raw_bonus,
+            }
+            return jax.tree_util.tree_map(jnp.mean, losses)
+
+        batched_rnd_model_free_train = nnx.jit(
+            nnx.vmap(rnd_model_free_train, in_axes=(0, 0, 0, 0, 0, 0, None, 0))
         )
     if not args.offline:
         if not args.model_free:
@@ -605,13 +675,25 @@ def main():
         else:
             seed_keys, train_keys = vsplit(seed_keys)
             t0 = time.perf_counter()
-            _, losses = batched_model_free_train(
-                runner_state[0],
-                traj_batch,
-                dataset,
-                jnp.asarray(data_count),
-                train_keys,
-            )
+            if use_rnd:
+                losses = batched_rnd_model_free_train(
+                    runner_state[0],
+                    rnds,
+                    rnd_optimizers,
+                    rnd_critic_optimizers,
+                    traj_batch,
+                    dataset,
+                    jnp.asarray(data_count),
+                    train_keys,
+                )
+            else:
+                _, losses = batched_model_free_train(
+                    runner_state[0],
+                    traj_batch,
+                    dataset,
+                    jnp.asarray(data_count),
+                    train_keys,
+                )
             jax.block_until_ready(losses)
             train_s = time.perf_counter() - t0
             for b in range(B):

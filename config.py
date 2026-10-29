@@ -69,6 +69,8 @@ class RNDConfig:
     out_dim: int = 32
     batch_size: int = 256
     update_steps: int = 100
+    # Model-free PPO: advantage = extrinsic + int_coef * intrinsic (paper: 2:1).
+    int_coef: float = 0.5
 
 
 ModelConfig = (
@@ -107,8 +109,6 @@ class Args:
     def __post_init__(self):
         if self.model_free and self.offline:
             raise ValueError("--model-free needs an online env")
-        if self.model_free and self.explore_bonus == "rnd":
-            raise ValueError("--explore-bonus rnd is a model-env bonus")
 
 
 def candidate_configs(m):
