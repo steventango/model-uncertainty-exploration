@@ -592,6 +592,26 @@ classic_ppo_rnd_every_tenth = Experiment(
     ),
 )
 
+classic_ppo_rnd_every_tenth_epochs = Experiment(
+    name="classic_ppo_rnd_every_tenth_epochs",
+    configs=tuple(
+        cfg
+        for epochs in (4, 10)
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            label=f"epochs{epochs}",
+            bonus="rnd",
+            model_free=True,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            ppo__num_minibatches=1,
+            ppo__update_epochs=epochs,
+        )
+    ),
+    description="classic_ppo_rnd_every_tenth with fewer PPO update epochs (4, 10)",
+)
+
 classic_plan_every_tenth_rnd = Experiment(
     name="classic_plan_every_tenth_rnd",
     configs=tuple(
@@ -635,6 +655,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_rollout,
         pendulum_learn,
         classic_ppo_rnd_every_tenth,
+        classic_ppo_rnd_every_tenth_epochs,
         classic_plan_every_tenth_rnd,
     )
 }
