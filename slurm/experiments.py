@@ -677,6 +677,44 @@ classic_plan_every_tenth_cheap = Experiment(
     ),
 )
 
+# (label, steps per rollout, ENN update steps). "every_cheap_model" is the
+# G1 setup (classic_plan_every_cheap_model_long_variants); the other two vary
+# one factor each. Full PPO budget throughout.
+MC_REPLAN_ARMS = (
+    ("every_cheap_model", lambda trunc: 1, 1000),
+    ("every_full_model", lambda trunc: 1, 10_000),
+    ("tenth_cheap_model", lambda trunc: trunc // 10, 1000),
+)
+
+mc_replan_ablation = Experiment(
+    name="mc_replan_ablation",
+    configs=tuple(
+        cfg
+        for arm, rollout, model_steps in MC_REPLAN_ARMS
+        for (alpha, beta), reward in (((0.0, 1.0), "eig"), ((1.0, 0.0), "extrinsic"))
+        for env in ("MountainCar-v0", "MountainCarContinuous-v0")
+        for cfg in sweep(
+            env=env,
+            label=f"{arm}_{reward}",
+            alpha=alpha,
+            beta=beta,
+            mode="sample",
+            bonus="eig",
+            steps_per_rollout=rollout(CLASSIC_TRUNCATION[env]),
+            max_steps=1000,
+            model__update_steps=model_steps,
+        )
+    ),
+    time_limit="30:00:00",
+    mem_per_cpu="128G",
+    description=(
+        "MountainCar envs, EIG vs extrinsic explore reward, 1000 real steps: "
+        "reproduce G1 (plan every step, cheap model) and vary replanning "
+        "frequency (every step vs every 10% of truncation) and ENN update "
+        "steps (1000 vs 10000) one at a time"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -706,5 +744,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_tenth_rnd,
         classic_plan_every_tenth_extrinsic,
         classic_plan_every_tenth_cheap,
+        mc_replan_ablation,
     )
 }
