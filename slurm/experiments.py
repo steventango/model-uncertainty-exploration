@@ -651,6 +651,32 @@ classic_plan_every_tenth_extrinsic = Experiment(
     ),
 )
 
+classic_plan_every_tenth_cheap = Experiment(
+    name="classic_plan_every_tenth_cheap",
+    configs=tuple(
+        cfg
+        for (alpha, beta), label in (((0.0, 1.0), "eig"), ((1.0, 0.0), "extrinsic"))
+        for env in ("MountainCar-v0", "MountainCarContinuous-v0")
+        for cfg in sweep(
+            env=env,
+            label=label,
+            alpha=alpha,
+            beta=beta,
+            mode="sample",
+            bonus="eig",
+            steps_per_rollout=CLASSIC_TRUNCATION[env] // 10,
+            max_steps=10 * CLASSIC_TRUNCATION[env],
+            model__update_steps=1000,
+            ppo__total_timesteps=1e6,
+        )
+    ),
+    description=(
+        "classic_plan_every_tenth (eig) and _extrinsic on the MountainCar envs "
+        "with classic_plan_every_fast's 10x cheaper plans (ENN 1000 updates, "
+        "PPO 1e6 steps): does planner strength make the bonus redundant?"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -679,5 +705,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_ppo_rnd_every_tenth_epochs,
         classic_plan_every_tenth_rnd,
         classic_plan_every_tenth_extrinsic,
+        classic_plan_every_tenth_cheap,
     )
 }
