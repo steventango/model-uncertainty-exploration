@@ -6,6 +6,7 @@ from flax import struct
 from gymnax.environments import environment, spaces
 
 from models import WorldModel
+from rnd import RND
 
 ResetSource = Literal["env", "buffer", "init"]
 
@@ -54,6 +55,7 @@ class ModelEnvParams:
     env_params: environment.EnvParams
     max_steps_in_episode: int = struct.field(pytree_node=False)
     model: WorldModel | None = None
+    rnd: RND | None = None  # per-seed RND bonus (explore_bonus="rnd")
     alpha: float = 1.0
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
@@ -66,6 +68,7 @@ class ModelEnvParams:
         return self.replace(
             env_params=None,
             model=0,
+            rnd=0,
             alpha=None,
             beta=None,
             init_obs=0,
@@ -78,6 +81,7 @@ class ModelEnvParams:
         return self.replace(
             env_params=None,
             model=None,
+            rnd=None,
             alpha=0,
             beta=0,
             init_obs=None,
@@ -92,7 +96,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         env_params: environment.EnvParams,
         samples: int = 10,
         prediction_mode: Literal["mean", "sample"] = "mean",
-        explore_bonus: Literal["std", "eig"] = "std",
+        explore_bonus: Literal["std", "eig", "rnd"] = "std",
         oracle_reward_terminated: bool = True,
         reset_source: ResetSource = "env",
         max_steps_in_episode: int | None = None,
@@ -102,9 +106,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             raise ValueError(
                 f"prediction_mode must be 'mean' or 'sample', got {prediction_mode!r}"
             )
-        if explore_bonus not in ("std", "eig"):
+        if explore_bonus not in ("std", "eig", "rnd"):
             raise ValueError(
-                f"explore_bonus must be 'std' or 'eig', got {explore_bonus!r}"
+                f"explore_bonus must be 'std', 'eig' or 'rnd', got {explore_bonus!r}"
             )
         if reset_source not in ("env", "buffer", "init"):
             raise ValueError(
@@ -201,7 +205,8 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         # (logarithmic in variance). Consequently --beta is not directly
         # comparable across the two bonus types and must be retuned when
         # switching between them.
-        r_intrinsic = model.uncertainty(x, state.z, self.explore_bonus)
+        if self.explore_bonus != "rnd":
+            r_intrinsic = model.uncertainty(x, state.z, self.explore_bonus)
 
         delta_obs = model.denormalize_delta_obs(y[..., : model.obs_dim])
         obs = state.obs + delta_obs
@@ -210,6 +215,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
+        if self.explore_bonus == "rnd":
+            # Novelty of the predicted next observation.
+            r_intrinsic = params.rnd(obs)
         if self.oracle_reward_terminated:
             if hasattr(self._real_env, "obs_to_reward_terminated"):
                 r_exploit, terminated = self._real_env.obs_to_reward_terminated(
