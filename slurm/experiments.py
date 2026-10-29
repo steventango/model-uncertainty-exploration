@@ -587,9 +587,8 @@ classic_ppo_rnd_every_tenth = Experiment(
         )
     ),
     description=(
-        "model-free PPO+RND: an explore PPO on the RND bonus collects the data, an "
-        "exploit PPO learns the true reward from the same data; otherwise "
-        "classic_ppo_every_tenth_epochs at 30 epochs"
+        "model-free PPO+RND (standard: one policy, extrinsic + 0.5 x intrinsic "
+        "advantages); otherwise classic_ppo_every_tenth_epochs at 30 epochs"
     ),
 )
 
