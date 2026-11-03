@@ -10,8 +10,9 @@ from gymnax.environments import environment, spaces
 from compat import patch_brax_fluid
 patch_brax_fluid()
 
-from brax import envs
-from brax.envs.wrappers.training import EpisodeWrapper
+# Imported after patch_brax_fluid() so brax sees the patched clip.
+from brax import envs  # noqa: E402
+from brax.envs.wrappers.training import EpisodeWrapper  # noqa: E402
 
 class GymnaxWrapper(object):
     """Base class for Gymnax wrappers."""

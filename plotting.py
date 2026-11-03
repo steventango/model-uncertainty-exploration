@@ -775,8 +775,6 @@ def plot_area_action_uncertainty(
     rng, subkey = jax.random.split(rng)
     z = model.sample_index(subkey, num_samples)  # (S, index_dim)
 
-    samples = model.batch_predict_samples(x_grid_norm, z)  # (S, G*G, out_dim)
-
     unc_flat = model.batch_uncertainty(x_grid_norm, z, bonus)  # (G*G,)
     unc_grid = unc_flat.reshape(num_grid, num_grid)
 
