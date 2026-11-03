@@ -594,7 +594,11 @@ def main() -> None:
         "--metrics",
         nargs="+",
         choices=tuple(PLOTS),
-        default=("eval/mean_return", "validation/dynamics_mae", "validation/mean_uncertainty"),
+        default=(
+            "eval/mean_return",
+            "validation/dynamics_mae",
+            "validation/mean_uncertainty",
+        ),
         metavar="METRIC",
         help="TensorBoard scalar tags to plot (default: return and dynamics MAE)",
     )

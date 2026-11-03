@@ -3,17 +3,20 @@ name: Ruff
 on:
   push:
     branches: [ main ]
-    paths: [ "**.py", ".github/workflows/ruff.yml" ]
+    paths: [ "**.py", "pyproject.toml", "uv.lock", ".github/workflows/ruff.yml" ]
   pull_request:
     branches: [ main ]
-    paths: [ "**.py", ".github/workflows/ruff.yml" ]
+    paths: [ "**.py", "pyproject.toml", "uv.lock", ".github/workflows/ruff.yml" ]
 
 jobs:
   ruff:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@v4.1.0
         with:
+          version-file: uv.lock
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
           args: "format --check --diff"

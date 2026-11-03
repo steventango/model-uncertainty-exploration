@@ -25,8 +25,8 @@ class EnvConfig:
     x_label: str
     y_label: str
     dynamics_label: str
-    dynamics_pred_label: str = ""  # predicted row title; defaults to dynamics_label if empty
-    dynamics_err_label: str = ""   # error row title; defaults to "|dynamics_label error|" if empty
+    dynamics_pred_label: str = ""
+    dynamics_err_label: str = ""
 
 
 def is_discrete(env, env_params) -> bool:
