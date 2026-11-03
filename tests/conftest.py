@@ -10,14 +10,14 @@ import pytest
 # The --gpu golden runs main.py in a subprocess with its own environment.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-GOLDEN_DIR = Path(__file__).parent / "golden"
+GOLDEN_DIR = Path("/tmp/model-uncertainty-exploration-golden")
 
 
 def pytest_addoption(parser):
     parser.addoption(
         "--update-golden",
         action="store_true",
-        help="Rewrite tests/golden/*.json from this run instead of comparing.",
+        help="Rewrite the golden JSON files from this run instead of comparing.",
     )
     parser.addoption(
         "--gpu",
@@ -37,7 +37,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def golden(request):
-    """Compare ``{seed: {tag: [[step, value], ...]}}`` with tests/golden/<name>.json."""
+    """Compare ``{seed: {tag: [[step, value], ...]}}`` with GOLDEN_DIR/<name>.json."""
 
     def check(name, actual, *, exact=False):
         path = GOLDEN_DIR / f"{name}.json"
