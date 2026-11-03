@@ -1,4 +1,0 @@
-# ruff format of files that predate format checks in CI
-089d54f15c4ec949a34ec3efe3ccf7f4d8a99471
-# ruff check --fix for the 0.17 default rules
-a39d804396eb3708c5ab94fc2adb2de08285c270
