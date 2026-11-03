@@ -10,6 +10,9 @@ import pytest
 # The --gpu golden runs main.py in a subprocess with its own environment.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
+# JAX reads JAX_PLATFORMS when imported, so chex (which imports jax) comes after.
+import chex
+
 GOLDEN_DIR = Path("/tmp/model-uncertainty-exploration-golden")
 
 
@@ -49,25 +52,16 @@ def golden(request):
             warnings.warn(f"no golden for {name}; record one with --update-golden")
             return
         expected = json.loads(path.read_text())
-        assert actual.keys() == expected.keys()
-        for seed in expected:
-            assert actual[seed].keys() == expected[seed].keys(), seed
-            for tag, points in expected[seed].items():
-                got = np.asarray(actual[seed][tag])
-                want = np.asarray(points)
-                assert got.shape == want.shape, f"{seed}/{tag}"
-                np.testing.assert_array_equal(got[:, 0], want[:, 0], f"{seed}/{tag}")
-                if exact:
-                    np.testing.assert_array_equal(
-                        got[:, 1], want[:, 1], f"{seed}/{tag}"
-                    )
-                else:
-                    np.testing.assert_allclose(
-                        got[:, 1],
-                        want[:, 1],
-                        rtol=1e-5,
-                        atol=1e-6,
-                        err_msg=f"{seed}/{tag}",
-                    )
+        actual, expected = (
+            {
+                seed: {tag: np.asarray(points) for tag, points in tags.items()}
+                for seed, tags in d.items()
+            }
+            for d in (actual, expected)
+        )
+        if exact:
+            chex.assert_trees_all_equal(actual, expected)
+        else:
+            chex.assert_trees_all_close(actual, expected, rtol=1e-5, atol=1e-6)
 
     return check
