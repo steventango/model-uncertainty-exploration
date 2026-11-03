@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from tensorboardX import SummaryWriter
 
@@ -179,3 +181,9 @@ def log_eval(loggers, batched_eval, eval_policy_state, eval_keys, dataset_ptr):
     mean_returns = batched_eval(eval_policy_state, eval_keys)
     for b, logger in enumerate(loggers):
         logger.log_eval_return(dataset_ptr, mean_returns[b])
+
+
+def log_time(loggers, tag, t0, step):
+    seconds = time.perf_counter() - t0
+    for logger in loggers:
+        logger.log_scalar(tag, seconds, step)

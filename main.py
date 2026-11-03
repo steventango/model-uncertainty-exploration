@@ -14,18 +14,12 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
-from agents import (
-    Data,
-    ModelBasedAgent,
-    ModelFreeAgent,
-    log_time,
-    seed_slice,
-    vsplit,
-)
+from agents import Data, ModelBasedAgent, ModelFreeAgent
+from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
-from logger import ExperimentLogger, log_eval
+from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
