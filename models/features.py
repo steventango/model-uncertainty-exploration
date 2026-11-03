@@ -48,7 +48,7 @@ class RFFFeatures(nnx.Module):
         self.W = nnx.Variable(W)
         self.b = nnx.Variable(b)
 
-    def update(self, X: jax.Array, pointer) -> None:  # noqa: ARG002
+    def update(self, X: jax.Array, pointer) -> None:
         pass
 
     def __call__(self, x: jax.Array) -> jax.Array:

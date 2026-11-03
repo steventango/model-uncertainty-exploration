@@ -2,8 +2,9 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-import plotting
+
 import ground_truth
+import plotting
 from env_config import get_env_config, sample_validation_batch
 
 

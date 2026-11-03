@@ -33,7 +33,7 @@ gymnax = { git = "https://github.com/steventango/gymnax" }
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.15.9",
+    "ruff>=0.17.3",
 ]
 
 [tool.pytest.ini_options]
