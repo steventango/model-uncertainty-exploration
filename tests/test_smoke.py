@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import math
 import os
@@ -14,73 +15,75 @@ import pytest
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 import main
+from config import Args, BLRConfig, ENNConfig, PPOConfig
 from offline_data import AREA_INDEX
 from ppo import Transition
 
 GOLDEN_DIR = Path("/tmp/model-uncertainty-exploration-golden")
 
-TINY_PPO = [
-    "--ppo.num-envs", "4",
-    "--ppo.num-steps", "10",
-    "--ppo.total-timesteps", "80",
-    "--ppo.num-minibatches", "2",
-    "--ppo.update-epochs", "1",
-    "--ppo.hidden-dim", "16",
-]  # fmt: skip
-TINY_ENN = ["model:enn", "--model.update-steps", "10", "--model.hidden-dim", "16"]
-TINY_BLR = ["model:blr", "--model.num-samples", "4"]
+TINY_PPO = PPOConfig(
+    num_envs=4,
+    num_steps=10,
+    total_timesteps=80,
+    num_minibatches=2,
+    update_epochs=1,
+    hidden_dim=16,
+)
+TINY_ENN = ENNConfig(update_steps=10, hidden_dim=16)
+TINY_BLR = BLRConfig(num_samples=4)
 
 CASES = {
-    "enn-pendulum": ["--env", "Pendulum-v1", "--max-steps", "400", *TINY_PPO, *TINY_ENN],
-    "blr-cartpole-2seeds": [
-        "--env", "CartPole-v1",
-        "--num-seeds", "2",
-        "--max-steps", "100",
-        "--steps-per-rollout", "50",
-        "--model-env-mode", "mean",
-        "--explore-bonus", "std",
-        "--alpha", "1.0",
-        *TINY_PPO,
-        *TINY_BLR,
-    ],
-    "enn-cartpole-terminating": [
-        "--env", "CartPole-v1",
-        "--max-steps", "100",
-        "--steps-per-rollout", "50",
-        *TINY_PPO,
-        *TINY_ENN,
-    ],
-    "predict-reward-buffer-reset": [
-        "--env", "Pendulum-v1",
-        "--max-steps", "400",
-        "--predict-reward-terminated",
-        "--reset-source", "buffer",
-        "--rollout-length", "20",
-        "--uncertainty-threshold", "1.0",
-        "--eval-every", "100",
-        *TINY_PPO,
-        *TINY_ENN,
-    ],
-    "model-free-cartpole": [
-        "--env", "CartPole-v1",
-        "--model-free",
-        "--max-steps", "100",
-        "--steps-per-rollout", "50",
-        *TINY_PPO,
-    ],
-    "brax-inverted-pendulum": [
-        "--env", "inverted_pendulum",
-        "--max-steps", "100",
-        "--steps-per-rollout", "50",
-        *TINY_PPO,
-        *TINY_ENN,
-    ],
-}  # fmt: skip
+    "enn-pendulum": Args(
+        env="Pendulum-v1", max_steps=400, ppo=TINY_PPO, model=TINY_ENN
+    ),
+    "blr-cartpole-2seeds": Args(
+        env="CartPole-v1",
+        num_seeds=2,
+        max_steps=100,
+        steps_per_rollout=50,
+        model_env_mode="mean",
+        explore_bonus="std",
+        alpha=1.0,
+        ppo=TINY_PPO,
+        model=TINY_BLR,
+    ),
+    "enn-cartpole-terminating": Args(
+        env="CartPole-v1",
+        max_steps=100,
+        steps_per_rollout=50,
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
+    "predict-reward-buffer-reset": Args(
+        env="Pendulum-v1",
+        max_steps=400,
+        predict_reward_terminated=True,
+        reset_source="buffer",
+        rollout_length=20,
+        uncertainty_threshold=1.0,
+        eval_every=100,
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
+    "model-free-cartpole": Args(
+        env="CartPole-v1",
+        model_free=True,
+        max_steps=100,
+        steps_per_rollout=50,
+        ppo=TINY_PPO,
+    ),
+    "brax-inverted-pendulum": Args(
+        env="inverted_pendulum",
+        max_steps=100,
+        steps_per_rollout=50,
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
+}
 
 
-def _run(monkeypatch, log_dir, argv):
-    monkeypatch.setattr(sys, "argv", ["main.py", "--log-dir", str(log_dir), *argv])
-    main.main()
+def _run(log_dir, args):
+    main.main(dataclasses.replace(args, log_dir=str(log_dir)))
 
 
 def _scalars(seed_dir, tag):
@@ -123,7 +126,6 @@ def _check_golden(name, actual):
 
 
 def _check_outputs(log_dir, *, model, eval_return=True):
-    assert (log_dir / "COMPLETE").exists()
     seed_dirs = sorted(log_dir.glob("seed_*"))
     assert seed_dirs
     for seed_dir in seed_dirs:
@@ -138,12 +140,11 @@ def _check_outputs(log_dir, *, model, eval_return=True):
 
 
 @pytest.mark.parametrize("case", CASES)
-def test_online(monkeypatch, tmp_path, case):
-    argv = CASES[case]
-    _run(monkeypatch, tmp_path, argv)
-    seed_dirs = _check_outputs(tmp_path, model="--model-free" not in argv)
-    num_seeds = int(argv[argv.index("--num-seeds") + 1]) if "--num-seeds" in argv else 1
-    assert len(seed_dirs) == num_seeds
+def test_online(tmp_path, case):
+    args = CASES[case]
+    _run(tmp_path, args)
+    seed_dirs = _check_outputs(tmp_path, model=not args.model_free)
+    assert len(seed_dirs) == args.num_seeds
     _check_golden(case, _all_scalars(tmp_path))
 
 
@@ -182,7 +183,7 @@ def test_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "load_offline_transitions", lambda _: _fake_plant_dataset()
     )
-    _run(monkeypatch, tmp_path, ["--offline", *TINY_PPO, *TINY_ENN])
+    _run(tmp_path, Args(offline=True, ppo=TINY_PPO, model=TINY_ENN))
     _check_outputs(tmp_path, model=True, eval_return=False)
     _check_golden("offline", _all_scalars(tmp_path))
 

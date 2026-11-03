@@ -79,9 +79,7 @@ def vsplit(keys, num=2):
     return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
 
 
-def main():
-    args = tyro.cli(Args)
-
+def main(args: Args):
     B = args.num_seeds
     seeds = args.seed + jnp.arange(B)
     seed_keys = jax.vmap(jax.random.key)(seeds)
@@ -650,4 +648,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(Args))
