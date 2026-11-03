@@ -3,12 +3,10 @@ import json
 import os
 import time
 from datetime import datetime
-from functools import partial
 
 import gymnax
 import jax
 import jax.numpy as jnp
-import orbax.checkpoint as ocp
 import tyro
 from flax import nnx
 from gymnax.environments import spaces
@@ -16,6 +14,7 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
+from agents import save_checkpoint, seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
@@ -41,42 +40,6 @@ def _wrap_env(env, discrete):
     if not discrete:
         wrapped = ClipAction(wrapped)
     return VecEnv(wrapped)
-
-
-def _seed_slice(tree, idx):
-    """Index every leaf of a batched pytree, e.g. pick one seed (or (seed, config))."""
-    return jax.tree_util.tree_map(lambda x: x[idx], tree)
-
-
-def _save_checkpoint(
-    seed_dir, models, explore_train_state, eval_train_state, seed_idx, solver="ppo"
-):
-    checkpointer = ocp.StandardCheckpointer()
-    abs_seed_dir = os.path.abspath(seed_dir)
-
-    if models is not None:
-        _, model_state = nnx.split(unstack_train_state(models, seed_idx))
-        checkpointer.save(
-            os.path.join(abs_seed_dir, "checkpoint", "model"), model_state
-        )
-
-    for tag, batched_ts in [
-        (f"{solver}_explore", explore_train_state),
-        (f"{solver}_eval", eval_train_state),
-    ]:
-        network, _, normalize_vec_obs, _ = unstack_train_state(batched_ts, seed_idx)
-        _, network_state = nnx.split(network)
-        _, obs_norm_state = nnx.split(normalize_vec_obs)
-        base = os.path.join(abs_seed_dir, "checkpoint", tag)
-        checkpointer.save(os.path.join(base, "network"), network_state)
-        checkpointer.save(os.path.join(base, "obs_norm"), obs_norm_state)
-
-    checkpointer.wait_until_finished()
-
-
-@partial(jax.jit, static_argnums=1)
-def vsplit(keys, num=2):
-    return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
 
 
 def main(args: Args):
@@ -439,7 +402,7 @@ def main(args: Args):
             collated = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
             dataset = append_dataset(dataset, collated, jnp.asarray(data_count))
             for b in range(B):
-                loggers[b].log_dataset(_seed_slice(collated, b), data_count)
+                loggers[b].log_dataset(seed_slice(collated, b), data_count)
             prev_count, data_count = data_count, data_count + collated.obs.shape[1]
             for b in range(B):
                 loggers[b].log_scalar("time/rollout_s", rollout_s, data_count)
@@ -460,7 +423,7 @@ def main(args: Args):
             jax.block_until_ready(history)
             model_train_s = time.perf_counter() - t0
             for b in range(B):
-                loggers[b].log_loss_history(_seed_slice(history, b), j)
+                loggers[b].log_loss_history(seed_slice(history, b), j)
                 loggers[b].log_scalar("time/model_train_s", model_train_s, data_count)
 
             if not args.offline:
@@ -495,7 +458,7 @@ def main(args: Args):
                     val_true_delta_obs,
                     val_true_reward,
                     val_true_terminated,
-                    _seed_slice(dataset, 0),
+                    seed_slice(dataset, 0),
                     data_count,
                     plot_seed[0],
                     j,
@@ -508,7 +471,7 @@ def main(args: Args):
                     env_params,
                     env_name,
                     unc_seed[0],
-                    _seed_slice(dataset, 0),
+                    seed_slice(dataset, 0),
                     data_count,
                     j,
                     seed_dirs[0],
@@ -572,7 +535,7 @@ def main(args: Args):
                     (f"{args.solver}/eval_return", EVAL),
                 ):
                     loggers[b].log_ppo_returns(
-                        _seed_slice(out["metrics"], (b, index)),
+                        seed_slice(out["metrics"], (b, index)),
                         tag,
                         j,
                         config["NUM_ENVS"],
@@ -596,7 +559,7 @@ def main(args: Args):
                 loggers[b].log_scalar(
                     f"time/{args.solver}_train_s", train_s, data_count
                 )
-                for name, loss in _seed_slice(losses, b).items():
+                for name, loss in seed_slice(losses, b).items():
                     loggers[b].log_scalar(
                         f"{args.solver}/{name}", float(loss), data_count
                     )
@@ -617,7 +580,7 @@ def main(args: Args):
                     config,
                     num_steps,
                     rng=eval_keys[0],
-                    dataset=_seed_slice(dataset, 0),
+                    dataset=seed_slice(dataset, 0),
                     env_params=env_params,
                     j=j,
                     run_dir=seed_dirs[0],
@@ -638,7 +601,7 @@ def main(args: Args):
     if num_rollouts > 0:
         t0 = time.perf_counter()
         for b in range(B):
-            _save_checkpoint(
+            save_checkpoint(
                 seed_dirs[b],
                 None if args.model_free else models,
                 explore_train_state,
