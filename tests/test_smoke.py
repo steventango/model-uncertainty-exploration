@@ -88,12 +88,6 @@ CASES = {
 }
 
 
-def _scalars(seed_dir, tag):
-    acc = EventAccumulator(str(seed_dir))
-    acc.Reload()
-    return [e.value for e in acc.Scalars(tag)]
-
-
 def _all_scalars(log_dir):
     """Every logged scalar except wall-clock timings, keyed by seed then tag."""
     out = {}
@@ -127,18 +121,16 @@ def _check_golden(name, actual):
     chex.assert_trees_all_close(actual, expected)
 
 
-def _check_outputs(log_dir, *, model, eval_return=True):
-    seed_dirs = sorted(log_dir.glob("seed_*"))
-    assert seed_dirs
-    for seed_dir in seed_dirs:
-        ckpt = seed_dir / "checkpoint"
+def _check_outputs(log_dir, *, model):
+    scalars = _all_scalars(log_dir)
+    assert scalars
+    for seed, tags in scalars.items():
+        ckpt = log_dir / seed / "checkpoint"
         assert (ckpt / "ppo_explore" / "network").is_dir()
         assert (ckpt / "ppo_eval" / "network").is_dir()
         assert (ckpt / "model").is_dir() == model
-        if eval_return:
-            returns = _scalars(seed_dir, "eval/mean_return")
-            assert returns and all(math.isfinite(r) for r in returns)
-    return seed_dirs
+        assert all(math.isfinite(v) for points in tags.values() for _, v in points)
+    return scalars
 
 
 @pytest.mark.parametrize(
@@ -152,9 +144,10 @@ def test_online(tmp_path, case):
     args = CASES[case]
     main.main(dataclasses.replace(args, log_dir=str(tmp_path)))
     assert jax.default_backend() == ("cpu" if args.cpu else "gpu")
-    seed_dirs = _check_outputs(tmp_path, model=not args.model_free)
-    assert len(seed_dirs) == args.num_seeds
-    _check_golden(case, _all_scalars(tmp_path))
+    scalars = _check_outputs(tmp_path, model=not args.model_free)
+    assert len(scalars) == args.num_seeds
+    assert all("eval/mean_return" in tags for tags in scalars.values())
+    _check_golden(case, scalars)
 
 
 def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX + 1):
@@ -197,5 +190,4 @@ def test_offline(monkeypatch, tmp_path):
             cpu=True, offline=True, log_dir=str(tmp_path), ppo=TINY_PPO, model=TINY_ENN
         )
     )
-    _check_outputs(tmp_path, model=True, eval_return=False)
-    _check_golden("offline", _all_scalars(tmp_path))
+    _check_golden("offline", _check_outputs(tmp_path, model=True))
