@@ -40,6 +40,141 @@ def _wrap_env(env, discrete):
     return VecEnv(wrapped)
 
 
+def run_online(
+    agent,
+    env,
+    env_params,
+    rollout_config,
+    eval_config,
+    loggers,
+    seed_keys,
+    num_rollouts,
+    max_steps,
+    eval_every,
+):
+    """Each round: act in the real env, add to the buffer, update the agent."""
+    key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
+    reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
+    obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+    state = agent.init(init_key)
+
+    if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
+
+        @nnx.jit
+        @nnx.vmap
+        def _init_obs_stats(train_state, obs):
+            normalize_vec_obs = train_state[2]
+            normalize_vec_obs.train()
+            normalize_vec_obs(obs)
+            normalize_vec_obs.eval()
+
+        _init_obs_stats(agent.explore_policy(state), obsv)
+
+    _rollout = nnx.jit(
+        nnx.vmap(
+            make_rollout(rollout_config, env, env_params, training=agent.on_policy)
+        )
+    )
+    runner_state = (env_state, obsv, runner_key)
+
+    sample = nnx.eval_shape(
+        lambda policy: jax.vmap(collate_rollout)(_rollout((policy, *runner_state))[1]),
+        agent.explore_policy(state),
+    )
+    buffer = jax.tree_util.tree_map(
+        lambda x: jnp.zeros(
+            (x.shape[0], rollout_config["DATASET_SIZE"]) + x.shape[2:], dtype=x.dtype
+        ),
+        sample,
+    )
+    size = 0
+
+    @jax.jit
+    def append(buffer, batch, ptr):
+        def append_one(old, new):
+            return jax.lax.dynamic_update_slice_in_dim(old, new, ptr, axis=0)
+
+        return jax.tree_util.tree_map(jax.vmap(append_one), buffer, batch)
+
+    batched_eval = evaluation.make_batched_evaluate_policy(
+        eval_config,
+        env,
+        env_params,
+        make_rollout(eval_config, env, env_params, training=False),
+    )
+    key, eval_keys = vsplit(key)
+    log_eval(loggers, batched_eval, agent.eval_policy(state), eval_keys, 0)
+    eval_policy = agent.eval_policy(state)
+
+    for j in range(num_rollouts):
+        t0 = time.perf_counter()
+        (_, *runner_state), traj_batch = _rollout(
+            (agent.explore_policy(state), *runner_state)
+        )
+        jax.block_until_ready(traj_batch)
+        rollout_s = time.perf_counter() - t0
+
+        collated = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
+        buffer = append(buffer, collated, jnp.asarray(size))
+        for b, logger in enumerate(loggers):
+            logger.log_dataset(seed_slice(collated, b), size)
+        prev_size, size = size, size + collated.obs.shape[1]
+        for logger in loggers:
+            logger.log_scalar("time/rollout_s", rollout_s, size)
+        # Eval points inside this round: the policy has not been updated yet.
+        first = (prev_size // eval_every + 1) * eval_every
+        for step in range(first, size, eval_every):
+            key, eval_keys = vsplit(key)
+            log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
+
+        key, update_key = vsplit(key)
+        state = agent.update(state, Data(buffer, size, traj_batch, j), update_key)
+        eval_policy = agent.eval_policy(state)
+
+        if size % eval_every == 0 or j == num_rollouts - 1:
+            key, eval_keys = vsplit(key)
+            t0 = time.perf_counter()
+            log_eval(loggers, batched_eval, eval_policy, eval_keys, size)
+            log_time(loggers, "time/eval_s", t0, size)
+
+    # Grid points past the last round: the policy has not changed since.
+    first = (size // eval_every + 1) * eval_every
+    for step in range(first, max_steps + 1, eval_every):
+        key, eval_keys = vsplit(key)
+        log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
+
+    return state, size
+
+
+def run_offline(agent, buffer, loggers, seed_keys, env, env_params, seed_dir, args):
+    """One update on the fixed dataset, then plot seed 0."""
+    key, init_key = vsplit(seed_keys)
+    state = agent.init(init_key)
+    size = buffer.obs.shape[1]
+    key, update_key = vsplit(key)
+    state = agent.update(state, Data(buffer, size, None, 0), update_key)
+
+    key, eval_keys = vsplit(key)
+    t0 = time.perf_counter()
+    plotting.plot_offline_visualization(
+        state.models,
+        state.explore,
+        state.eval,
+        agent.model_env,
+        agent.ppo_config,
+        env_params.max_steps_in_episode,
+        rng=eval_keys[0],
+        dataset=seed_slice(buffer, 0),
+        env_params=env_params,
+        j=0,
+        run_dir=seed_dir,
+        explore_bonus=args.explore_bonus,
+        reward_fn=env.compute_reward,
+    )
+    log_time(loggers, "time/eval_s", t0, size)
+    return state, size
+
+
 def main(args: Args):
     if args.cpu:
         jax.config.update("jax_platforms", "cpu")
@@ -244,123 +379,22 @@ def main(args: Args):
         )
 
     if args.offline:
-        key, init_key = vsplit(seed_keys)
-        state = agent.init(init_key)
-        size = buffer.obs.shape[1]
-        key, update_key = vsplit(key)
-        state = agent.update(state, Data(buffer, size, None, 0), update_key)
-
-        key, eval_keys = vsplit(key)
-        t0 = time.perf_counter()
-        plotting.plot_offline_visualization(
-            state.models,
-            state.explore,
-            state.eval,
-            agent.model_env,
-            agent.ppo_config,
-            env_params.max_steps_in_episode,
-            rng=eval_keys[0],
-            dataset=seed_slice(buffer, 0),
-            env_params=env_params,
-            j=0,
-            run_dir=seed_dirs[0],
-            explore_bonus=args.explore_bonus,
-            reward_fn=env.compute_reward,
+        state, size = run_offline(
+            agent, buffer, loggers, seed_keys, env, env_params, seed_dirs[0], args
         )
-        log_time(loggers, "time/eval_s", t0, size)
     else:
-        key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
-        reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
-        state = agent.init(init_key)
-
-        if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
-
-            @nnx.jit
-            @nnx.vmap
-            def _init_obs_stats(train_state, obs):
-                normalize_vec_obs = train_state[2]
-                normalize_vec_obs.train()
-                normalize_vec_obs(obs)
-                normalize_vec_obs.eval()
-
-            _init_obs_stats(agent.explore_policy(state), obsv)
-
-        _rollout = nnx.jit(
-            nnx.vmap(
-                make_rollout(rollout_config, env, env_params, training=agent.on_policy)
-            )
-        )
-        runner_state = (env_state, obsv, runner_key)
-
-        sample = nnx.eval_shape(
-            lambda policy: jax.vmap(collate_rollout)(
-                _rollout((policy, *runner_state))[1]
-            ),
-            agent.explore_policy(state),
-        )
-        buffer = jax.tree_util.tree_map(
-            lambda x: jnp.zeros(
-                (x.shape[0], rollout_config["DATASET_SIZE"]) + x.shape[2:],
-                dtype=x.dtype,
-            ),
-            sample,
-        )
-        size = 0
-
-        @jax.jit
-        def append(buffer, batch, ptr):
-            def append_one(old, new):
-                return jax.lax.dynamic_update_slice_in_dim(old, new, ptr, axis=0)
-
-            return jax.tree_util.tree_map(jax.vmap(append_one), buffer, batch)
-
-        batched_eval = evaluation.make_batched_evaluate_policy(
-            eval_config,
+        state, size = run_online(
+            agent,
             env,
             env_params,
-            make_rollout(eval_config, env, env_params, training=False),
+            rollout_config,
+            eval_config,
+            loggers,
+            seed_keys,
+            num_rollouts,
+            max_steps,
+            eval_every,
         )
-        key, eval_keys = vsplit(key)
-        log_eval(loggers, batched_eval, agent.eval_policy(state), eval_keys, 0)
-        eval_policy = agent.eval_policy(state)
-
-        for j in range(num_rollouts):
-            t0 = time.perf_counter()
-            (_, *runner_state), traj_batch = _rollout(
-                (agent.explore_policy(state), *runner_state)
-            )
-            jax.block_until_ready(traj_batch)
-            rollout_s = time.perf_counter() - t0
-
-            collated = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
-            buffer = append(buffer, collated, jnp.asarray(size))
-            for b, logger in enumerate(loggers):
-                logger.log_dataset(seed_slice(collated, b), size)
-            prev_size, size = size, size + collated.obs.shape[1]
-            for logger in loggers:
-                logger.log_scalar("time/rollout_s", rollout_s, size)
-            # Eval points inside this round: the policy has not been updated yet.
-            first = (prev_size // eval_every + 1) * eval_every
-            for step in range(first, size, eval_every):
-                key, eval_keys = vsplit(key)
-                log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
-
-            key, update_key = vsplit(key)
-            state = agent.update(state, Data(buffer, size, traj_batch, j), update_key)
-            eval_policy = agent.eval_policy(state)
-
-            if size % eval_every == 0 or j == num_rollouts - 1:
-                key, eval_keys = vsplit(key)
-                t0 = time.perf_counter()
-                log_eval(loggers, batched_eval, eval_policy, eval_keys, size)
-                log_time(loggers, "time/eval_s", t0, size)
-
-        # Grid points past the last round: the policy has not changed since.
-        first = (size // eval_every + 1) * eval_every
-        for step in range(first, max_steps + 1, eval_every):
-            key, eval_keys = vsplit(key)
-            log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
 
     if args.offline or num_rollouts > 0:
         t0 = time.perf_counter()
