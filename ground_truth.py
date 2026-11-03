@@ -5,16 +5,15 @@ from gymnax.environments import spaces
 from env_config import make_state
 
 
-_DUMMY_KEY = jax.random.key(0)
-
-
 def true_transition(env, params, env_name, s1, s2, action):
     """Ground-truth (delta_obs, reward, terminated) for a single transition."""
     state = make_state(env_name, s1, s2)
     obs = env.get_obs(state)
     if isinstance(env.action_space(params), spaces.Discrete):
         action = jnp.asarray(action, dtype=jnp.int32)
-    _, _, reward, terminated, _, info = env.step(_DUMMY_KEY, state, action, params)
+    _, _, reward, terminated, _, info = env.step(
+        jax.random.key(0), state, action, params
+    )
     return info["next_obs"] - obs, reward, terminated.astype(jnp.float32)
 
 

@@ -1,14 +1,12 @@
 import dataclasses
 import json
 import math
-import os
-import subprocess
-import sys
 import warnings
 from pathlib import Path
 
 import chex
 import gymnasium
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -34,9 +32,10 @@ TINY_BLR = BLRConfig(num_samples=4)
 
 CASES = {
     "enn-pendulum": Args(
-        env="Pendulum-v1", max_steps=400, ppo=TINY_PPO, model=TINY_ENN
+        cpu=True, env="Pendulum-v1", max_steps=400, ppo=TINY_PPO, model=TINY_ENN
     ),
     "blr-cartpole-2seeds": Args(
+        cpu=True,
         env="CartPole-v1",
         num_seeds=2,
         max_steps=100,
@@ -48,6 +47,7 @@ CASES = {
         model=TINY_BLR,
     ),
     "enn-cartpole-terminating": Args(
+        cpu=True,
         env="CartPole-v1",
         max_steps=100,
         steps_per_rollout=50,
@@ -55,6 +55,7 @@ CASES = {
         model=TINY_ENN,
     ),
     "predict-reward-buffer-reset": Args(
+        cpu=True,
         env="Pendulum-v1",
         max_steps=400,
         predict_reward_terminated=True,
@@ -66,6 +67,7 @@ CASES = {
         model=TINY_ENN,
     ),
     "model-free-cartpole": Args(
+        cpu=True,
         env="CartPole-v1",
         model_free=True,
         max_steps=100,
@@ -73,11 +75,15 @@ CASES = {
         ppo=TINY_PPO,
     ),
     "brax-inverted-pendulum": Args(
+        cpu=True,
         env="inverted_pendulum",
         max_steps=100,
         steps_per_rollout=50,
         ppo=TINY_PPO,
         model=TINY_ENN,
+    ),
+    "pendulum-every-tenth": Args(
+        env="Pendulum-v1", num_seeds=2, steps_per_rollout=20, max_steps=200
     ),
 }
 
@@ -139,10 +145,17 @@ def _check_outputs(log_dir, *, model, eval_return=True):
     return seed_dirs
 
 
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(name, marks=() if args.cpu else pytest.mark.gpu)
+        for name, args in CASES.items()
+    ],
+)
 def test_online(tmp_path, case):
     args = CASES[case]
     _run(tmp_path, args)
+    assert jax.default_backend() == ("cpu" if args.cpu else "gpu")
     seed_dirs = _check_outputs(tmp_path, model=not args.model_free)
     assert len(seed_dirs) == args.num_seeds
     _check_golden(case, _all_scalars(tmp_path))
@@ -183,31 +196,6 @@ def test_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "load_offline_transitions", lambda _: _fake_plant_dataset()
     )
-    _run(tmp_path, Args(offline=True, ppo=TINY_PPO, model=TINY_ENN))
+    _run(tmp_path, Args(cpu=True, offline=True, ppo=TINY_PPO, model=TINY_ENN))
     _check_outputs(tmp_path, model=True, eval_return=False)
     _check_golden("offline", _all_scalars(tmp_path))
-
-
-# classic_plan_every_tenth on Pendulum, cut from 100 plans to 10.
-GPU_CASES = {
-    "gpu-pendulum-every-tenth": [
-        "--env", "Pendulum-v1",
-        "--num-seeds", "2",
-        "--steps-per-rollout", "20",
-        "--max-steps", "200",
-    ],
-}  # fmt: skip
-DETERMINISTIC_XLA = (
-    "--xla_gpu_deterministic_ops=true --xla_gpu_exclude_nondeterministic_ops=true"
-)
-
-
-@pytest.mark.gpu
-@pytest.mark.parametrize("case", GPU_CASES)
-def test_gpu(tmp_path, case):
-    env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
-    env["XLA_FLAGS"] = f"{env.get('XLA_FLAGS', '')} {DETERMINISTIC_XLA}".strip()
-    cmd = [sys.executable, "main.py", "--log-dir", str(tmp_path), *GPU_CASES[case]]
-    subprocess.run(cmd, env=env, check=True)
-    _check_outputs(tmp_path, model=True)
-    _check_golden(case, _all_scalars(tmp_path))
