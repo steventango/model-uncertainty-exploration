@@ -4,8 +4,8 @@ def patch_brax_fluid():
     brax.fluid uses jp.clip(array, a_min=...) but JAX renamed the kwargs to
     min=/max=. Patch the module-level binding before the first brax env step.
     """
-    import jax.numpy as jnp
     import brax.fluid as _f
+    import jax.numpy as jnp
 
     _orig = jnp.clip
 

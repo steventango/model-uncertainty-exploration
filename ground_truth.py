@@ -4,7 +4,6 @@ from gymnax.environments import spaces
 
 from env_config import make_state
 
-
 _DUMMY_KEY = jax.random.key(0)
 
 

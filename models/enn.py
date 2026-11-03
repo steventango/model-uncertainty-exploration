@@ -1,11 +1,11 @@
 import jax
 import jax.numpy as jnp
-from jax.scipy.stats import norm
-from flax import nnx
 import optax
+from flax import nnx
+from jax.scipy.stats import norm
 
-from networks import ENN
 from models.base import WorldModel, register_model
+from networks import ENN
 
 
 class ENNModel(WorldModel):

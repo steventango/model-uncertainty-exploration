@@ -124,8 +124,8 @@ def candidate_configs(m):
 def model_config_dict(
     m: ENNConfig | BLRConfig,
     *,
-    max_data: int | float,
-    minibatch_size: int | float,
+    max_data: int,
+    minibatch_size: int,
 ) -> dict:
     """Convert a committed (scalar) model config to the UPPERCASE dict the registry expects.
 

@@ -1,10 +1,10 @@
+from functools import partial
+
+import chex
 import jax
 import jax.numpy as jnp
-import chex
 import numpy as np
 from flax import struct
-from functools import partial
-from typing import Optional, Tuple, Union
 from gymnax.environments import environment, spaces
 
 from compat import patch_brax_fluid
@@ -12,11 +12,11 @@ from compat import patch_brax_fluid
 patch_brax_fluid()
 
 # Imported after patch_brax_fluid() so brax sees the patched clip.
-from brax import envs  # noqa: E402
-from brax.envs.wrappers.training import EpisodeWrapper  # noqa: E402
+from brax import envs
+from brax.envs.wrappers.training import EpisodeWrapper
 
 
-class GymnaxWrapper(object):
+class GymnaxWrapper:
     """Base class for Gymnax wrappers."""
 
     def __init__(self, env):
@@ -53,8 +53,8 @@ class FlattenObservationWrapper(GymnaxWrapper):
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(
-        self, key: chex.PRNGKey, params: Optional[environment.EnvParams] = None
-    ) -> Tuple[chex.Array, environment.EnvState]:
+        self, key: chex.PRNGKey, params: environment.EnvParams | None = None
+    ) -> tuple[chex.Array, environment.EnvState]:
         obs, state = self._env.reset(key, params)
         obs = jnp.reshape(obs, (-1,))
         return obs, state
@@ -64,9 +64,9 @@ class FlattenObservationWrapper(GymnaxWrapper):
         self,
         key: chex.PRNGKey,
         state: environment.EnvState,
-        action: Union[int, float],
-        params: Optional[environment.EnvParams] = None,
-    ) -> Tuple[chex.Array, environment.EnvState, float, bool, bool, dict]:
+        action: float,
+        params: environment.EnvParams | None = None,
+    ) -> tuple[chex.Array, environment.EnvState, float, bool, bool, dict]:
         obs, state, reward, terminated, truncated, info = self._env.step(
             key, state, action, params
         )
@@ -92,8 +92,8 @@ class LogWrapper(GymnaxWrapper):
         super().__init__(env)
 
     def reset(
-        self, key: chex.PRNGKey, params: Optional[environment.EnvParams] = None
-    ) -> Tuple[chex.Array, environment.EnvState]:
+        self, key: chex.PRNGKey, params: environment.EnvParams | None = None
+    ) -> tuple[chex.Array, environment.EnvState]:
         obs, env_state = self._env.reset(key, params)
         state = LogEnvState(env_state, 0, 0, 0, 0, 0)
         return obs, state
@@ -102,9 +102,9 @@ class LogWrapper(GymnaxWrapper):
         self,
         key: chex.PRNGKey,
         state: environment.EnvState,
-        action: Union[int, float],
-        params: Optional[environment.EnvParams] = None,
-    ) -> Tuple[chex.Array, environment.EnvState, float, bool, bool, dict]:
+        action: float,
+        params: environment.EnvParams | None = None,
+    ) -> tuple[chex.Array, environment.EnvState, float, bool, bool, dict]:
         obs, env_state, reward, terminated, truncated, info = self._env.step(
             key, state.env_state, action, params
         )
