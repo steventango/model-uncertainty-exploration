@@ -88,8 +88,8 @@ def main():
 
     if args.offline:
         print(f"Loading offline dataset: {args.dataset}")
-        all_transitions, action_space, observation_space, _ = (
-            load_offline_transitions(args.dataset)
+        all_transitions, action_space, observation_space, _ = load_offline_transitions(
+            args.dataset
         )
         action_dim = action_space.shape[0]
         act_dim = None  # continuous action — no one-hot encoding

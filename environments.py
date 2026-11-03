@@ -55,6 +55,7 @@ class AcrobotWrapper(StateReconstructionWrapper):
 # Brax wrappers
 # ---------------------------------------------------------------------------
 
+
 class BraxStateReconstructionWrapper(StateReconstructionWrapper):
     """Base for brax envs: state reconstruction from obs is not possible."""
 
@@ -104,11 +105,11 @@ class HopperBraxWrapper(BraxStateReconstructionWrapper):
     """
 
     def obs_to_reward_terminated(self, obs, action, next_obs):
-        z = next_obs[0]       # q[rootz] ≈ Cartesian z height
-        angle = next_obs[1]   # q[rooty] = trunk lean (brax uses this directly)
+        z = next_obs[0]  # q[rootz] ≈ Cartesian z height
+        angle = next_obs[1]  # q[rooty] = trunk lean (brax uses this directly)
         is_healthy = (z > 0.7) & (angle > -0.2) & (angle < 0.2)
         terminated = ~is_healthy
-        x_vel = next_obs[5]   # qd[rootx] ≈ forward velocity
+        x_vel = next_obs[5]  # qd[rootx] ≈ forward velocity
         reward = x_vel + 1.0 - 1e-3 * jnp.sum(jnp.square(action))
         return reward, terminated
 
@@ -120,11 +121,11 @@ class Walker2dBraxWrapper(BraxStateReconstructionWrapper):
     """
 
     def obs_to_reward_terminated(self, obs, action, next_obs):
-        z = next_obs[0]       # q[rootz]
-        angle = next_obs[1]   # q[rooty]
+        z = next_obs[0]  # q[rootz]
+        angle = next_obs[1]  # q[rooty]
         is_healthy = (z > 0.8) & (z < 2.0) & (angle > -1.0) & (angle < 1.0)
         terminated = ~is_healthy
-        x_vel = next_obs[8]   # qd[rootx]
+        x_vel = next_obs[8]  # qd[rootx]
         reward = x_vel + 1.0 - 1e-3 * jnp.sum(jnp.square(action))
         return reward, terminated
 
@@ -136,7 +137,7 @@ class AntBraxWrapper(BraxStateReconstructionWrapper):
     """
 
     def obs_to_reward_terminated(self, obs, action, next_obs):
-        z = next_obs[0]       # q[rootz]
+        z = next_obs[0]  # q[rootz]
         is_healthy = (z > 0.2) & (z < 1.0)
         terminated = ~is_healthy
         x_vel = next_obs[13]  # qd[vx] = rootx velocity
@@ -183,15 +184,15 @@ class InvertedDoublePendulumBraxWrapper(BraxStateReconstructionWrapper):
     def obs_to_reward_terminated(self, obs, action, next_obs):
         sq1, sq2 = next_obs[1], next_obs[2]
         cq1, cq2 = next_obs[3], next_obs[4]
-        sq1q2 = sq1 * cq2 + cq1 * sq2   # sin(q1+q2)
-        cq1q2 = cq1 * cq2 - sq1 * sq2   # cos(q1+q2)
+        sq1q2 = sq1 * cq2 + cq1 * sq2  # sin(q1+q2)
+        cq1q2 = cq1 * cq2 - sq1 * sq2  # cos(q1+q2)
         L = 0.6
         x_tip = next_obs[0] + L * sq1 + L * sq1q2
         y_tip = L * cq1 + L * cq1q2
         terminated = y_tip <= 1.0
         v1, v2 = next_obs[6], next_obs[7]
-        dist_penalty = 0.01 * x_tip ** 2 + (y_tip - 2.0) ** 2
-        vel_penalty = 1e-3 * v1 ** 2 + 5e-3 * v2 ** 2
+        dist_penalty = 0.01 * x_tip**2 + (y_tip - 2.0) ** 2
+        vel_penalty = 1e-3 * v1**2 + 5e-3 * v2**2
         reward = jnp.where(~terminated, 10.0, 0.0) - dist_penalty - vel_penalty
         return reward, terminated
 
@@ -220,11 +221,21 @@ _WRAPPER_MAP = {
     "humanoidstandup": GenericBraxWrapper,
 }
 
-BRAX_ENVS = frozenset({
-    "inverted_pendulum", "halfcheetah", "swimmer",
-    "inverted_double_pendulum", "hopper", "walker2d",
-    "ant", "humanoid", "humanoidstandup", "pusher", "reacher",
-})
+BRAX_ENVS = frozenset(
+    {
+        "inverted_pendulum",
+        "halfcheetah",
+        "swimmer",
+        "inverted_double_pendulum",
+        "hopper",
+        "walker2d",
+        "ant",
+        "humanoid",
+        "humanoidstandup",
+        "pusher",
+        "reacher",
+    }
+)
 
 BRAX_BACKENDS = {"swimmer": "generalized"}
 
