@@ -1,6 +1,8 @@
 """End-to-end smoke tests: each main.py mode runs to completion at toy scale."""
 
 import math
+import os
+import subprocess
 import sys
 
 import gymnasium
@@ -36,6 +38,13 @@ CASES = {
         "--alpha", "1.0",
         *TINY_PPO,
         *TINY_BLR,
+    ],
+    "enn-cartpole-terminating": [
+        "--env", "CartPole-v1",
+        "--max-steps", "100",
+        "--steps-per-rollout", "50",
+        *TINY_PPO,
+        *TINY_ENN,
     ],
     "predict-reward-buffer-reset": [
         "--env", "Pendulum-v1",
@@ -76,6 +85,20 @@ def _scalars(seed_dir, tag):
     return [e.value for e in acc.Scalars(tag)]
 
 
+def _all_scalars(log_dir):
+    """Every logged scalar except wall-clock timings, keyed by seed then tag."""
+    out = {}
+    for seed_dir in sorted(log_dir.glob("seed_*")):
+        acc = EventAccumulator(str(seed_dir), size_guidance={"scalars": 0})
+        acc.Reload()
+        out[seed_dir.name] = {
+            tag: [[e.step, e.value] for e in acc.Scalars(tag)]
+            for tag in acc.Tags()["scalars"]
+            if not tag.startswith("time/")
+        }
+    return out
+
+
 def _check_outputs(log_dir, *, model, eval_return=True):
     assert (log_dir / "COMPLETE").exists()
     seed_dirs = sorted(log_dir.glob("seed_*"))
@@ -91,12 +114,14 @@ def _check_outputs(log_dir, *, model, eval_return=True):
     return seed_dirs
 
 
-@pytest.mark.parametrize("argv", CASES.values(), ids=CASES.keys())
-def test_online(monkeypatch, tmp_path, argv):
+@pytest.mark.parametrize("case", CASES)
+def test_online(monkeypatch, tmp_path, golden, case):
+    argv = CASES[case]
     _run(monkeypatch, tmp_path, argv)
     seed_dirs = _check_outputs(tmp_path, model="--model-free" not in argv)
     num_seeds = int(argv[argv.index("--num-seeds") + 1]) if "--num-seeds" in argv else 1
     assert len(seed_dirs) == num_seeds
+    golden(case, _all_scalars(tmp_path))
 
 
 def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX + 1):
@@ -130,9 +155,35 @@ def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX
     return transitions, action_space, observation_space, ep_len
 
 
-def test_offline(monkeypatch, tmp_path):
+def test_offline(monkeypatch, tmp_path, golden):
     monkeypatch.setattr(
         main, "load_offline_transitions", lambda _: _fake_plant_dataset()
     )
     _run(monkeypatch, tmp_path, ["--offline", *TINY_PPO, *TINY_ENN])
     _check_outputs(tmp_path, model=True, eval_return=False)
+    golden("offline", _all_scalars(tmp_path))
+
+
+# classic_plan_every_tenth on Pendulum, cut from 100 plans to 10.
+GPU_CASES = {
+    "gpu-pendulum-every-tenth": [
+        "--env", "Pendulum-v1",
+        "--num-seeds", "2",
+        "--steps-per-rollout", "20",
+        "--max-steps", "200",
+    ],
+}  # fmt: skip
+DETERMINISTIC_XLA = (
+    "--xla_gpu_deterministic_ops=true --xla_gpu_exclude_nondeterministic_ops=true"
+)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("case", GPU_CASES)
+def test_gpu(tmp_path, golden, case):
+    env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
+    env["XLA_FLAGS"] = f"{env.get('XLA_FLAGS', '')} {DETERMINISTIC_XLA}".strip()
+    cmd = [sys.executable, "main.py", "--log-dir", str(tmp_path), *GPU_CASES[case]]
+    subprocess.run(cmd, env=env, check=True)
+    _check_outputs(tmp_path, model=True)
+    golden(case, _all_scalars(tmp_path), exact=True)

@@ -41,4 +41,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: full-scale GPU golden tests, run with --gpu",
 ]

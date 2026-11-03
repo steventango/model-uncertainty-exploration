@@ -208,3 +208,6 @@ __marimo__/
 
 results/
 runs/
+
+# Golden outputs are machine-specific; record locally with pytest --update-golden.
+tests/golden/
