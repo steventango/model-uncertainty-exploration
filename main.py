@@ -79,8 +79,14 @@ def vsplit(keys, num=2):
     return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
 
 
-def main():
-    args = tyro.cli(Args)
+def main(args: Args):
+    if args.cpu:
+        jax.config.update("jax_platforms", "cpu")
+    os.environ["XLA_FLAGS"] = (
+        f"{os.environ.get('XLA_FLAGS', '')}"
+        " --xla_gpu_deterministic_ops=true"
+        " --xla_gpu_exclude_nondeterministic_ops=true"
+    )
 
     B = args.num_seeds
     seeds = args.seed + jnp.arange(B)
@@ -650,4 +656,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(Args))
