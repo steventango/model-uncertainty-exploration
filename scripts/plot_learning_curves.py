@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Plot learning curves from experiment TensorBoard logs (task_*/config.json layout)."""
 
 import argparse
@@ -70,7 +69,7 @@ try:
     # _statistics imports algorithms as `algo`; patch its reference too.
     if hasattr(_sns_stats, "algo"):
         _sns_stats.algo.bootstrap = _jax_bootstrap
-except Exception:
+except ImportError:
     pass
 
 ENVS = [

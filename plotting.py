@@ -1,13 +1,12 @@
 import os
 
+import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
-import jax
-import jax.numpy as jnp
+
 import ground_truth
-from model_env import reset_weights
-from ppo import make_rollout, unstack_train_state
 from env_config import (
     action_title,
     action_visit_mask,
@@ -17,6 +16,8 @@ from env_config import (
     obs_from_coords,
     visited_coords_from_obs,
 )
+from model_env import reset_weights
+from ppo import make_rollout, unstack_train_state
 
 
 def _contour_levels(vmin, vmax, n=50):

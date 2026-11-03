@@ -1,10 +1,9 @@
 from typing import NamedTuple
 
-from flax import nnx
 import jax
 import jax.numpy as jnp
 import optax
-
+from flax import nnx
 from gymnax.environments import spaces
 
 from networks import ActorCritic
