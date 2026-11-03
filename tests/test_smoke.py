@@ -1,10 +1,14 @@
 """End-to-end smoke tests: each main.py mode runs to completion at toy scale."""
 
+import json
 import math
 import os
 import subprocess
 import sys
+import warnings
+from pathlib import Path
 
+import chex
 import gymnasium
 import jax.numpy as jnp
 import numpy as np
@@ -14,6 +18,9 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 import main
 from offline_data import AREA_INDEX
 from ppo import Transition
+
+# Delete a file (or the directory) to re-record it on the next run.
+GOLDEN_DIR = Path("/tmp/model-uncertainty-exploration-golden")
 
 TINY_PPO = [
     "--ppo.num-envs", "4",
@@ -99,6 +106,25 @@ def _all_scalars(log_dir):
     return out
 
 
+def _check_golden(name, actual):
+    """Compare ``{seed: {tag: [[step, value], ...]}}`` with GOLDEN_DIR/<name>.json."""
+    path = GOLDEN_DIR / f"{name}.json"
+    if not path.exists():
+        GOLDEN_DIR.mkdir(exist_ok=True)
+        path.write_text(json.dumps(actual, indent=1, sort_keys=True) + "\n")
+        warnings.warn(f"recorded golden {path}")
+        return
+    expected = json.loads(path.read_text())
+    actual, expected = (
+        {
+            seed: {tag: np.asarray(points) for tag, points in tags.items()}
+            for seed, tags in d.items()
+        }
+        for d in (actual, expected)
+    )
+    chex.assert_trees_all_close(actual, expected)
+
+
 def _check_outputs(log_dir, *, model, eval_return=True):
     assert (log_dir / "COMPLETE").exists()
     seed_dirs = sorted(log_dir.glob("seed_*"))
@@ -115,13 +141,13 @@ def _check_outputs(log_dir, *, model, eval_return=True):
 
 
 @pytest.mark.parametrize("case", CASES)
-def test_online(monkeypatch, tmp_path, golden, case):
+def test_online(monkeypatch, tmp_path, case):
     argv = CASES[case]
     _run(monkeypatch, tmp_path, argv)
     seed_dirs = _check_outputs(tmp_path, model="--model-free" not in argv)
     num_seeds = int(argv[argv.index("--num-seeds") + 1]) if "--num-seeds" in argv else 1
     assert len(seed_dirs) == num_seeds
-    golden(case, _all_scalars(tmp_path))
+    _check_golden(case, _all_scalars(tmp_path))
 
 
 def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX + 1):
@@ -155,13 +181,13 @@ def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX
     return transitions, action_space, observation_space, ep_len
 
 
-def test_offline(monkeypatch, tmp_path, golden):
+def test_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "load_offline_transitions", lambda _: _fake_plant_dataset()
     )
     _run(monkeypatch, tmp_path, ["--offline", *TINY_PPO, *TINY_ENN])
     _check_outputs(tmp_path, model=True, eval_return=False)
-    golden("offline", _all_scalars(tmp_path))
+    _check_golden("offline", _all_scalars(tmp_path))
 
 
 # classic_plan_every_tenth on Pendulum, cut from 100 plans to 10.
@@ -180,10 +206,10 @@ DETERMINISTIC_XLA = (
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("case", GPU_CASES)
-def test_gpu(tmp_path, golden, case):
+def test_gpu(tmp_path, case):
     env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
     env["XLA_FLAGS"] = f"{env.get('XLA_FLAGS', '')} {DETERMINISTIC_XLA}".strip()
     cmd = [sys.executable, "main.py", "--log-dir", str(tmp_path), *GPU_CASES[case]]
     subprocess.run(cmd, env=env, check=True)
     _check_outputs(tmp_path, model=True)
-    golden(case, _all_scalars(tmp_path))
+    _check_golden(case, _all_scalars(tmp_path))
