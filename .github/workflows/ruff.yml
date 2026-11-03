@@ -13,7 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Use the ruff version locked in uv.lock, the same one `uv run ruff` uses locally.
       - uses: astral-sh/ruff-action@v4.1.0
         with:
           version-file: uv.lock
