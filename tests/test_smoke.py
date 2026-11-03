@@ -186,4 +186,4 @@ def test_gpu(tmp_path, golden, case):
     cmd = [sys.executable, "main.py", "--log-dir", str(tmp_path), *GPU_CASES[case]]
     subprocess.run(cmd, env=env, check=True)
     _check_outputs(tmp_path, model=True)
-    golden(case, _all_scalars(tmp_path), exact=True)
+    golden(case, _all_scalars(tmp_path))

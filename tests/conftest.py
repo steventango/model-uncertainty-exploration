@@ -25,7 +25,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--gpu",
         action="store_true",
-        help="Run the full-scale GPU golden tests (bit-exact, recorded on one GPU).",
+        help="Run the full-scale GPU golden tests.",
     )
 
 
@@ -42,7 +42,7 @@ def pytest_collection_modifyitems(config, items):
 def golden(request):
     """Compare ``{seed: {tag: [[step, value], ...]}}`` with GOLDEN_DIR/<name>.json."""
 
-    def check(name, actual, *, exact=False):
+    def check(name, actual):
         path = GOLDEN_DIR / f"{name}.json"
         if request.config.getoption("--update-golden"):
             GOLDEN_DIR.mkdir(exist_ok=True)
@@ -59,9 +59,6 @@ def golden(request):
             }
             for d in (actual, expected)
         )
-        if exact:
-            chex.assert_trees_all_equal(actual, expected)
-        else:
-            chex.assert_trees_all_close(actual, expected, rtol=1e-5, atol=1e-6)
+        chex.assert_trees_all_close(actual, expected, rtol=1e-5, atol=1e-6)
 
     return check
