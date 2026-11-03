@@ -1,5 +1,3 @@
-"""End-to-end smoke tests: each main.py mode runs to completion at toy scale."""
-
 import json
 import math
 import os
@@ -19,7 +17,6 @@ import main
 from offline_data import AREA_INDEX
 from ppo import Transition
 
-# Delete a file (or the directory) to re-record it on the next run.
 GOLDEN_DIR = Path("/tmp/model-uncertainty-exploration-golden")
 
 TINY_PPO = [
