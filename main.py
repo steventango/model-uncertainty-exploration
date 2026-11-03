@@ -131,6 +131,7 @@ def main(args: Args):
         dataset_size = total_timesteps
 
         num_rollouts = 1
+        key, init_key = vsplit(seed_keys)
         log_prefix = f"plant_{args.dataset.replace('/', '_')}"
         hparams_run = {
             "num_rollouts": num_rollouts,
@@ -238,7 +239,16 @@ def main(args: Args):
                 f" must divide the real steps per rollout ({rollout_steps})"
             )
 
-        seed_keys, policy_keys = vsplit(seed_keys)
+        key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
+        reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
+        obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+
+    if args.model_free:
+        policy_key = init_key
+    else:
+        policy_key, model_key, rngs_key, val_key = vsplit(init_key, 4)
+
+    if not args.offline:
 
         @nnx.vmap(in_axes=0, out_axes=0)
         def _build_rollout_train_state(key):
@@ -249,11 +259,7 @@ def main(args: Args):
                 nnx.Rngs(params=key),
             )
 
-        batched_rollout_train_state = _build_rollout_train_state(policy_keys)
-
-        seed_keys, reset_seed = vsplit(seed_keys)
-        reset_rng = vsplit(reset_seed, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+        batched_rollout_train_state = _build_rollout_train_state(policy_key)
 
         if args.model_free and config["NORMALIZE_ENV"]:
 
@@ -273,11 +279,10 @@ def main(args: Args):
             )
         )
 
-        seed_keys, mock_rng = vsplit(seed_keys)
-        _, traj_batch = _rollout(
-            (batched_rollout_train_state, env_state, obsv, mock_rng)
+        sample = nnx.eval_shape(
+            lambda runner_state: jax.vmap(collate_rollout)(_rollout(runner_state)[1]),
+            (batched_rollout_train_state, env_state, obsv, runner_key),
         )
-        sample = jax.vmap(collate_rollout)(traj_batch)
 
         dataset = jax.tree_util.tree_map(
             lambda x: jnp.zeros(
@@ -294,23 +299,24 @@ def main(args: Args):
 
             return jax.tree_util.tree_map(jax.vmap(append), dataset, traj_batch)
 
-    seed_keys, model_keys = vsplit(seed_keys)
-    models, train_state = make_batched_model(
-        args.model.name,
-        model_config,
-        in_features,
-        obs_dim,
-        out_features,
-        act_dim,
-        model_keys,
-        predict_reward_terminated=predict_reward_terminated,
-    )
-    seed_keys, train_model_seed = vsplit(seed_keys)
-    batched_rngs = make_batched_rngs(train_model_seed)
-    batched_train_model = make_batched_train_model(
-        args.model.name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
-    )
-    batched_val_metrics = validation.make_batched_validation_metrics()
+    if not args.model_free:
+        models, train_state = make_batched_model(
+            args.model.name,
+            model_config,
+            in_features,
+            obs_dim,
+            out_features,
+            act_dim,
+            model_key,
+            predict_reward_terminated=predict_reward_terminated,
+        )
+        batched_rngs = make_batched_rngs(rngs_key)
+        batched_train_model = make_batched_train_model(
+            args.model.name,
+            model_config["UPDATE_STEPS"],
+            model_config["MINIBATCH_SIZE"],
+        )
+        batched_val_metrics = validation.make_batched_validation_metrics()
 
     dt = datetime.now()
     log_dir = (
@@ -401,7 +407,6 @@ def main(args: Args):
         )
     if not args.offline:
         if not args.model_free:
-            seed_keys, val_keys = vsplit(seed_keys)
             log_validation(
                 loggers,
                 batched_val_metrics,
@@ -412,11 +417,10 @@ def main(args: Args):
                 val_true_reward,
                 val_true_terminated,
                 0,
-                val_keys,
+                val_key,
             )
-        seed_keys, runner_seed = vsplit(seed_keys)
-        runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
-        seed_keys, eval_keys = vsplit(seed_keys)
+        runner_state = (batched_rollout_train_state, env_state, obsv, runner_key)
+        key, eval_keys = vsplit(key)
         log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
         eval_policy = batched_rollout_train_state
 
@@ -442,10 +446,12 @@ def main(args: Args):
             # Eval points inside this round: the policy has not been updated yet.
             first = (prev_count // eval_every + 1) * eval_every
             for step in range(first, data_count, eval_every):
-                seed_keys, eval_keys = vsplit(seed_keys)
+                key, eval_keys = vsplit(key)
                 log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
 
+        key, update_key = vsplit(key)
         if not args.model_free:
+            val_keys, plot_seed, unc_seed, ts_seed, train_seed = vsplit(update_key, 5)
             # TRAIN MODEL (B seeds in parallel)
             t0 = time.perf_counter()
             history = batched_train_model(
@@ -458,7 +464,6 @@ def main(args: Args):
                 loggers[b].log_scalar("time/model_train_s", model_train_s, data_count)
 
             if not args.offline:
-                seed_keys, val_keys = vsplit(seed_keys)
                 t0 = time.perf_counter()
                 log_validation(
                     loggers,
@@ -477,8 +482,6 @@ def main(args: Args):
                     loggers[b].log_scalar("time/validation_s", validation_s, data_count)
 
             if not args.offline and args.debug and not is_brax:
-                seed_keys, plot_seed = vsplit(seed_keys)
-                seed_keys, unc_seed = vsplit(seed_keys)
                 t0 = time.perf_counter()
                 # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
                 # are all sliced to seed 0), not all B seeds.
@@ -521,7 +524,6 @@ def main(args: Args):
                     )
 
             # BATCHED PPO TRAIN (B seeds x C configs)
-            seed_keys, ts_seed = vsplit(seed_keys)
             ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
             batched_train_state_ppo = make_batched_train_state(
                 config, model_env, model_env.default_params, ts_keys
@@ -539,7 +541,6 @@ def main(args: Args):
                 model_env_params_b = model_env_params_b.replace(
                     init_obs=dataset.obs, init_weights=weights
                 )
-            seed_keys, train_seed = vsplit(seed_keys)
             train_rng = vsplit(train_seed, num_configs).T  # (B, C)
             t0 = time.perf_counter()
             out = batched_train_jit(
@@ -580,7 +581,7 @@ def main(args: Args):
                     )
 
         else:
-            seed_keys, train_keys = vsplit(seed_keys)
+            train_keys = update_key
             t0 = time.perf_counter()
             _, losses = batched_model_free_train(
                 runner_state[0],
@@ -603,7 +604,7 @@ def main(args: Args):
 
         eval_policy = eval_train_state
         if args.offline or data_count % eval_every == 0 or j == num_rollouts - 1:
-            seed_keys, eval_keys = vsplit(seed_keys)
+            key, eval_keys = vsplit(key)
             t0 = time.perf_counter()
             if not args.offline:
                 log_eval(loggers, batched_eval, eval_train_state, eval_keys, data_count)
@@ -631,7 +632,7 @@ def main(args: Args):
         # Grid points past the last round: the policy has not changed since.
         first = (data_count // eval_every + 1) * eval_every
         for step in range(first, max_steps + 1, eval_every):
-            seed_keys, eval_keys = vsplit(seed_keys)
+            key, eval_keys = vsplit(key)
             log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
 
     if num_rollouts > 0:
