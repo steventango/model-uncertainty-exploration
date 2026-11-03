@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Set up one array task and print MAIN_ARGS for run.sbatch (not user-facing)."""
 
 import sys
