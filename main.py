@@ -14,7 +14,14 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
-from agents import save_checkpoint, seed_slice, vsplit
+from agents import (
+    Data,
+    ModelFreeAgent,
+    make_batched_policy,
+    save_checkpoint,
+    seed_slice,
+    vsplit,
+)
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
@@ -27,8 +34,6 @@ from ppo import (
     make_batched_train,
     make_batched_train_state,
     make_rollout,
-    make_train_state,
-    make_update,
     select_config_train_state,
     unstack_train_state,
 )
@@ -196,33 +201,54 @@ def main(args: Args):
             "NUM_STEPS": env_params.max_steps_in_episode,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
-        if args.model_free and rollout_steps % args.ppo.num_minibatches:
-            raise ValueError(
-                f"--model-free: --ppo.num-minibatches ({args.ppo.num_minibatches})"
-                f" must divide the real steps per rollout ({rollout_steps})"
-            )
 
+    dt = datetime.now()
+    log_dir = (
+        args.log_dir
+        or f"runs/{dt.strftime('%Y%m%d')}/{log_prefix}/{dt.strftime('%H%M%S')}"
+    )
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "config.json"), "w") as _f:
+        json.dump({"env": args.env, "model": args.model.name, "label": args.label}, _f)
+
+    seed_dirs, loggers = [], []
+    for b in range(B):
+        seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
+        logger = ExperimentLogger(seed_dir)
+        args_flat = {
+            k: v
+            for k, v in dataclasses.asdict(args).items()
+            if k not in ("ppo", "model")
+        }
+        args_flat["model"] = args.model.name
+        args_flat["seed"] = int(seeds[b])
+        logger.log_hparams(
+            args=args_flat,
+            **{args.solver: config},
+            model=model_config,
+            run=hparams_run,
+            **hparams_extra,
+        )
+        seed_dirs.append(seed_dir)
+        loggers.append(logger)
+
+    if not args.offline:
         key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
         reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
         obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
 
     if args.model_free:
-        policy_key = init_key
+        agent = ModelFreeAgent(rollout_config, env, env_params, loggers, args.solver)
+        state = agent.init(init_key)
+        batched_rollout_train_state = agent.explore_policy(state)
     else:
         policy_key, model_key, rngs_key, val_key = vsplit(init_key, 4)
 
     if not args.offline:
-
-        @nnx.vmap(in_axes=0, out_axes=0)
-        def _build_rollout_train_state(key):
-            return make_train_state(
-                rollout_config if args.model_free else config,
-                env,
-                env_params,
-                nnx.Rngs(params=key),
+        if not args.model_free:
+            batched_rollout_train_state = make_batched_policy(
+                config, env, env_params, policy_key
             )
-
-        batched_rollout_train_state = _build_rollout_train_state(policy_key)
 
         if args.model_free and config["NORMALIZE_ENV"]:
 
@@ -281,36 +307,6 @@ def main(args: Args):
         )
         batched_val_metrics = validation.make_batched_validation_metrics()
 
-    dt = datetime.now()
-    log_dir = (
-        args.log_dir
-        or f"runs/{dt.strftime('%Y%m%d')}/{log_prefix}/{dt.strftime('%H%M%S')}"
-    )
-    os.makedirs(log_dir, exist_ok=True)
-    with open(os.path.join(log_dir, "config.json"), "w") as _f:
-        json.dump({"env": args.env, "model": args.model.name, "label": args.label}, _f)
-
-    seed_dirs, loggers = [], []
-    for b in range(B):
-        seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
-        logger = ExperimentLogger(seed_dir)
-        args_flat = {
-            k: v
-            for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model")
-        }
-        args_flat["model"] = args.model.name
-        args_flat["seed"] = int(seeds[b])
-        logger.log_hparams(
-            args=args_flat,
-            **{args.solver: config},
-            model=model_config,
-            run=hparams_run,
-            **hparams_extra,
-        )
-        seed_dirs.append(seed_dir)
-        loggers.append(logger)
-
     if args.offline:
         oracle_reward_terminated = True
     # Offline has no real env to reset; "env" falls back to the dataset's
@@ -344,30 +340,6 @@ def main(args: Args):
     batched_train_jit = nnx.jit(
         make_batched_train(model_env, model_env.default_params, config)
     )
-    if args.model_free:
-        online_config = {
-            **rollout_config,
-            "MINIBATCH_SIZE": rollout_config["NUM_STEPS"]
-            * rollout_config["NUM_ENVS"]
-            // rollout_config["NUM_MINIBATCHES"],
-        }
-        ppo_update = make_update(online_config)
-
-        def model_free_train(train_state, traj_batch, dataset, count, rng):
-            _, (total, (value, actor, entropy)) = ppo_update(
-                train_state, traj_batch, rng
-            )
-            losses = {
-                "total": total,
-                "value": value,
-                "actor": actor,
-                "entropy": entropy,
-            }
-            return train_state, jax.tree_util.tree_map(jnp.mean, losses)
-
-        batched_model_free_train = nnx.jit(
-            nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
-        )
     if not args.offline:
         if not args.model_free:
             log_validation(
@@ -544,26 +516,11 @@ def main(args: Args):
                     )
 
         else:
-            train_keys = update_key
-            t0 = time.perf_counter()
-            _, losses = batched_model_free_train(
-                runner_state[0],
-                traj_batch,
-                dataset,
-                jnp.asarray(data_count),
-                train_keys,
+            state = agent.update(
+                state, Data(dataset, data_count, traj_batch, j), update_key
             )
-            jax.block_until_ready(losses)
-            train_s = time.perf_counter() - t0
-            for b in range(B):
-                loggers[b].log_scalar(
-                    f"time/{args.solver}_train_s", train_s, data_count
-                )
-                for name, loss in seed_slice(losses, b).items():
-                    loggers[b].log_scalar(
-                        f"{args.solver}/{name}", float(loss), data_count
-                    )
-            explore_train_state = eval_train_state = runner_state[0]
+            explore_train_state = eval_train_state = agent.explore_policy(state)
+            runner_state = (explore_train_state, *runner_state[1:])
 
         eval_policy = eval_train_state
         if args.offline or data_count % eval_every == 0 or j == num_rollouts - 1:
@@ -601,14 +558,17 @@ def main(args: Args):
     if num_rollouts > 0:
         t0 = time.perf_counter()
         for b in range(B):
-            save_checkpoint(
-                seed_dirs[b],
-                None if args.model_free else models,
-                explore_train_state,
-                eval_train_state,
-                b,
-                args.solver,
-            )
+            if args.model_free:
+                agent.save(state, seed_dirs[b], b)
+            else:
+                save_checkpoint(
+                    seed_dirs[b],
+                    models,
+                    explore_train_state,
+                    eval_train_state,
+                    b,
+                    args.solver,
+                )
         checkpoint_s = time.perf_counter() - t0
         for b in range(B):
             loggers[b].log_scalar("time/checkpoint_s", checkpoint_s, data_count)
