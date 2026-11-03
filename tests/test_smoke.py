@@ -88,10 +88,6 @@ CASES = {
 }
 
 
-def _run(log_dir, args):
-    main.main(dataclasses.replace(args, log_dir=str(log_dir)))
-
-
 def _scalars(seed_dir, tag):
     acc = EventAccumulator(str(seed_dir))
     acc.Reload()
@@ -154,7 +150,7 @@ def _check_outputs(log_dir, *, model, eval_return=True):
 )
 def test_online(tmp_path, case):
     args = CASES[case]
-    _run(tmp_path, args)
+    main.main(dataclasses.replace(args, log_dir=str(tmp_path)))
     assert jax.default_backend() == ("cpu" if args.cpu else "gpu")
     seed_dirs = _check_outputs(tmp_path, model=not args.model_free)
     assert len(seed_dirs) == args.num_seeds
@@ -196,6 +192,10 @@ def test_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "load_offline_transitions", lambda _: _fake_plant_dataset()
     )
-    _run(tmp_path, Args(cpu=True, offline=True, ppo=TINY_PPO, model=TINY_ENN))
+    main.main(
+        Args(
+            cpu=True, offline=True, log_dir=str(tmp_path), ppo=TINY_PPO, model=TINY_ENN
+        )
+    )
     _check_outputs(tmp_path, model=True, eval_return=False)
     _check_golden("offline", _all_scalars(tmp_path))
