@@ -6,7 +6,6 @@ import jax
 import jax.numpy as jnp
 from gymnax.environments import spaces
 
-
 SUPPORTED_ENVS = (
     "Pendulum-v1",
     "MountainCar-v0",

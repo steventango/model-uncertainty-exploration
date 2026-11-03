@@ -5,7 +5,6 @@ import jax.numpy as jnp
 from flax import struct
 from gymnax.environments import environment, spaces
 
-
 _P0, _P_SLOPE, _E_CONST_WH, _HOURS = 3.3, 44.9, 571.6, 12.0
 _EP_LEN = 14.0
 

@@ -138,7 +138,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self,
         key: jax.Array,
         state: ModelEnvState,
-        action: int | float | jax.Array,
+        action: float | jax.Array,
         params: ModelEnvParams | None = None,
     ) -> tuple[
         jax.Array, ModelEnvState, jax.Array, jax.Array, jax.Array, dict[Any, Any]
@@ -186,7 +186,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self,
         key: jax.Array,
         state: ModelEnvState,
-        action: int | float | jax.Array,
+        action: float | jax.Array,
         params: ModelEnvParams,
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         model = params.model

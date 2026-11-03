@@ -1,9 +1,9 @@
 import json
 import shlex
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from itertools import product
 from pathlib import Path
-from typing import Sequence
 
 from slurm.queue import active_task_ids
 
@@ -138,7 +138,7 @@ def tasks_to_submit(
     return to_submit, complete, in_progress
 
 
-def _flag_values(value: str | int | float | tuple) -> list[str]:
+def _flag_values(value: str | float | tuple) -> list[str]:
     """Serialize a scalar or tuple override value to a list of CLI tokens.
 
     A tuple becomes multiple space-separated tokens so tyro reads it as a
@@ -160,7 +160,7 @@ def _flag(dotted_key: str) -> str:
     return f"--{section}.{field.lower().replace('_', '-')}"
 
 
-def _override_tokens(key: str, value: str | int | float | bool | tuple) -> list[str]:
+def _override_tokens(key: str, value: str | float | bool | tuple) -> list[str]:
     """Full CLI tokens for one override: the flag plus any value tokens.
 
     tyro treats bool fields as bare store-true/store-false flags, not
@@ -234,7 +234,7 @@ def sweep(
     predict_reward_terminated: bool | Sequence[bool] = False,
     model: str | Sequence[str] = "enn",
     label: str | Sequence[str] = "",
-    **override_axes: float | int | str | bool | Sequence[float | int | str | bool],
+    **override_axes: float | str | bool | Sequence[float | int | str | bool],
 ) -> tuple[RunConfig, ...]:
     """Build a Cartesian-product grid of RunConfigs.
 
