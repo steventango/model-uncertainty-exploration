@@ -105,7 +105,7 @@ class ENNModel(WorldModel):
         if kind == "eig":
             u = 0.5 * jnp.log1p(loc.var(axis=0) / (scale**2).mean(axis=0))
         else:
-            u = jnp.sqrt(loc.var(axis=0))
+            u = loc.std(axis=0)
         return u.sum(axis=-1) if reduce_output else u
 
 
