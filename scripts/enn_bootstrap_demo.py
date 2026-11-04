@@ -1,9 +1,9 @@
-"""ENN Gaussian bootstrap: fresh c every minibatch (old) vs fixed per-point c_i.
+"""ENN bootstrap: fresh c every minibatch (old) vs fixed per-point c_i.
 
 1-D regression from the GPJax regression tutorial: y = sin(4x) + cos(2x) + N(0, 0.3^2),
 x ~ U(-3, 3). x is fed as ``obs`` and y as the obs delta, so the repo's ENN model and
-train step are used unchanged; ``--fresh-c`` (the old behaviour) only swaps the row ids
-that ``ENNModel.bootstrap_c`` is keyed by for fresh random ids every step.
+train step are used unchanged. The old behaviour (Gaussian, sigma=1, fresh c) only swaps
+the row ids that ``ENNModel.bootstrap_c`` is keyed by for fresh random ids every step.
 
     JAX_PLATFORMS=cpu uv run python scripts/enn_bootstrap_demo.py
 """
@@ -24,7 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import ENNConfig, model_config_dict
 from models.enn import _make_batched_model, _train_step
 
-FIXED, FRESH = "#2a78d6", "#eb6834"
+ARMS = (
+    ("fresh c, gaussian (old)", True, "gaussian", "#eb6834"),
+    ("fixed c_i, gaussian", False, "gaussian", "#2a78d6"),
+    ("fixed c_i, bernoulli", False, "bernoulli", "#1baf7a"),
+)
 
 
 class Data(NamedTuple):
@@ -76,11 +80,13 @@ def make_train(fresh_c, update_steps, minibatch_size):
     return nnx.jit(nnx.vmap(core, in_axes=(0, 0, 0, None, None, 0)))
 
 
-def fit_and_predict(args, n, fresh_c, xtest, seed):
+def fit_and_predict(args, n, fresh_c, bootstrap, xtest, seed):
     keys = jax.random.split(jax.random.key(seed), args.num_seeds * 3).reshape(
         3, args.num_seeds
     )
-    cfg = model_config_dict(ENNConfig(), max_data=n, minibatch_size=args.minibatch)
+    cfg = model_config_dict(
+        ENNConfig(bootstrap=bootstrap), max_data=n, minibatch_size=args.minibatch
+    )
     model, (optimizer, metrics) = _make_batched_model(
         cfg, 1, 1, 1, None, keys[0], False
     )
@@ -112,22 +118,20 @@ def main():
     inside = np.abs(np.asarray(xtest[:, 0])) <= 3.0
     std = {}
     examples = {}
-    for name, fresh in (("fresh c (old)", True), ("fixed c_i", False)):
+    for name, fresh, bootstrap, _ in ARMS:
         for n in args.ns:
-            samples, data = fit_and_predict(args, n, fresh, xtest, seed=n)
+            samples, data = fit_and_predict(args, n, fresh, bootstrap, xtest, seed=n)
             s = samples.std(axis=1)[:, inside].mean(axis=1)
             std[name, n] = s
             print(
-                f"{name:14s} n={n:5d}  in-dist epistemic std {s.mean():.4f} ± {s.std():.4f}"
+                f"{name:24s} n={n:5d}  in-dist epistemic std {s.mean():.4f} ± {s.std():.4f}"
             )
             if n == 100:
                 examples[name] = (samples[0], data)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2), constrained_layout=True)
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4.2), constrained_layout=True)
     x = np.asarray(xtest[:, 0])
-    for ax, (name, (samples, data)), color in zip(
-        axes, examples.items(), (FRESH, FIXED)
-    ):
+    for ax, (name, (samples, data)), (*_, color) in zip(axes, examples.items(), ARMS):
         mu, sd = samples.mean(0), samples.std(0)
         ax.scatter(
             data.obs[:, 0],
@@ -152,9 +156,9 @@ def main():
         ax.set_xlabel("x")
         ax.set_ylim(-3, 3)
         ax.legend(loc="lower left", fontsize=8, frameon=False)
-    ax = axes[2]
+    ax = axes[3]
     ns = np.array(args.ns)
-    for name, color in (("fresh c (old)", FRESH), ("fixed c_i", FIXED)):
+    for name, *_, color in ARMS:
         s = np.stack([std[name, n] for n in ns])
         ax.errorbar(
             ns,
@@ -167,7 +171,7 @@ def main():
             capsize=3,
             label=name,
         )
-    ref = np.stack([std["fixed c_i", n] for n in ns]).mean(1)
+    ref = np.stack([std[ARMS[1][0], n] for n in ns]).mean(1)
     ax.plot(
         ns, ref[0] * np.sqrt(ns[0] / ns), color="#52514e", ls=":", lw=1, label="∝ 1/√n"
     )
