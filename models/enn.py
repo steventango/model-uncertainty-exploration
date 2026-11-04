@@ -14,6 +14,7 @@ class ENNModel(WorldModel):
     def __init__(
         self,
         enn: ENN,
+        bootstrap_key: jax.Array,
         in_features: int,
         obs_dim: int,
         act_dim: int | None = None,
@@ -28,6 +29,7 @@ class ENNModel(WorldModel):
             predict_reward_terminated=predict_reward_terminated,
         )
         self.enn = enn
+        self.bootstrap_key = nnx.Variable(jax.random.key_data(bootstrap_key))
 
     @property
     def index_dim(self):
@@ -45,20 +47,25 @@ class ENNModel(WorldModel):
         y, _ = self.enn.base(x)
         return y
 
+    def bootstrap_c(self, indices):
+        """Fixed unit vectors c_i of dataset rows for the delta, reward and terminated heads.  (3, N, index_dim)"""
+        key = jax.random.wrap_key_data(self.bootstrap_key[...])
+        c = jax.vmap(
+            lambda i: jax.random.normal(
+                jax.random.fold_in(key, i), (3, self.index_dim)
+            ),
+            out_axes=1,
+        )(indices)
+        return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
 
-def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
+
+def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     sigma = 1.0
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
-
-    delta_next_state_c = jax.random.normal(
-        rngs(), shape=(batch.obs.shape[0], model.index_dim)
-    )
-    delta_next_state_c = delta_next_state_c / jnp.linalg.norm(
-        delta_next_state_c, axis=-1, keepdims=True
-    )
+    delta_next_state_c, reward_c, terminated_c = model.bootstrap_c(indices)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
@@ -71,22 +78,12 @@ def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
     delta_next_state_loss = delta_next_state_loss.mean()
 
     if model.predict_reward_terminated:
-        reward_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
         reward_target = model.normalize_reward(batch.reward) + sigma * (
             reward_c * z
         ).sum(axis=-1)
         reward_loss = (logits[..., -2] - reward_target) ** 2
         reward_loss = reward_loss.mean()
 
-        terminated_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        terminated_c = terminated_c / jnp.linalg.norm(
-            terminated_c, axis=-1, keepdims=True
-        )
         p = 0.5
         mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
         terminated_target = batch.terminated.astype(jnp.float32)
@@ -110,9 +107,10 @@ def _train_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    indices,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, rngs)
+    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -129,8 +127,9 @@ def _eval_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    indices,
 ):
-    loss, aux = _loss_fn(model, batch, rngs)
+    loss, aux = _loss_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -159,7 +158,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch)
+        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -190,6 +189,7 @@ def _make_batched_model(
         )
         model = ENNModel(
             enn,
+            jax.random.fold_in(key, 1),
             in_features,
             obs_dim,
             act_dim=act_dim,
