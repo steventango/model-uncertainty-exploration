@@ -55,7 +55,7 @@ class ModelEnvParams:
     env_params: environment.EnvParams
     max_steps_in_episode: int = struct.field(pytree_node=False)
     model: WorldModel | None = None
-    rnd: RND | None = None  # per-seed RND bonus (explore_bonus="rnd")
+    bonus: RND | None = None  # per-seed learned bonus (explore_bonus="rnd")
     alpha: float = 1.0
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
@@ -68,7 +68,7 @@ class ModelEnvParams:
         return self.replace(
             env_params=None,
             model=0,
-            rnd=0,
+            bonus=0,
             alpha=None,
             beta=None,
             init_obs=0,
@@ -81,7 +81,7 @@ class ModelEnvParams:
         return self.replace(
             env_params=None,
             model=None,
-            rnd=None,
+            bonus=None,
             alpha=0,
             beta=0,
             init_obs=None,
@@ -217,7 +217,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         )
         if self.explore_bonus == "rnd":
             # Novelty of the predicted next observation.
-            r_intrinsic = params.rnd(obs)
+            r_intrinsic = params.bonus(obs)
         if self.oracle_reward_terminated:
             if hasattr(self._real_env, "obs_to_reward_terminated"):
                 r_exploit, terminated = self._real_env.obs_to_reward_terminated(

@@ -30,6 +30,18 @@ class Experience(NamedTuple):
     rollout: int
 
 
+class Bonus[S](Protocol):
+    """A learned exploration bonus that an agent trains on its real-env data."""
+
+    def init(self, key: jax.Array) -> S: ...
+
+    def update(
+        self, bonus_state: S, experience: Experience, key: jax.Array
+    ) -> dict[str, jax.Array]:
+        """Train in place; return per-seed metrics to log."""
+        ...
+
+
 class Agent[S](Protocol):
     """Learns from real-env data. All state is batched over a leading seed axis."""
 

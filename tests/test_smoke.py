@@ -84,6 +84,16 @@ CASES = {
         steps_per_rollout=50,
         ppo=TINY_PPO,
     ),
+    "rnd-model-free-cartpole": Args(
+        cpu=True,
+        env="CartPole-v1",
+        model_free=True,
+        explore_bonus="rnd",
+        max_steps=100,
+        steps_per_rollout=50,
+        ppo=TINY_PPO,
+        rnd=RNDConfig(update_steps=10),
+    ),
     "brax-inverted-pendulum": Args(
         cpu=True,
         env="inverted_pendulum",
