@@ -17,6 +17,7 @@ from agents.base import (
     save_checkpoint,
 )
 from batching import seed_slice, vsplit
+from config import RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
 from model_env import ModelEnvironment, ResetSource, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
@@ -72,7 +73,7 @@ class ModelBasedAgent:
         beta: float,
         loggers: list[ExperimentLogger],
         solver: str,
-        rnd_config: Config | None = None,
+        rnd_config: RNDConfig | None = None,
         val_data: ValData | None = None,
         debug: tuple[Env, str, str] | None = None,  # base_env, env name, seed-0 dir
     ):

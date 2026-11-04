@@ -5,6 +5,8 @@ import jax.numpy as jnp
 import optax
 from flax import nnx
 
+from config import RNDConfig
+
 
 class MLP(nnx.Module):
     def __init__(self, in_dim, hidden_dim, out_dim, *, rngs):
@@ -45,13 +47,13 @@ class RND(nnx.Module):
         self.obs_std[...] = jnp.std(obs, axis=0, where=mask) + 1e-8
 
 
-def make_rnd(config, obs_dim, rngs):
-    rnd = RND(obs_dim, config["HIDDEN_DIM"], config["OUT_DIM"], rngs=rngs)
-    optimizer = nnx.Optimizer(rnd.predictor, optax.adam(config["LR"]), wrt=nnx.Param)
+def make_rnd(config: RNDConfig, obs_dim, rngs):
+    rnd = RND(obs_dim, config.hidden_dim, config.out_dim, rngs=rngs)
+    optimizer = nnx.Optimizer(rnd.predictor, optax.adam(config.lr), wrt=nnx.Param)
     return rnd, optimizer
 
 
-def make_train_rnd(config):
+def make_train_rnd(config: RNDConfig):
     """Fit the predictor on next observations sampled from the first ``count`` rows."""
 
     def train(rnd, optimizer, next_obs, count, rng):
@@ -64,12 +66,12 @@ def make_train_rnd(config):
 
         def step(carry, key):
             rnd, optimizer = carry
-            idx = jax.random.randint(key, (config["BATCH_SIZE"],), 0, count)
+            idx = jax.random.randint(key, (config.batch_size,), 0, count)
             loss, grads = nnx.value_and_grad(loss_fn)(rnd.predictor, next_obs[idx])
             optimizer.update(rnd.predictor, grads)
             return (rnd, optimizer), loss
 
-        keys = jax.random.split(rng, config["UPDATE_STEPS"])
+        keys = jax.random.split(rng, config.update_steps)
         _, losses = nnx.scan(step)((rnd, optimizer), keys)
         return losses
 

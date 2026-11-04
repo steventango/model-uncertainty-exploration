@@ -295,11 +295,7 @@ def main(args: Args):
     )
 
     hparams_extra = {}
-    rnd_config = (
-        {k.upper(): v for k, v in dataclasses.asdict(args.rnd).items()}
-        if args.explore_bonus == "rnd"
-        else None
-    )
+    rnd_config = args.rnd if args.explore_bonus == "rnd" else None
     if not args.offline:
         rollout_config = {
             **config,
@@ -340,7 +336,7 @@ def main(args: Args):
             **{args.solver: config},
             model=model_config,
             run=hparams_run,
-            **({"rnd": rnd_config} if rnd_config is not None else {}),
+            **({"rnd": dataclasses.asdict(rnd_config)} if rnd_config else {}),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
