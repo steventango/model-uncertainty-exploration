@@ -19,8 +19,9 @@ class ENNConfig:
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
-    # Predict a distrax distribution (a diagonal Normal over the delta-obs)
-    # trained by NLL, instead of a point estimate. Aleatoric noise is sampled in the model env; the exploration bonus
+    # Predict a distrax distribution (Categorical for one-hot discrete obs, else a
+    # diagonal Normal over the delta-obs) trained by NLL, instead of a point
+    # estimate. Aleatoric noise is sampled in the model env; the exploration bonus
     # stays epistemic-only.
     distribution: bool = False
     min_scale: float = 1e-3
