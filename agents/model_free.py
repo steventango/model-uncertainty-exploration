@@ -48,17 +48,16 @@ class ModelFreeAgent:
         self.env_params = env_params
         self.loggers = loggers
         self.solver = solver
-        ppo_update = make_update(
-            {
-                **config,
-                "MINIBATCH_SIZE": config["NUM_STEPS"]
-                * config["NUM_ENVS"]
-                // config["NUM_MINIBATCHES"],
-            }
-        )
+        self.online_config = {
+            **config,
+            "MINIBATCH_SIZE": config["NUM_STEPS"]
+            * config["NUM_ENVS"]
+            // config["NUM_MINIBATCHES"],
+        }
+        self.ppo_update = make_update(self.online_config)
 
         def train(train_state, traj_batch, rng):
-            _, (total, (value, actor, entropy)) = ppo_update(
+            _, (total, (value, actor, entropy)) = self.ppo_update(
                 train_state, traj_batch, rng
             )
             losses = {
@@ -87,12 +86,15 @@ class ModelFreeAgent:
     ) -> ModelFreeState:
         t0 = time.perf_counter()
         losses = self._train(agent_state.policy, experience.latest, key)
+        self._log_losses(losses, t0, experience.size)
+        return agent_state
+
+    def _log_losses(self, losses: dict[str, jax.Array], t0: float, step: int) -> None:
         jax.block_until_ready(losses)
-        log_time(self.loggers, f"time/{self.solver}_train_s", t0, experience.size)
+        log_time(self.loggers, f"time/{self.solver}_train_s", t0, step)
         for b, logger in enumerate(self.loggers):
             for name, loss in seed_slice(losses, b).items():
-                logger.log_scalar(f"{self.solver}/{name}", float(loss), experience.size)
-        return agent_state
+                logger.log_scalar(f"{self.solver}/{name}", float(loss), step)
 
     def save(self, agent_state: ModelFreeState, seed_dir: str, b: int) -> None:
         save_checkpoint(

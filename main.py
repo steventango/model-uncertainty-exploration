@@ -14,7 +14,7 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
-from agents import Experience, ModelBasedAgent, ModelFreeAgent
+from agents import Experience, ModelBasedAgent, ModelFreeAgent, RNDModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
@@ -344,7 +344,13 @@ def main(args: Args):
         loggers.append(logger)
 
     if args.model_free:
-        agent = ModelFreeAgent(rollout_config, env, env_params, loggers, args.solver)
+        agent = (
+            RNDModelFreeAgent(
+                rollout_config, env, env_params, loggers, args.solver, rnd_config
+            )
+            if rnd_config
+            else ModelFreeAgent(rollout_config, env, env_params, loggers, args.solver)
+        )
     else:
         # Offline has no real env to reset; "env" falls back to the dataset's
         # initial-state distribution ("init").
