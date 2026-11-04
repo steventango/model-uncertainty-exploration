@@ -3,12 +3,10 @@ import json
 import os
 import time
 from datetime import datetime
-from functools import partial
 
 import gymnax
 import jax
 import jax.numpy as jnp
-import orbax.checkpoint as ocp
 import tyro
 from flax import nnx
 from gymnax.environments import spaces
@@ -16,23 +14,16 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
+from agents import Experience, ModelBasedAgent, ModelFreeAgent
+from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
-from logger import ExperimentLogger, log_eval, log_validation
-from model_env import ModelEnvironment, reset_weights
-from models import make_batched_model, make_batched_rngs, make_batched_train_model
+from logger import ExperimentLogger, log_eval, log_time
+from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
-from ppo import (
-    make_batched_train,
-    make_batched_train_state,
-    make_rollout,
-    make_train_state,
-    make_update,
-    select_config_train_state,
-    unstack_train_state,
-)
+from ppo import make_rollout
 from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
 
 
@@ -43,40 +34,143 @@ def _wrap_env(env, discrete):
     return VecEnv(wrapped)
 
 
-def _seed_slice(tree, idx):
-    """Index every leaf of a batched pytree, e.g. pick one seed (or (seed, config))."""
-    return jax.tree_util.tree_map(lambda x: x[idx], tree)
-
-
-def _save_checkpoint(
-    seed_dir, models, explore_train_state, eval_train_state, seed_idx, solver="ppo"
+def run_online(
+    agent,
+    env,
+    env_params,
+    rollout_config,
+    eval_config,
+    loggers,
+    seed_keys,
+    num_rollouts,
+    max_steps,
+    eval_every,
 ):
-    checkpointer = ocp.StandardCheckpointer()
-    abs_seed_dir = os.path.abspath(seed_dir)
+    """Each iteration: act in the real env, add to the buffer, update the agent."""
+    key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
+    reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
+    obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+    agent_state = agent.init(init_key)
 
-    if models is not None:
-        _, model_state = nnx.split(unstack_train_state(models, seed_idx))
-        checkpointer.save(
-            os.path.join(abs_seed_dir, "checkpoint", "model"), model_state
+    if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
+
+        @nnx.jit
+        @nnx.vmap
+        def _init_obs_stats(train_state, obs):
+            normalize_vec_obs = train_state[2]
+            normalize_vec_obs.train()
+            normalize_vec_obs(obs)
+            normalize_vec_obs.eval()
+
+        _init_obs_stats(agent.explore_policy(agent_state), obsv)
+
+    _rollout = nnx.jit(
+        nnx.vmap(
+            make_rollout(rollout_config, env, env_params, training=agent.on_policy)
         )
+    )
+    runner_state = (env_state, obsv, runner_key)
 
-    for tag, batched_ts in [
-        (f"{solver}_explore", explore_train_state),
-        (f"{solver}_eval", eval_train_state),
-    ]:
-        network, _, normalize_vec_obs, _ = unstack_train_state(batched_ts, seed_idx)
-        _, network_state = nnx.split(network)
-        _, obs_norm_state = nnx.split(normalize_vec_obs)
-        base = os.path.join(abs_seed_dir, "checkpoint", tag)
-        checkpointer.save(os.path.join(base, "network"), network_state)
-        checkpointer.save(os.path.join(base, "obs_norm"), obs_norm_state)
+    sample = nnx.eval_shape(
+        lambda policy: jax.vmap(collate_rollout)(_rollout((policy, *runner_state))[1]),
+        agent.explore_policy(agent_state),
+    )
+    buffer = jax.tree_util.tree_map(
+        lambda x: jnp.zeros(
+            (x.shape[0], rollout_config["DATASET_SIZE"]) + x.shape[2:], dtype=x.dtype
+        ),
+        sample,
+    )
+    size = 0
 
-    checkpointer.wait_until_finished()
+    @jax.jit
+    def append(buffer, batch, ptr):
+        def append_one(old, new):
+            return jax.lax.dynamic_update_slice_in_dim(old, new, ptr, axis=0)
+
+        return jax.tree_util.tree_map(jax.vmap(append_one), buffer, batch)
+
+    batched_eval = evaluation.make_batched_evaluate_policy(
+        eval_config,
+        env,
+        env_params,
+        make_rollout(eval_config, env, env_params, training=False),
+    )
+    key, eval_keys = vsplit(key)
+    log_eval(loggers, batched_eval, agent.eval_policy(agent_state), eval_keys, 0)
+    eval_policy = agent.eval_policy(agent_state)
+
+    for rollout in range(num_rollouts):
+        t0 = time.perf_counter()
+        (_, *runner_state), traj_batch = _rollout(
+            (agent.explore_policy(agent_state), *runner_state)
+        )
+        jax.block_until_ready(traj_batch)
+        rollout_s = time.perf_counter() - t0
+
+        collated = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
+        buffer = append(buffer, collated, jnp.asarray(size))
+        for b, logger in enumerate(loggers):
+            logger.log_dataset(seed_slice(collated, b), size)
+        prev_size, size = size, size + collated.obs.shape[1]
+        for logger in loggers:
+            logger.log_scalar("time/rollout_s", rollout_s, size)
+        # Eval points inside this rollout: the policy has not been updated yet.
+        first = (prev_size // eval_every + 1) * eval_every
+        for step in range(first, size, eval_every):
+            key, eval_keys = vsplit(key)
+            log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
+
+        key, update_key = vsplit(key)
+        agent_state = agent.update(
+            agent_state, Experience(buffer, size, traj_batch, rollout), update_key
+        )
+        eval_policy = agent.eval_policy(agent_state)
+
+        if size % eval_every == 0 or rollout == num_rollouts - 1:
+            key, eval_keys = vsplit(key)
+            t0 = time.perf_counter()
+            log_eval(loggers, batched_eval, eval_policy, eval_keys, size)
+            log_time(loggers, "time/eval_s", t0, size)
+
+    # Grid points past the last rollout: the policy has not changed since.
+    first = (size // eval_every + 1) * eval_every
+    for step in range(first, max_steps + 1, eval_every):
+        key, eval_keys = vsplit(key)
+        log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
+
+    return agent_state, size
 
 
-@partial(jax.jit, static_argnums=1)
-def vsplit(keys, num=2):
-    return jax.vmap(lambda k: jax.random.split(k, num), out_axes=1)(keys)
+def run_offline(agent, buffer, loggers, seed_keys, env, env_params, seed_dir, args):
+    """One update on the fixed dataset, then plot seed 0."""
+    key, init_key = vsplit(seed_keys)
+    agent_state = agent.init(init_key)
+    size = buffer.obs.shape[1]
+    key, update_key = vsplit(key)
+    agent_state = agent.update(
+        agent_state, Experience(buffer, size, None, 0), update_key
+    )
+
+    key, eval_keys = vsplit(key)
+    t0 = time.perf_counter()
+    plotting.plot_offline_visualization(
+        agent_state.models,
+        agent_state.explore,
+        agent_state.eval,
+        agent.model_env,
+        agent.ppo_config,
+        env_params.max_steps_in_episode,
+        rng=eval_keys[0],
+        dataset=seed_slice(buffer, 0),
+        env_params=env_params,
+        j=0,
+        run_dir=seed_dir,
+        explore_bonus=args.explore_bonus,
+        reward_fn=env.compute_reward,
+    )
+    log_time(loggers, "time/eval_s", t0, size)
+    return agent_state, size
 
 
 def main(args: Args):
@@ -111,7 +205,7 @@ def main(args: Args):
             max_steps_in_episode=14,
         )
 
-        dataset = jax.tree_util.tree_map(
+        buffer = jax.tree_util.tree_map(
             lambda x: jnp.broadcast_to(x[None], (B,) + x.shape).copy(),
             all_transitions,
         )
@@ -120,24 +214,18 @@ def main(args: Args):
         in_features = obs_dim + action_dim
         out_features = obs_dim
         predict_reward_terminated = False
+        oracle_reward_terminated = True
         discrete = False
 
-        num_steps = 14
         model_minibatch_size = min(N, 256)
-        total_timesteps = N
         # Single source of truth for the dataset buffer size; the RBF feature
         # bank places one center per stored datapoint, so NUM_FEATURES (rbf) is
         # derived from this same value (see model_config_dict).
-        dataset_size = total_timesteps
-
-        num_rollouts = 1
+        dataset_size = N
         log_prefix = f"plant_{args.dataset.replace('/', '_')}"
-        hparams_run = {
-            "num_rollouts": num_rollouts,
-            "N_train": N,
-            "action_dim": action_dim,
-        }
-        hparams_extra = {}
+        hparams_run = {"num_rollouts": 1, "N_train": N, "action_dim": action_dim}
+        val_data = None
+        debug = False
 
     else:
         is_brax = args.env in BRAX_ENVS
@@ -167,23 +255,12 @@ def main(args: Args):
         act_dim = action_space.n if discrete else None
         env = _wrap_env(base_env, discrete)
 
-        env_name = args.env
         if is_brax:
-            (
-                val_obs,
-                val_act,
-                val_true_delta_obs,
-                val_true_reward,
-                val_true_terminated,
-            ) = validation.generate_brax_validation_data(base_env, env_params)
+            val_data = validation.generate_brax_validation_data(base_env, env_params)
         else:
-            (
-                val_obs,
-                val_act,
-                val_true_delta_obs,
-                val_true_reward,
-                val_true_terminated,
-            ) = validation.generate_validation_data(base_env, env_params, env_name)
+            val_data = validation.generate_validation_data(
+                base_env, env_params, args.env
+            )
 
         obs_dim = env.observation_space(env_params).shape[0]
         in_features = obs_dim + action_dim
@@ -193,7 +270,6 @@ def main(args: Args):
         # after every real step.
         rollout_steps = args.steps_per_rollout or env_params.max_steps_in_episode
         eval_every = args.eval_every or rollout_steps
-        num_steps = 10
         # Tied to episode length so plan-every-step does not shrink it to 1.
         model_minibatch_size = env_params.max_steps_in_episode
         max_steps = args.max_steps or (100_000 if is_brax else 1000)
@@ -203,13 +279,13 @@ def main(args: Args):
         # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
         # value (see model_config_dict) to keep the two in lockstep.
         dataset_size = min(10000, total_timesteps)
-        log_prefix = env_name
+        log_prefix = args.env
         hparams_run = {
             "num_rollouts": num_rollouts,
             "discrete": discrete,
             "action_dim": action_dim,
         }
-        hparams_extra = {}
+        debug = args.debug and not is_brax
 
     model_config = model_config_dict(
         args.model, max_data=dataset_size, minibatch_size=model_minibatch_size
@@ -218,6 +294,7 @@ def main(args: Args):
         args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
     )
 
+    hparams_extra = {}
     if not args.offline:
         rollout_config = {
             **config,
@@ -232,85 +309,6 @@ def main(args: Args):
             "NUM_STEPS": env_params.max_steps_in_episode,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
-        if args.model_free and rollout_steps % args.ppo.num_minibatches:
-            raise ValueError(
-                f"--model-free: --ppo.num-minibatches ({args.ppo.num_minibatches})"
-                f" must divide the real steps per rollout ({rollout_steps})"
-            )
-
-        seed_keys, policy_keys = vsplit(seed_keys)
-
-        @nnx.vmap(in_axes=0, out_axes=0)
-        def _build_rollout_train_state(key):
-            return make_train_state(
-                rollout_config if args.model_free else config,
-                env,
-                env_params,
-                nnx.Rngs(params=key),
-            )
-
-        batched_rollout_train_state = _build_rollout_train_state(policy_keys)
-
-        seed_keys, reset_seed = vsplit(seed_keys)
-        reset_rng = vsplit(reset_seed, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
-
-        if args.model_free and config["NORMALIZE_ENV"]:
-
-            @nnx.jit
-            @nnx.vmap
-            def _init_obs_stats(train_state, obs):
-                normalize_vec_obs = train_state[2]
-                normalize_vec_obs.train()
-                normalize_vec_obs(obs)
-                normalize_vec_obs.eval()
-
-            _init_obs_stats(batched_rollout_train_state, obsv)
-
-        _rollout = nnx.jit(
-            nnx.vmap(
-                make_rollout(rollout_config, env, env_params, training=args.model_free)
-            )
-        )
-
-        seed_keys, mock_rng = vsplit(seed_keys)
-        _, traj_batch = _rollout(
-            (batched_rollout_train_state, env_state, obsv, mock_rng)
-        )
-        sample = jax.vmap(collate_rollout)(traj_batch)
-
-        dataset = jax.tree_util.tree_map(
-            lambda x: jnp.zeros(
-                (B, rollout_config["DATASET_SIZE"]) + x.shape[2:], dtype=x.dtype
-            ),
-            sample,
-        )
-        data_count = 0
-
-        @jax.jit
-        def append_dataset(dataset, traj_batch, ptr):
-            def append(old, new):
-                return jax.lax.dynamic_update_slice_in_dim(old, new, ptr, axis=0)
-
-            return jax.tree_util.tree_map(jax.vmap(append), dataset, traj_batch)
-
-    seed_keys, model_keys = vsplit(seed_keys)
-    models, train_state = make_batched_model(
-        args.model.name,
-        model_config,
-        in_features,
-        obs_dim,
-        out_features,
-        act_dim,
-        model_keys,
-        predict_reward_terminated=predict_reward_terminated,
-    )
-    seed_keys, train_model_seed = vsplit(seed_keys)
-    batched_rngs = make_batched_rngs(train_model_seed)
-    batched_train_model = make_batched_train_model(
-        args.model.name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
-    )
-    batched_val_metrics = validation.make_batched_validation_metrics()
 
     dt = datetime.now()
     log_dir = (
@@ -342,312 +340,65 @@ def main(args: Args):
         seed_dirs.append(seed_dir)
         loggers.append(logger)
 
-    if args.offline:
-        oracle_reward_terminated = True
-    # Offline has no real env to reset; "env" falls back to the dataset's
-    # initial-state distribution ("init").
-    reset_source = (
-        "init" if args.offline and args.reset_source == "env" else args.reset_source
-    )
-    model_env = ModelEnvironment(
-        env,
-        env_params,
-        prediction_mode=args.model_env_mode,
-        explore_bonus=args.explore_bonus,
-        oracle_reward_terminated=oracle_reward_terminated,
-        reset_source=reset_source,
-        max_steps_in_episode=args.rollout_length,
-        uncertainty_threshold=args.uncertainty_threshold,
-    )
-    if not args.offline:
-        batched_eval = evaluation.make_batched_evaluate_policy(
-            eval_config,
+    if args.model_free:
+        agent = ModelFreeAgent(rollout_config, env, env_params, loggers, args.solver)
+    else:
+        # Offline has no real env to reset; "env" falls back to the dataset's
+        # initial-state distribution ("init").
+        reset_source = (
+            "init" if args.offline and args.reset_source == "env" else args.reset_source
+        )
+        model_env = ModelEnvironment(
             env,
             env_params,
-            make_rollout(eval_config, env, env_params, training=False),
+            prediction_mode=args.model_env_mode,
+            explore_bonus=args.explore_bonus,
+            oracle_reward_terminated=oracle_reward_terminated,
+            reset_source=reset_source,
+            max_steps_in_episode=args.rollout_length,
+            uncertainty_threshold=args.uncertainty_threshold,
         )
-    model_env = _wrap_env(model_env, discrete)
-
-    EXPLORE, EVAL = 0, 1
-    alphas = jnp.array([args.alpha, 1.0])
-    betas = jnp.array([args.beta, 0.0])
-    num_configs = alphas.shape[0]
-    batched_train_jit = nnx.jit(
-        make_batched_train(model_env, model_env.default_params, config)
-    )
-    if args.model_free:
-        online_config = {
-            **rollout_config,
-            "MINIBATCH_SIZE": rollout_config["NUM_STEPS"]
-            * rollout_config["NUM_ENVS"]
-            // rollout_config["NUM_MINIBATCHES"],
-        }
-        ppo_update = make_update(online_config)
-
-        def model_free_train(train_state, traj_batch, dataset, count, rng):
-            _, (total, (value, actor, entropy)) = ppo_update(
-                train_state, traj_batch, rng
-            )
-            losses = {
-                "total": total,
-                "value": value,
-                "actor": actor,
-                "entropy": entropy,
-            }
-            return train_state, jax.tree_util.tree_map(jnp.mean, losses)
-
-        batched_model_free_train = nnx.jit(
-            nnx.vmap(model_free_train, in_axes=(0, 0, 0, None, 0))
+        agent = ModelBasedAgent(
+            model_name=args.model.name,
+            model_config=model_config,
+            model_dims=(in_features, obs_dim, out_features, act_dim),
+            predict_reward_terminated=predict_reward_terminated,
+            ppo_config=config,
+            env=env,
+            env_params=env_params,
+            model_env=_wrap_env(model_env, discrete),
+            reset_source=reset_source,
+            alpha=args.alpha,
+            beta=args.beta,
+            loggers=loggers,
+            solver=args.solver,
+            val_data=val_data,
+            debug=(base_env, args.env, seed_dirs[0]) if debug else None,
         )
-    if not args.offline:
-        if not args.model_free:
-            seed_keys, val_keys = vsplit(seed_keys)
-            log_validation(
-                loggers,
-                batched_val_metrics,
-                models,
-                val_obs,
-                val_act,
-                val_true_delta_obs,
-                val_true_reward,
-                val_true_terminated,
-                0,
-                val_keys,
-            )
-        seed_keys, runner_seed = vsplit(seed_keys)
-        runner_state = (batched_rollout_train_state, env_state, obsv, runner_seed)
-        seed_keys, eval_keys = vsplit(seed_keys)
-        log_eval(loggers, batched_eval, batched_rollout_train_state, eval_keys, 0)
-        eval_policy = batched_rollout_train_state
 
     if args.offline:
-        data_count = N
+        agent_state, size = run_offline(
+            agent, buffer, loggers, seed_keys, env, env_params, seed_dirs[0], args
+        )
+    else:
+        agent_state, size = run_online(
+            agent,
+            env,
+            env_params,
+            rollout_config,
+            eval_config,
+            loggers,
+            seed_keys,
+            num_rollouts,
+            max_steps,
+            eval_every,
+        )
 
-    for j in range(num_rollouts):
-        if not args.offline:
-            # ROLLOUT (B seeds in parallel)
-            t0 = time.perf_counter()
-            runner_state, traj_batch = _rollout(runner_state)
-            jax.block_until_ready(traj_batch)
-            rollout_s = time.perf_counter() - t0
-
-            # UPDATE DATASET
-            collated = jax.vmap(collate_rollout)(traj_batch)  # (B, T*E, ...)
-            dataset = append_dataset(dataset, collated, jnp.asarray(data_count))
-            for b in range(B):
-                loggers[b].log_dataset(_seed_slice(collated, b), data_count)
-            prev_count, data_count = data_count, data_count + collated.obs.shape[1]
-            for b in range(B):
-                loggers[b].log_scalar("time/rollout_s", rollout_s, data_count)
-            # Eval points inside this round: the policy has not been updated yet.
-            first = (prev_count // eval_every + 1) * eval_every
-            for step in range(first, data_count, eval_every):
-                seed_keys, eval_keys = vsplit(seed_keys)
-                log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
-
-        if not args.model_free:
-            # TRAIN MODEL (B seeds in parallel)
-            t0 = time.perf_counter()
-            history = batched_train_model(
-                models, train_state, dataset, jnp.asarray(data_count), batched_rngs
-            )
-            jax.block_until_ready(history)
-            model_train_s = time.perf_counter() - t0
-            for b in range(B):
-                loggers[b].log_loss_history(_seed_slice(history, b), j)
-                loggers[b].log_scalar("time/model_train_s", model_train_s, data_count)
-
-            if not args.offline:
-                seed_keys, val_keys = vsplit(seed_keys)
-                t0 = time.perf_counter()
-                log_validation(
-                    loggers,
-                    batched_val_metrics,
-                    models,
-                    val_obs,
-                    val_act,
-                    val_true_delta_obs,
-                    val_true_reward,
-                    val_true_terminated,
-                    data_count,
-                    val_keys,
-                )
-                validation_s = time.perf_counter() - t0
-                for b in range(B):
-                    loggers[b].log_scalar("time/validation_s", validation_s, data_count)
-
-            if not args.offline and args.debug and not is_brax:
-                seed_keys, plot_seed = vsplit(seed_keys)
-                seed_keys, unc_seed = vsplit(seed_keys)
-                t0 = time.perf_counter()
-                # DEBUG-only diagnostic: plots seed 0 alone (models/dataset/dir
-                # are all sliced to seed 0), not all B seeds.
-                validation.evaluate_validation(
-                    unstack_train_state(models, 0),
-                    base_env,
-                    env_params,
-                    env_name,
-                    val_obs,
-                    val_act,
-                    val_true_delta_obs,
-                    val_true_reward,
-                    val_true_terminated,
-                    _seed_slice(dataset, 0),
-                    data_count,
-                    plot_seed[0],
-                    j,
-                    seed_dirs[0],
-                    plot=True,
-                )
-                plotting.evaluate_and_plot_uncertainty(
-                    unstack_train_state(models, 0),
-                    base_env,
-                    env_params,
-                    env_name,
-                    unc_seed[0],
-                    _seed_slice(dataset, 0),
-                    data_count,
-                    j,
-                    seed_dirs[0],
-                )
-                # NOTE: this wraps evaluate_validation (eval compute) AND the
-                # uncertainty plotting, so the metric reflects eval + plot time.
-                validation_eval_plot_s = time.perf_counter() - t0
-                for b in range(B):
-                    loggers[b].log_scalar(
-                        "time/validation_eval_plot_s",
-                        validation_eval_plot_s,
-                        data_count,
-                    )
-
-            # BATCHED PPO TRAIN (B seeds x C configs)
-            seed_keys, ts_seed = vsplit(seed_keys)
-            ts_keys = vsplit(ts_seed, num_configs).T  # (B, C)
-            batched_train_state_ppo = make_batched_train_state(
-                config, model_env, model_env.default_params, ts_keys
-            )
-            # model varies per seed (B axis); alpha/beta vary per config (C axis).
-            model_env_params_b = model_env.default_params.replace(
-                model=models, alpha=alphas, beta=betas
-            )
-            if reset_source != "env":
-                # Per-seed buffer + reset sampling weights (uniform over the full
-                # buffer for "buffer", over episode-start rows for "init").
-                weights = reset_weights(
-                    dataset.terminated, dataset.truncated, data_count, reset_source
-                )
-                model_env_params_b = model_env_params_b.replace(
-                    init_obs=dataset.obs, init_weights=weights
-                )
-            seed_keys, train_seed = vsplit(seed_keys)
-            train_rng = vsplit(train_seed, num_configs).T  # (B, C)
-            t0 = time.perf_counter()
-            out = batched_train_jit(
-                batched_train_state_ppo, model_env_params_b, train_rng
-            )
-            jax.block_until_ready(out)
-            ppo_train_s = time.perf_counter() - t0
-            for b in range(B):
-                loggers[b].log_scalar(
-                    f"time/{args.solver}_train_s", ppo_train_s, data_count
-                )
-            batched_out_train_state = out["runner_state"][0]
-            explore_train_state = select_config_train_state(
-                batched_out_train_state, EXPLORE
-            )
-            eval_train_state = select_config_train_state(batched_out_train_state, EVAL)
-
-            if not args.offline:
-                runner_state = (
-                    explore_train_state,
-                    runner_state[1],
-                    runner_state[2],
-                    runner_state[3],
-                )
-
-            for b in range(B):
-                for tag, index in (
-                    (f"{args.solver}/explore_return", EXPLORE),
-                    (f"{args.solver}/eval_return", EVAL),
-                ):
-                    loggers[b].log_ppo_returns(
-                        _seed_slice(out["metrics"], (b, index)),
-                        tag,
-                        j,
-                        config["NUM_ENVS"],
-                        config["NUM_STEPS"],
-                        int(config["TOTAL_TIMESTEPS"]),
-                    )
-
-        else:
-            seed_keys, train_keys = vsplit(seed_keys)
-            t0 = time.perf_counter()
-            _, losses = batched_model_free_train(
-                runner_state[0],
-                traj_batch,
-                dataset,
-                jnp.asarray(data_count),
-                train_keys,
-            )
-            jax.block_until_ready(losses)
-            train_s = time.perf_counter() - t0
-            for b in range(B):
-                loggers[b].log_scalar(
-                    f"time/{args.solver}_train_s", train_s, data_count
-                )
-                for name, loss in _seed_slice(losses, b).items():
-                    loggers[b].log_scalar(
-                        f"{args.solver}/{name}", float(loss), data_count
-                    )
-            explore_train_state = eval_train_state = runner_state[0]
-
-        eval_policy = eval_train_state
-        if args.offline or data_count % eval_every == 0 or j == num_rollouts - 1:
-            seed_keys, eval_keys = vsplit(seed_keys)
-            t0 = time.perf_counter()
-            if not args.offline:
-                log_eval(loggers, batched_eval, eval_train_state, eval_keys, data_count)
-            else:
-                plotting.plot_offline_visualization(
-                    models,
-                    explore_train_state,
-                    eval_train_state,
-                    model_env,
-                    config,
-                    num_steps,
-                    rng=eval_keys[0],
-                    dataset=_seed_slice(dataset, 0),
-                    env_params=env_params,
-                    j=j,
-                    run_dir=seed_dirs[0],
-                    explore_bonus=args.explore_bonus,
-                    reward_fn=env.compute_reward,
-                )
-            eval_s = time.perf_counter() - t0
-            for b in range(B):
-                loggers[b].log_scalar("time/eval_s", eval_s, data_count)
-
-    if not args.offline:
-        # Grid points past the last round: the policy has not changed since.
-        first = (data_count // eval_every + 1) * eval_every
-        for step in range(first, max_steps + 1, eval_every):
-            seed_keys, eval_keys = vsplit(seed_keys)
-            log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
-
-    if num_rollouts > 0:
+    if args.offline or num_rollouts > 0:
         t0 = time.perf_counter()
         for b in range(B):
-            _save_checkpoint(
-                seed_dirs[b],
-                None if args.model_free else models,
-                explore_train_state,
-                eval_train_state,
-                b,
-                args.solver,
-            )
-        checkpoint_s = time.perf_counter() - t0
-        for b in range(B):
-            loggers[b].log_scalar("time/checkpoint_s", checkpoint_s, data_count)
+            agent.save(agent_state, seed_dirs[b], b)
+        log_time(loggers, "time/checkpoint_s", t0, size)
 
     for logger in loggers:
         logger.close()
