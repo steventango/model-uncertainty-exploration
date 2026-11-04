@@ -17,6 +17,7 @@ from agents.base import (
     save_checkpoint,
 )
 from batching import seed_slice, vsplit
+from config import RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
 from model_env import ModelEnvironment, ResetSource, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
@@ -27,6 +28,7 @@ from ppo import (
     select_config_train_state,
     unstack_train_state,
 )
+from rnd import RND, make_rnd, make_train_rnd
 
 # obs, act, true delta obs, true reward, true terminated
 ValData = tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]
@@ -40,6 +42,8 @@ class ModelBasedState(NamedTuple):
     rngs: nnx.Rngs
     explore: PolicyState
     eval: PolicyState
+    rnd: RND | None = None  # explore_bonus="rnd"
+    rnd_optimizer: nnx.Optimizer | None = None
 
 
 class ModelBasedAgent:
@@ -70,6 +74,7 @@ class ModelBasedAgent:
         beta: float,
         loggers: list[ExperimentLogger],
         solver: str,
+        rnd_config: RNDConfig | None = None,
         val_data: ValData | None = None,
         debug: tuple[Env, str, str] | None = None,  # base_env, env name, seed-0 dir
     ):
@@ -87,18 +92,23 @@ class ModelBasedAgent:
         self.betas = jnp.array([beta, 0.0])
         self.loggers = loggers
         self.solver = solver
+        self.rnd_config = rnd_config
         self.val_data = val_data
         self.debug = debug
         self._train_model = make_batched_train_model(
             model_name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
         )
         self._val_metrics = validation.make_batched_validation_metrics()
+        if rnd_config is not None:
+            self._train_rnd = nnx.jit(
+                nnx.vmap(make_train_rnd(rnd_config), in_axes=(0, 0, 0, None, 0))
+            )
         self._train_ppo = nnx.jit(
             make_batched_train(model_env, model_env.default_params, ppo_config)
         )
 
     def init(self, key: jax.Array) -> ModelBasedState:
-        policy_key, model_key, rngs_key, val_key = vsplit(key, 4)
+        policy_key, model_key, rngs_key, val_key, rnd_key = vsplit(key, 5)
         policy = make_batched_policy(
             self.ppo_config, self.env, self.env_params, policy_key
         )
@@ -115,8 +125,23 @@ class ModelBasedAgent:
             log_validation(
                 self.loggers, self._val_metrics, models, *self.val_data, 0, val_key
             )
+        rnd = rnd_optimizer = None
+        if self.rnd_config is not None:
+            obs_dim = self.model_dims[1]
+
+            @nnx.vmap
+            def build_rnd(key):
+                return make_rnd(self.rnd_config, obs_dim, nnx.Rngs(params=key))
+
+            rnd, rnd_optimizer = build_rnd(rnd_key)
         return ModelBasedState(
-            models, model_train_state, make_batched_rngs(rngs_key), policy, policy
+            models,
+            model_train_state,
+            make_batched_rngs(rngs_key),
+            policy,
+            policy,
+            rnd,
+            rnd_optimizer,
         )
 
     def explore_policy(self, agent_state: ModelBasedState) -> PolicyState:
@@ -128,7 +153,7 @@ class ModelBasedAgent:
     def update(
         self, agent_state: ModelBasedState, experience: Experience, key: jax.Array
     ) -> ModelBasedState:
-        val_keys, plot_seed, unc_seed, ts_seed, train_seed = vsplit(key, 5)
+        val_keys, plot_seed, unc_seed, ts_seed, train_seed, rnd_key = vsplit(key, 6)
         step = experience.size
 
         t0 = time.perf_counter()
@@ -188,6 +213,17 @@ class ModelBasedAgent:
             )
             log_time(self.loggers, "time/validation_eval_plot_s", t0, step)
 
+        if self.rnd_config is not None:
+            rnd_losses = self._train_rnd(
+                agent_state.rnd,
+                agent_state.rnd_optimizer,
+                experience.buffer.info["next_obs"],
+                jnp.asarray(experience.size),
+                rnd_key,
+            )
+            for b, logger in enumerate(self.loggers):
+                logger.log_scalar("rnd/loss", float(rnd_losses[b, -1]), step)
+
         num_configs = self.alphas.shape[0]
         train_states = make_batched_train_state(
             self.ppo_config,
@@ -197,7 +233,10 @@ class ModelBasedAgent:
         )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         params = self.model_env.default_params.replace(
-            model=agent_state.models, alpha=self.alphas, beta=self.betas
+            model=agent_state.models,
+            rnd=agent_state.rnd,
+            alpha=self.alphas,
+            beta=self.betas,
         )
         if self.reset_source != "env":
             weights = reset_weights(

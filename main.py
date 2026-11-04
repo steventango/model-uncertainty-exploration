@@ -28,14 +28,6 @@ from ppo import make_rollout
 from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
 
 
-def _model_head(model_args, base_env):
-    """Dynamics-model output head: point estimate unless the model opts into a
-    distribution, then Categorical for one-hot discrete obs and Normal otherwise."""
-    if not getattr(model_args, "distribution", False):
-        return "deterministic"
-    return "categorical" if getattr(base_env, "discrete_obs", False) else "normal"
-
-
 def _wrap_env(env, discrete):
     wrapped = LogWrapper(env)
     if not discrete:
@@ -221,7 +213,9 @@ def main(args: Args):
 
         obs_dim = 1
         in_features = obs_dim + action_dim
-        head = _model_head(args.model, None)
+        head = getattr(args.model, "head", "deterministic")
+        if head == "categorical":
+            raise ValueError("--model.head categorical needs one-hot discrete obs")
         out_features = head_out_features(head, obs_dim, False)
         predict_reward_terminated = False
         oracle_reward_terminated = True
@@ -274,7 +268,9 @@ def main(args: Args):
 
         obs_dim = env.observation_space(env_params).shape[0]
         in_features = obs_dim + action_dim
-        head = _model_head(args.model, base_env)
+        head = getattr(args.model, "head", "deterministic")
+        if head == "categorical" and not getattr(base_env, "discrete_obs", False):
+            raise ValueError("--model.head categorical needs one-hot discrete obs")
         out_features = head_out_features(head, obs_dim, predict_reward_terminated)
 
         # Real-env steps between re-plans: one episode by default, 1 to re-plan
@@ -306,6 +302,7 @@ def main(args: Args):
     )
 
     hparams_extra = {}
+    rnd_config = args.rnd if args.explore_bonus == "rnd" else None
     if not args.offline:
         rollout_config = {
             **config,
@@ -337,7 +334,7 @@ def main(args: Args):
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model")
+            if k not in ("ppo", "model", "rnd")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])
@@ -346,6 +343,7 @@ def main(args: Args):
             **{args.solver: config},
             model=model_config,
             run=hparams_run,
+            **({"rnd": dataclasses.asdict(rnd_config)} if rnd_config else {}),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
@@ -384,6 +382,7 @@ def main(args: Args):
             beta=args.beta,
             loggers=loggers,
             solver=args.solver,
+            rnd_config=rnd_config,
             val_data=val_data,
             debug=(base_env, args.env, seed_dirs[0]) if debug else None,
         )

@@ -19,11 +19,7 @@ class ENNConfig:
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
-    # Predict a distrax distribution (Categorical for one-hot discrete obs, else a
-    # diagonal Normal over the delta-obs) trained by NLL, instead of a point
-    # estimate. Aleatoric noise is sampled in the model env; the exploration bonus
-    # stays epistemic-only.
-    distribution: bool = False
+    head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
     min_scale: float = 1e-3
     # Scale of the epinet's fixed random prior function. None picks the head's
     # default (10 for categorical logits, else 1; see models/enn.py).
@@ -72,6 +68,17 @@ class PPOConfig:
     debug: bool = False
 
 
+@dataclass(frozen=True)
+class RNDConfig:
+    """Random Network Distillation bonus (--explore-bonus rnd)."""
+
+    lr: float = 1e-3
+    hidden_dim: int = 64
+    out_dim: int = 32
+    batch_size: int = 256
+    update_steps: int = 100
+
+
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
@@ -88,7 +95,7 @@ class Args:
     solver: Literal["ppo"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
-    explore_bonus: Literal["std", "eig"] = "eig"
+    explore_bonus: Literal["std", "eig", "rnd"] = "eig"
     predict_reward_terminated: bool = False
     reset_source: Literal["env", "buffer", "init"] = "env"
     rollout_length: int | None = None
@@ -103,11 +110,14 @@ class Args:
     log_dir: str | None = None
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
+    rnd: RNDConfig = field(default_factory=RNDConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
 
     def __post_init__(self):
         if self.model_free and self.offline:
             raise ValueError("--model-free needs an online env")
+        if self.model_free and self.explore_bonus == "rnd":
+            raise ValueError("--explore-bonus rnd is a model-env bonus")
 
 
 def candidate_configs(m):

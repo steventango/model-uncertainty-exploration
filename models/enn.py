@@ -14,7 +14,7 @@ class ENNModel(WorldModel):
 
     ``head`` selects the output:
       deterministic: point estimate of the normalized delta-obs (+ reward/terminated).
-      normal: diagonal Gaussian over the normalized delta-obs (aleatoric noise).
+      gaussian: diagonal Gaussian over the normalized delta-obs (aleatoric noise).
       categorical: distribution over the next discrete state (one-hot obs).
     For the distributional heads each epistemic index z yields a full predictive
     distribution; exploration uses only the disagreement across z (epistemic).
@@ -59,10 +59,10 @@ class ENNModel(WorldModel):
     def predict_mean(self, x):
         """Expected normalized delta-obs from the base network for a single input.
 
-        normal: the Gaussian loc. categorical: E[one_hot(s')] - obs = probs - obs.
+        gaussian: the Gaussian loc. categorical: E[one_hot(s')] - obs = probs - obs.
         """
         y, _ = self.enn.base(x)
-        if self.head == "normal":
+        if self.head == "gaussian":
             return y[..., : self.obs_dim]
         if self.head == "categorical":
             return jax.nn.softmax(y, axis=-1) - self._obs(x)
@@ -81,7 +81,7 @@ class ENNModel(WorldModel):
 
     def dist_from_output(self, y) -> distrax.Distribution:
         """Raw network output → distrax predictive distribution."""
-        if self.head == "normal":
+        if self.head == "gaussian":
             return distrax.MultivariateNormalDiag(*self._loc_scale(y))
         if self.head == "categorical":
             return distrax.Categorical(logits=y)
@@ -163,7 +163,7 @@ def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
     y = model.batch_predict_sample(x, z)
     target = model._targets(batch.obs, batch.info["next_obs"])
     proj = _projections(model, batch.obs.shape[0], z, rngs)
-    if model.head == "normal":
+    if model.head == "gaussian":
         # ENN target perturbation at the observation-noise level (predicted σ).
         loc, scale = model._loc_scale(y)
         target = target + jax.lax.stop_gradient(scale) * proj[:, None]
@@ -325,14 +325,14 @@ def _train_model(
 # so 1 matches. Categorical logits are unbounded under cross-entropy: on
 # deterministic transitions the base learns margins of ~5-10 that transfer to
 # unseen states through shared weights, so an O(1) prior leaves MI ~0 there.
-_DEFAULT_PRIOR_SCALE = {"deterministic": 1.0, "normal": 1.0, "categorical": 10.0}
+_DEFAULT_PRIOR_SCALE = {"deterministic": 1.0, "gaussian": 1.0, "categorical": 10.0}
 
 # Default λ of the (λ/N)·‖θ‖² MAP penalty per head. Without it, cross-entropy
 # training collapses the categorical posterior after ~1 visit (MI drops >90%),
 # more so the longer it trains. λ=1 tracks a Dirichlet posterior's decay with
 # visit counts on RiverSwim and is insensitive to training length. Other heads
 # keep their previous (unregularized) objective.
-_DEFAULT_L2_REG = {"deterministic": 0.0, "normal": 0.0, "categorical": 1.0}
+_DEFAULT_L2_REG = {"deterministic": 0.0, "gaussian": 0.0, "categorical": 1.0}
 
 
 def _head_default(defaults, configured, head):

@@ -13,7 +13,7 @@ import pytest
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 import main
-from config import Args, BLRConfig, ENNConfig, PPOConfig
+from config import Args, BLRConfig, ENNConfig, PPOConfig, RNDConfig
 from offline_data import AREA_INDEX
 from ppo import Transition
 
@@ -66,12 +66,22 @@ CASES = {
         ppo=TINY_PPO,
         model=TINY_ENN,
     ),
-    "enn-normal-pendulum": Args(
+    "enn-gaussian-pendulum": Args(
         cpu=True,
         env="Pendulum-v1",
         max_steps=400,
         ppo=TINY_PPO,
-        model=ENNConfig(update_steps=10, hidden_dim=16, distribution=True),
+        model=ENNConfig(update_steps=10, hidden_dim=16, head="gaussian"),
+    ),
+    "rnd-pendulum-2seeds": Args(
+        cpu=True,
+        env="Pendulum-v1",
+        num_seeds=2,
+        max_steps=400,
+        explore_bonus="rnd",
+        ppo=TINY_PPO,
+        rnd=RNDConfig(update_steps=10),
+        model=TINY_ENN,
     ),
     "model-free-cartpole": Args(
         cpu=True,
