@@ -30,6 +30,7 @@ class ENNModel(WorldModel):
         predict_reward_terminated: bool = True,
         head: str = "deterministic",
         min_scale: float = 1e-3,
+        l2_reg: float = 0.0,
     ):
         super().__init__(
             in_features=in_features,
@@ -41,6 +42,7 @@ class ENNModel(WorldModel):
         head_out_features(head, obs_dim, predict_reward_terminated)  # validates
         self.head = head
         self.min_scale = min_scale
+        self.l2_reg = l2_reg
         self.enn = enn
 
     @property
@@ -173,10 +175,27 @@ def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
     return (nll * mask).sum() / jnp.maximum(mask.sum(), 1.0)
 
 
-def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
+_TRAINABLE = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
+
+
+def _l2_penalty(model: ENNModel, n_data):
+    """(λ/N)·‖θ‖² over the trainable (non-prior) parameters.
+
+    With the per-datapoint *mean* loss this is the MAP objective
+    Σ_i ℓ_i + λ‖θ‖² divided by N: k samples at an input are weighed against a
+    fixed prior strength λ regardless of the dataset size, so evidence (and
+    hence epistemic uncertainty) scales with visit counts. Adam's normalized
+    steps preserve this objective's stationary points, unlike AdamW's
+    decoupled decay, which bounds weights at ~1/wd irrespective of the data.
+    """
+    sq = sum(jnp.sum(p**2) for p in jax.tree.leaves(nnx.state(model, _TRAINABLE)))
+    return model.l2_reg * sq / jnp.maximum(n_data, 1)
+
+
+def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs, n_data):
     if model.head != "deterministic":
         nll = _distribution_loss(model, batch, rngs)
-        return nll, (nll, jnp.zeros(()), jnp.zeros(()))
+        return nll + _l2_penalty(model, n_data), (nll, jnp.zeros(()), jnp.zeros(()))
     sigma = 1.0
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
@@ -230,6 +249,7 @@ def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
         terminated_loss = jnp.zeros(())
 
     loss = delta_next_state_loss + reward_loss + terminated_loss
+    loss = loss + _l2_penalty(model, n_data)
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
 
 
@@ -240,9 +260,10 @@ def _train_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    n_data,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, rngs)
+    (loss, aux), grads = grad_fn(model, batch, rngs, n_data)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -259,8 +280,9 @@ def _eval_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    n_data,
 ):
-    loss, aux = _loss_fn(model, batch, rngs)
+    loss, aux = _loss_fn(model, batch, rngs, n_data)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -289,7 +311,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch)
+        _train_step(model, optimizer, metrics, rngs, minibatch, pointer)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -305,9 +327,16 @@ def _train_model(
 # unseen states through shared weights, so an O(1) prior leaves MI ~0 there.
 _DEFAULT_PRIOR_SCALE = {"deterministic": 1.0, "normal": 1.0, "categorical": 10.0}
 
+# Default λ of the (λ/N)·‖θ‖² MAP penalty per head. Without it, cross-entropy
+# training collapses the categorical posterior after ~1 visit (MI drops >90%),
+# more so the longer it trains. λ=1 tracks a Dirichlet posterior's decay with
+# visit counts on RiverSwim and is insensitive to training length. Other heads
+# keep their previous (unregularized) objective.
+_DEFAULT_L2_REG = {"deterministic": 0.0, "normal": 0.0, "categorical": 1.0}
 
-def _prior_scale(configured, head):
-    return _DEFAULT_PRIOR_SCALE[head] if configured is None else configured
+
+def _head_default(defaults, configured, head):
+    return defaults[head] if configured is None else configured
 
 
 def _make_batched_model(
@@ -330,7 +359,9 @@ def _make_batched_model(
             out_features,
             model_config["INDEX_DIM"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
-            prior_scale=_prior_scale(model_config.get("PRIOR_SCALE"), head),
+            prior_scale=_head_default(
+                _DEFAULT_PRIOR_SCALE, model_config.get("PRIOR_SCALE"), head
+            ),
             rngs=nnx.Rngs(params=key),
         )
         model = ENNModel(
@@ -341,6 +372,7 @@ def _make_batched_model(
             predict_reward_terminated=predict_reward_terminated,
             head=head,
             min_scale=model_config.get("MIN_SCALE", 1e-3),
+            l2_reg=_head_default(_DEFAULT_L2_REG, model_config.get("L2_REG"), head),
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
