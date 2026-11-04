@@ -1,10 +1,10 @@
-from agents.base import Agent, Data
+from agents.base import Agent, Experience
 from agents.model_based import ModelBasedAgent, ModelBasedState
 from agents.model_free import ModelFreeAgent, ModelFreeState
 
 __all__ = [
     "Agent",
-    "Data",
+    "Experience",
     "ModelBasedAgent",
     "ModelBasedState",
     "ModelFreeAgent",

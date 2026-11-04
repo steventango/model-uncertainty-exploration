@@ -100,35 +100,35 @@ class ModelBasedAgent:
             models, model_train_state, make_batched_rngs(rngs_key), policy, policy
         )
 
-    def explore_policy(self, state):
-        return state.explore
+    def explore_policy(self, agent_state):
+        return agent_state.explore
 
-    def eval_policy(self, state):
-        return state.eval
+    def eval_policy(self, agent_state):
+        return agent_state.eval
 
-    def update(self, state, data, key):
+    def update(self, agent_state, experience, key):
         val_keys, plot_seed, unc_seed, ts_seed, train_seed = vsplit(key, 5)
-        step = data.size
+        step = experience.size
 
         t0 = time.perf_counter()
         history = self._train_model(
-            state.models,
-            state.model_train_state,
-            data.buffer,
-            jnp.asarray(data.size),
-            state.rngs,
+            agent_state.models,
+            agent_state.model_train_state,
+            experience.buffer,
+            jnp.asarray(experience.size),
+            agent_state.rngs,
         )
         jax.block_until_ready(history)
         log_time(self.loggers, "time/model_train_s", t0, step)
         for b, logger in enumerate(self.loggers):
-            logger.log_loss_history(seed_slice(history, b), data.round)
+            logger.log_loss_history(seed_slice(history, b), experience.rollout)
 
         if self.val_data is not None:
             t0 = time.perf_counter()
             log_validation(
                 self.loggers,
                 self._val_metrics,
-                state.models,
+                agent_state.models,
                 *self.val_data,
                 step,
                 val_keys,
@@ -138,8 +138,8 @@ class ModelBasedAgent:
         if self.debug is not None:
             # Plots seed 0 only.
             t0 = time.perf_counter()
-            model = unstack_train_state(state.models, 0)
-            buffer = seed_slice(data.buffer, 0)
+            model = unstack_train_state(agent_state.models, 0)
+            buffer = seed_slice(experience.buffer, 0)
             base_env, env_name, seed_dir = self.debug
             validation.evaluate_validation(
                 model,
@@ -148,9 +148,9 @@ class ModelBasedAgent:
                 env_name,
                 *self.val_data,
                 buffer,
-                data.size,
+                experience.size,
                 plot_seed[0],
-                data.round,
+                experience.rollout,
                 seed_dir,
                 plot=True,
             )
@@ -161,8 +161,8 @@ class ModelBasedAgent:
                 env_name,
                 unc_seed[0],
                 buffer,
-                data.size,
-                data.round,
+                experience.size,
+                experience.rollout,
                 seed_dir,
             )
             log_time(self.loggers, "time/validation_eval_plot_s", t0, step)
@@ -176,16 +176,18 @@ class ModelBasedAgent:
         )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         params = self.model_env.default_params.replace(
-            model=state.models, alpha=self.alphas, beta=self.betas
+            model=agent_state.models, alpha=self.alphas, beta=self.betas
         )
         if self.reset_source != "env":
             weights = reset_weights(
-                data.buffer.terminated,
-                data.buffer.truncated,
-                data.size,
+                experience.buffer.terminated,
+                experience.buffer.truncated,
+                experience.size,
                 self.reset_source,
             )
-            params = params.replace(init_obs=data.buffer.obs, init_weights=weights)
+            params = params.replace(
+                init_obs=experience.buffer.obs, init_weights=weights
+            )
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
         jax.block_until_ready(out)
@@ -199,18 +201,23 @@ class ModelBasedAgent:
                 logger.log_ppo_returns(
                     seed_slice(out["metrics"], (b, index)),
                     tag,
-                    data.round,
+                    experience.rollout,
                     self.ppo_config["NUM_ENVS"],
                     self.ppo_config["NUM_STEPS"],
                     int(self.ppo_config["TOTAL_TIMESTEPS"]),
                 )
         trained = out["runner_state"][0]
-        return state._replace(
+        return agent_state._replace(
             explore=select_config_train_state(trained, self.EXPLORE),
             eval=select_config_train_state(trained, self.EVAL),
         )
 
-    def save(self, state, seed_dir, b):
+    def save(self, agent_state, seed_dir, b):
         save_checkpoint(
-            seed_dir, state.models, state.explore, state.eval, b, self.solver
+            seed_dir,
+            agent_state.models,
+            agent_state.explore,
+            agent_state.eval,
+            b,
+            self.solver,
         )

@@ -18,7 +18,7 @@ class ModelFreeState(NamedTuple):
 
 
 class ModelFreeAgent:
-    """PPO on the real-env rollout of each round."""
+    """PPO on each real-env rollout."""
 
     on_policy = True
 
@@ -61,21 +61,23 @@ class ModelFreeAgent:
             make_batched_policy(self.config, self.env, self.env_params, key)
         )
 
-    def explore_policy(self, state):
-        return state.policy
+    def explore_policy(self, agent_state):
+        return agent_state.policy
 
-    def eval_policy(self, state):
-        return state.policy
+    def eval_policy(self, agent_state):
+        return agent_state.policy
 
-    def update(self, state, data, key):
+    def update(self, agent_state, experience, key):
         t0 = time.perf_counter()
-        losses = self._train(state.policy, data.latest, key)
+        losses = self._train(agent_state.policy, experience.latest, key)
         jax.block_until_ready(losses)
-        log_time(self.loggers, f"time/{self.solver}_train_s", t0, data.size)
+        log_time(self.loggers, f"time/{self.solver}_train_s", t0, experience.size)
         for b, logger in enumerate(self.loggers):
             for name, loss in seed_slice(losses, b).items():
-                logger.log_scalar(f"{self.solver}/{name}", float(loss), data.size)
-        return state
+                logger.log_scalar(f"{self.solver}/{name}", float(loss), experience.size)
+        return agent_state
 
-    def save(self, state, seed_dir, b):
-        save_checkpoint(seed_dir, None, state.policy, state.policy, b, self.solver)
+    def save(self, agent_state, seed_dir, b):
+        save_checkpoint(
+            seed_dir, None, agent_state.policy, agent_state.policy, b, self.solver
+        )

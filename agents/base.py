@@ -10,33 +10,33 @@ from ppo import (
 )
 
 
-class Data(NamedTuple):
+class Experience(NamedTuple):
     """What an agent learns from; every array has a leading seed axis."""
 
     buffer: Any  # Transition, (B, N, ...); the first `size` rows are filled
     size: int
-    latest: Any  # Transition, (B, T, E, ...) from this round's rollout; None offline
-    round: int
+    latest: Any  # Transition, (B, T, E, ...) from the latest rollout; None offline
+    rollout: int
 
 
 class Agent(Protocol):
     """Learns from real-env data. All state is batched over a leading seed axis."""
 
     # The real-env rollout updates the explore policy's normalizers, and update()
-    # learns from data.latest.
+    # learns from experience.latest.
     on_policy: bool
 
     def init(self, key) -> Any: ...
 
-    def explore_policy(self, state) -> Any:
+    def explore_policy(self, agent_state) -> Any:
         """PPO train state that acts in the real env."""
 
-    def eval_policy(self, state) -> Any:
+    def eval_policy(self, agent_state) -> Any:
         """PPO train state that is evaluated in the real env."""
 
-    def update(self, state, data: Data, key) -> Any: ...
+    def update(self, agent_state, experience: Experience, key) -> Any: ...
 
-    def save(self, state, seed_dir: str, b: int) -> None: ...
+    def save(self, agent_state, seed_dir: str, b: int) -> None: ...
 
 
 def make_batched_policy(config, env, env_params, keys):

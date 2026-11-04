@@ -14,7 +14,7 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
-from agents import Data, ModelBasedAgent, ModelFreeAgent
+from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
@@ -46,11 +46,11 @@ def run_online(
     max_steps,
     eval_every,
 ):
-    """Each round: act in the real env, add to the buffer, update the agent."""
+    """Each iteration: act in the real env, add to the buffer, update the agent."""
     key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
     reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
     obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
-    state = agent.init(init_key)
+    agent_state = agent.init(init_key)
 
     if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
 
@@ -62,7 +62,7 @@ def run_online(
             normalize_vec_obs(obs)
             normalize_vec_obs.eval()
 
-        _init_obs_stats(agent.explore_policy(state), obsv)
+        _init_obs_stats(agent.explore_policy(agent_state), obsv)
 
     _rollout = nnx.jit(
         nnx.vmap(
@@ -73,7 +73,7 @@ def run_online(
 
     sample = nnx.eval_shape(
         lambda policy: jax.vmap(collate_rollout)(_rollout((policy, *runner_state))[1]),
-        agent.explore_policy(state),
+        agent.explore_policy(agent_state),
     )
     buffer = jax.tree_util.tree_map(
         lambda x: jnp.zeros(
@@ -97,13 +97,13 @@ def run_online(
         make_rollout(eval_config, env, env_params, training=False),
     )
     key, eval_keys = vsplit(key)
-    log_eval(loggers, batched_eval, agent.eval_policy(state), eval_keys, 0)
-    eval_policy = agent.eval_policy(state)
+    log_eval(loggers, batched_eval, agent.eval_policy(agent_state), eval_keys, 0)
+    eval_policy = agent.eval_policy(agent_state)
 
-    for j in range(num_rollouts):
+    for rollout in range(num_rollouts):
         t0 = time.perf_counter()
         (_, *runner_state), traj_batch = _rollout(
-            (agent.explore_policy(state), *runner_state)
+            (agent.explore_policy(agent_state), *runner_state)
         )
         jax.block_until_ready(traj_batch)
         rollout_s = time.perf_counter() - t0
@@ -115,45 +115,49 @@ def run_online(
         prev_size, size = size, size + collated.obs.shape[1]
         for logger in loggers:
             logger.log_scalar("time/rollout_s", rollout_s, size)
-        # Eval points inside this round: the policy has not been updated yet.
+        # Eval points inside this rollout: the policy has not been updated yet.
         first = (prev_size // eval_every + 1) * eval_every
         for step in range(first, size, eval_every):
             key, eval_keys = vsplit(key)
             log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
 
         key, update_key = vsplit(key)
-        state = agent.update(state, Data(buffer, size, traj_batch, j), update_key)
-        eval_policy = agent.eval_policy(state)
+        agent_state = agent.update(
+            agent_state, Experience(buffer, size, traj_batch, rollout), update_key
+        )
+        eval_policy = agent.eval_policy(agent_state)
 
-        if size % eval_every == 0 or j == num_rollouts - 1:
+        if size % eval_every == 0 or rollout == num_rollouts - 1:
             key, eval_keys = vsplit(key)
             t0 = time.perf_counter()
             log_eval(loggers, batched_eval, eval_policy, eval_keys, size)
             log_time(loggers, "time/eval_s", t0, size)
 
-    # Grid points past the last round: the policy has not changed since.
+    # Grid points past the last rollout: the policy has not changed since.
     first = (size // eval_every + 1) * eval_every
     for step in range(first, max_steps + 1, eval_every):
         key, eval_keys = vsplit(key)
         log_eval(loggers, batched_eval, eval_policy, eval_keys, step)
 
-    return state, size
+    return agent_state, size
 
 
 def run_offline(agent, buffer, loggers, seed_keys, env, env_params, seed_dir, args):
     """One update on the fixed dataset, then plot seed 0."""
     key, init_key = vsplit(seed_keys)
-    state = agent.init(init_key)
+    agent_state = agent.init(init_key)
     size = buffer.obs.shape[1]
     key, update_key = vsplit(key)
-    state = agent.update(state, Data(buffer, size, None, 0), update_key)
+    agent_state = agent.update(
+        agent_state, Experience(buffer, size, None, 0), update_key
+    )
 
     key, eval_keys = vsplit(key)
     t0 = time.perf_counter()
     plotting.plot_offline_visualization(
-        state.models,
-        state.explore,
-        state.eval,
+        agent_state.models,
+        agent_state.explore,
+        agent_state.eval,
         agent.model_env,
         agent.ppo_config,
         env_params.max_steps_in_episode,
@@ -166,7 +170,7 @@ def run_offline(agent, buffer, loggers, seed_keys, env, env_params, seed_dir, ar
         reward_fn=env.compute_reward,
     )
     log_time(loggers, "time/eval_s", t0, size)
-    return state, size
+    return agent_state, size
 
 
 def main(args: Args):
@@ -373,11 +377,11 @@ def main(args: Args):
         )
 
     if args.offline:
-        state, size = run_offline(
+        agent_state, size = run_offline(
             agent, buffer, loggers, seed_keys, env, env_params, seed_dirs[0], args
         )
     else:
-        state, size = run_online(
+        agent_state, size = run_online(
             agent,
             env,
             env_params,
@@ -393,7 +397,7 @@ def main(args: Args):
     if args.offline or num_rollouts > 0:
         t0 = time.perf_counter()
         for b in range(B):
-            agent.save(state, seed_dirs[b], b)
+            agent.save(agent_state, seed_dirs[b], b)
         log_time(loggers, "time/checkpoint_s", t0, size)
 
     for logger in loggers:
