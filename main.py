@@ -214,6 +214,8 @@ def main(args: Args):
         obs_dim = 1
         in_features = obs_dim + action_dim
         head = getattr(args.model, "head", "deterministic")
+        if head == "categorical":
+            raise ValueError("--model.head categorical needs one-hot discrete obs")
         out_features = head_out_features(head, obs_dim, False)
         predict_reward_terminated = False
         oracle_reward_terminated = True
@@ -267,6 +269,8 @@ def main(args: Args):
         obs_dim = env.observation_space(env_params).shape[0]
         in_features = obs_dim + action_dim
         head = getattr(args.model, "head", "deterministic")
+        if head == "categorical" and not getattr(base_env, "discrete_obs", False):
+            raise ValueError("--model.head categorical needs one-hot discrete obs")
         out_features = head_out_features(head, obs_dim, predict_reward_terminated)
 
         # Real-env steps between re-plans: one episode by default, 1 to re-plan

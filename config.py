@@ -19,8 +19,14 @@ class ENNConfig:
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
-    head: Literal["deterministic", "gaussian"] = "deterministic"
+    head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
     min_scale: float = 1e-3
+    # Scale of the epinet's fixed random prior function. None picks the head's
+    # default (10 for categorical logits, else 1; see models/enn.py).
+    prior_scale: float | None = None
+    # λ of the MAP penalty (λ/N)·‖θ‖² on trainable weights (N = dataset size).
+    # None picks the head's default (1 for categorical, else 0; see models/enn.py).
+    l2_reg: float | None = None
 
 
 @dataclass(frozen=True)
