@@ -1,17 +1,26 @@
 import time
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from gymnax.environments import environment
 
 import plotting
 import validation
-from agents.base import make_batched_policy, save_checkpoint
+from agents.base import (
+    Config,
+    Env,
+    Experience,
+    PolicyState,
+    make_batched_policy,
+    save_checkpoint,
+)
 from batching import seed_slice, vsplit
-from logger import log_time, log_validation
-from model_env import reset_weights
+from logger import ExperimentLogger, log_time, log_validation
+from model_env import ModelEnvironment, ResetSource, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
+from models.base import WorldModel
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -19,13 +28,18 @@ from ppo import (
     unstack_train_state,
 )
 
+# obs, act, true delta obs, true reward, true terminated
+ValData = tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]
+
 
 class ModelBasedState(NamedTuple):
-    models: Any
-    model_train_state: Any
-    rngs: Any
-    explore: Any
-    eval: Any
+    models: WorldModel
+    model_train_state: (
+        Any  # model-specific: (Optimizer, MultiMetric) for ENN, None for BLR
+    )
+    rngs: nnx.Rngs
+    explore: PolicyState
+    eval: PolicyState
 
 
 class ModelBasedAgent:
@@ -35,27 +49,28 @@ class ModelBasedAgent:
     the real env, and eval (alpha=1, beta=0, no bonus) is evaluated.
     """
 
-    on_policy = False
-    EXPLORE, EVAL = 0, 1
+    on_policy: ClassVar[bool] = False
+    EXPLORE: ClassVar[int] = 0
+    EVAL: ClassVar[int] = 1
 
     def __init__(
         self,
         *,
-        model_name,
-        model_config,
-        model_dims,
-        predict_reward_terminated,
-        ppo_config,
-        env,
-        env_params,
-        model_env,
-        reset_source,
-        alpha,
-        beta,
-        loggers,
-        solver,
-        val_data=None,
-        debug=None,
+        model_name: str,
+        model_config: Config,
+        model_dims: tuple[int, int, int, int],  # in_features, obs, out_features, act
+        predict_reward_terminated: bool,
+        ppo_config: Config,
+        env: Env,
+        env_params: environment.EnvParams,
+        model_env: ModelEnvironment,
+        reset_source: ResetSource,
+        alpha: float,
+        beta: float,
+        loggers: list[ExperimentLogger],
+        solver: str,
+        val_data: ValData | None = None,
+        debug: tuple[Env, str, str] | None = None,  # base_env, env name, seed-0 dir
     ):
         self.model_name = model_name
         self.model_config = model_config
@@ -80,7 +95,7 @@ class ModelBasedAgent:
             make_batched_train(model_env, model_env.default_params, ppo_config)
         )
 
-    def init(self, key):
+    def init(self, key: jax.Array) -> ModelBasedState:
         policy_key, model_key, rngs_key, val_key = vsplit(key, 4)
         policy = make_batched_policy(
             self.ppo_config, self.env, self.env_params, policy_key
@@ -100,13 +115,15 @@ class ModelBasedAgent:
             models, model_train_state, make_batched_rngs(rngs_key), policy, policy
         )
 
-    def explore_policy(self, agent_state):
+    def explore_policy(self, agent_state: ModelBasedState) -> PolicyState:
         return agent_state.explore
 
-    def eval_policy(self, agent_state):
+    def eval_policy(self, agent_state: ModelBasedState) -> PolicyState:
         return agent_state.eval
 
-    def update(self, agent_state, experience, key):
+    def update(
+        self, agent_state: ModelBasedState, experience: Experience, key: jax.Array
+    ) -> ModelBasedState:
         val_keys, plot_seed, unc_seed, ts_seed, train_seed = vsplit(key, 5)
         step = experience.size
 
@@ -212,7 +229,7 @@ class ModelBasedAgent:
             eval=select_config_train_state(trained, self.EVAL),
         )
 
-    def save(self, agent_state, seed_dir, b):
+    def save(self, agent_state: ModelBasedState, seed_dir: str, b: int) -> None:
         save_checkpoint(
             seed_dir,
             agent_state.models,
