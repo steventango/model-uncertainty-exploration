@@ -20,6 +20,7 @@ class ENNModel(WorldModel):
         act_dim: int | None = None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
+        bootstrap_noise: float = 1.0,
     ):
         super().__init__(
             in_features=in_features,
@@ -29,6 +30,7 @@ class ENNModel(WorldModel):
             predict_reward_terminated=predict_reward_terminated,
         )
         self.enn = enn
+        self.bootstrap_noise = bootstrap_noise
         self.bootstrap_key = nnx.Variable(jax.random.key_data(bootstrap_key))
 
     @property
@@ -60,7 +62,7 @@ class ENNModel(WorldModel):
 
 
 def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
-    sigma = 1.0
+    sigma = model.bootstrap_noise
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
@@ -194,6 +196,7 @@ def _make_batched_model(
             obs_dim,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
+            bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
