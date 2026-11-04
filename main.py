@@ -304,6 +304,7 @@ def main(args: Args):
     )
 
     hparams_extra = {}
+    rnd_config = args.rnd if args.explore_bonus == "rnd" else None
     if not args.offline:
         rollout_config = {
             **config,
@@ -335,7 +336,7 @@ def main(args: Args):
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model")
+            if k not in ("ppo", "model", "rnd")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])
@@ -344,6 +345,7 @@ def main(args: Args):
             **{args.solver: config},
             model=model_config,
             run=hparams_run,
+            **({"rnd": dataclasses.asdict(rnd_config)} if rnd_config else {}),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
@@ -382,6 +384,7 @@ def main(args: Args):
             beta=args.beta,
             loggers=loggers,
             solver=args.solver,
+            rnd_config=rnd_config,
             val_data=val_data,
             debug=(base_env, args.env, seed_dirs[0]) if debug else None,
         )
