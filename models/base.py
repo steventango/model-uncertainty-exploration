@@ -9,7 +9,7 @@ def head_out_features(head: str, obs_dim: int, predict_reward_terminated: bool) 
     """Network output width for a dynamics output head.
 
     deterministic: delta_obs (+ reward, terminated logits).
-    normal: [loc | raw_scale] of the normalized delta_obs, per obs dim.
+    gaussian: [loc | raw_scale] of the normalized delta_obs, per obs dim.
     """
     if head == "deterministic":
         return obs_dim + 2 if predict_reward_terminated else obs_dim
@@ -18,7 +18,7 @@ def head_out_features(head: str, obs_dim: int, predict_reward_terminated: bool) 
             f"head={head!r} models next-obs only; use the oracle reward "
             "(predict_reward_terminated=False)."
         )
-    if head == "normal":
+    if head == "gaussian":
         return 2 * obs_dim
     raise ValueError(f"unknown head {head!r}")
 

@@ -28,12 +28,6 @@ from ppo import make_rollout
 from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
 
 
-def _model_head(model_args):
-    """Dynamics-model output head: point estimate unless the model opts into a
-    distribution."""
-    return "normal" if getattr(model_args, "distribution", False) else "deterministic"
-
-
 def _wrap_env(env, discrete):
     wrapped = LogWrapper(env)
     if not discrete:
@@ -219,7 +213,7 @@ def main(args: Args):
 
         obs_dim = 1
         in_features = obs_dim + action_dim
-        head = _model_head(args.model)
+        head = getattr(args.model, "head", "deterministic")
         out_features = head_out_features(head, obs_dim, False)
         predict_reward_terminated = False
         oracle_reward_terminated = True
@@ -272,7 +266,7 @@ def main(args: Args):
 
         obs_dim = env.observation_space(env_params).shape[0]
         in_features = obs_dim + action_dim
-        head = _model_head(args.model)
+        head = getattr(args.model, "head", "deterministic")
         out_features = head_out_features(head, obs_dim, predict_reward_terminated)
 
         # Real-env steps between re-plans: one episode by default, 1 to re-plan
