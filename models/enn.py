@@ -297,6 +297,19 @@ def _train_model(
     return history
 
 
+# Default prior-function scale per head. The prior must perturb the outputs on the
+# scale the data can drive them to, or the shared base network's extrapolation
+# swamps it at unvisited inputs. Regression targets are normalized to unit std,
+# so 1 matches. Categorical logits are unbounded under cross-entropy: on
+# deterministic transitions the base learns margins of ~5-10 that transfer to
+# unseen states through shared weights, so an O(1) prior leaves MI ~0 there.
+_DEFAULT_PRIOR_SCALE = {"deterministic": 1.0, "normal": 1.0, "categorical": 10.0}
+
+
+def _prior_scale(configured, head):
+    return _DEFAULT_PRIOR_SCALE[head] if configured is None else configured
+
+
 def _make_batched_model(
     model_config,
     in_features,
@@ -317,6 +330,7 @@ def _make_batched_model(
             out_features,
             model_config["INDEX_DIM"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
+            prior_scale=_prior_scale(model_config.get("PRIOR_SCALE"), head),
             rngs=nnx.Rngs(params=key),
         )
         model = ENNModel(

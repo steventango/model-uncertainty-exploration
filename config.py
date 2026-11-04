@@ -25,6 +25,9 @@ class ENNConfig:
     # stays epistemic-only.
     distribution: bool = False
     min_scale: float = 1e-3
+    # Scale of the epinet's fixed random prior function. None picks the head's
+    # default (10 for categorical logits, else 1; see models/enn.py).
+    prior_scale: float | None = None
 
 
 @dataclass(frozen=True)
