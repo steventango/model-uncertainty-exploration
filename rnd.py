@@ -27,9 +27,10 @@ class RND(nnx.Module):
     to [-5, 5] before both networks, as in the paper.
     """
 
-    def __init__(self, obs_dim, hidden_dim, out_dim, *, rngs):
+    def __init__(self, obs_dim, hidden_dim, out_dim, lr, *, rngs):
         self.target = MLP(obs_dim, hidden_dim, out_dim, rngs=rngs)
         self.predictor = MLP(obs_dim, hidden_dim, out_dim, rngs=rngs)
+        self.optimizer = nnx.Optimizer(self.predictor, optax.adam(lr), wrt=nnx.Param)
         self.obs_mean = nnx.Variable(jnp.zeros(obs_dim))
         self.obs_std = nnx.Variable(jnp.ones(obs_dim))
 
@@ -48,15 +49,13 @@ class RND(nnx.Module):
 
 
 def make_rnd(config: RNDConfig, obs_dim, rngs):
-    rnd = RND(obs_dim, config.hidden_dim, config.out_dim, rngs=rngs)
-    optimizer = nnx.Optimizer(rnd.predictor, optax.adam(config.lr), wrt=nnx.Param)
-    return rnd, optimizer
+    return RND(obs_dim, config.hidden_dim, config.out_dim, config.lr, rngs=rngs)
 
 
 def make_train_rnd(config: RNDConfig):
     """Fit the predictor on next observations sampled from the first ``count`` rows."""
 
-    def train(rnd, optimizer, next_obs, count, rng):
+    def train(rnd, next_obs, count, rng):
         rnd.update_stats(next_obs, count)
 
         def loss_fn(predictor, x):
@@ -64,15 +63,44 @@ def make_train_rnd(config: RNDConfig):
             target = jax.lax.stop_gradient(rnd.target(x))
             return jnp.mean(jnp.square(predictor(x) - target))
 
-        def step(carry, key):
-            rnd, optimizer = carry
+        def step(rnd, key):
             idx = jax.random.randint(key, (config.batch_size,), 0, count)
             loss, grads = nnx.value_and_grad(loss_fn)(rnd.predictor, next_obs[idx])
-            optimizer.update(rnd.predictor, grads)
-            return (rnd, optimizer), loss
+            rnd.optimizer.update(rnd.predictor, grads)
+            return rnd, loss
 
         keys = jax.random.split(rng, config.update_steps)
-        _, losses = nnx.scan(step)((rnd, optimizer), keys)
+        _, losses = nnx.scan(step)(rnd, keys)
         return losses
 
     return train
+
+
+class RNDBonus:
+    """Model-env exploration bonus: RND novelty of the predicted next observation.
+
+    The bonus state is a seed-batched RND, trained on the replay buffer's next
+    observations each update and passed to the model env as ``params.bonus``.
+    """
+
+    def __init__(self, config: RNDConfig, obs_dim: int):
+        self.config = config
+        self.obs_dim = obs_dim
+        self._train = nnx.jit(nnx.vmap(make_train_rnd(config), in_axes=(0, 0, None, 0)))
+
+    def init(self, key: jax.Array) -> RND:
+        @nnx.vmap
+        def build(key):
+            return make_rnd(self.config, self.obs_dim, nnx.Rngs(params=key))
+
+        return build(key)
+
+    def update(self, rnd: RND, experience, key: jax.Array) -> dict[str, jax.Array]:
+        """Train in place; return per-seed metrics to log."""
+        losses = self._train(
+            rnd,
+            experience.buffer.info["next_obs"],
+            jnp.asarray(experience.size),
+            key,
+        )
+        return {"rnd/loss": losses[:, -1]}

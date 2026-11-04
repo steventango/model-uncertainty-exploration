@@ -24,6 +24,7 @@ from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
 from ppo import make_rollout
+from rnd import RNDBonus
 from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
 
 
@@ -374,7 +375,7 @@ def main(args: Args):
             beta=args.beta,
             loggers=loggers,
             solver=args.solver,
-            rnd_config=rnd_config,
+            bonus=RNDBonus(rnd_config, obs_dim) if rnd_config else None,
             val_data=val_data,
             debug=(base_env, args.env, seed_dirs[0]) if debug else None,
         )
