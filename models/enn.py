@@ -16,7 +16,7 @@ class ENNModel(WorldModel):
 
     ``head`` selects the output:
       deterministic: point estimate of the normalized delta-obs (+ reward/terminated).
-      normal: diagonal Gaussian over the normalized delta-obs (aleatoric noise).
+      gaussian: diagonal Gaussian over the normalized delta-obs (aleatoric noise).
     For the distributional head each epistemic index z yields a full predictive
     distribution; exploration uses only the disagreement across z (epistemic).
     """
@@ -65,10 +65,10 @@ class ENNModel(WorldModel):
     def predict_mean(self, x):
         """Expected normalized delta-obs from the base network for a single input.
 
-        normal: the Gaussian loc.
+        gaussian: the Gaussian loc.
         """
         y, _ = self.enn.base(x)
-        if self.head == "normal":
+        if self.head == "gaussian":
             return y[..., : self.obs_dim]
         return y
 
@@ -80,7 +80,7 @@ class ENNModel(WorldModel):
 
     def dist_from_output(self, y) -> distrax.Distribution:
         """Raw network output → distrax predictive distribution."""
-        if self.head == "normal":
+        if self.head == "gaussian":
             return distrax.MultivariateNormalDiag(*self._loc_scale(y))
         raise ValueError("deterministic head has no predictive distribution")
 

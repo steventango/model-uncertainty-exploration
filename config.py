@@ -19,10 +19,7 @@ class ENNConfig:
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
-    # Predict a distrax distribution (a diagonal Normal over the delta-obs)
-    # trained by NLL, instead of a point estimate. Aleatoric noise is sampled in the model env; the exploration bonus
-    # stays epistemic-only.
-    distribution: bool = False
+    head: Literal["deterministic", "gaussian"] = "deterministic"
     min_scale: float = 1e-3
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
     bootstrap_noise: float = 1.0
