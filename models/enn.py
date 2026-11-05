@@ -32,6 +32,7 @@ class ENNModel(WorldModel):
         predict_reward_terminated: bool = True,
         head: str = "deterministic",
         min_scale: float = 1e-3,
+        beta_nll: float = 0.5,
         bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli",
         bootstrap_noise: float = 1.0,
     ):
@@ -45,6 +46,7 @@ class ENNModel(WorldModel):
         head_out_features(head, obs_dim, predict_reward_terminated)  # validates
         self.head = head
         self.min_scale = min_scale
+        self.beta_nll = beta_nll
         self.enn = enn
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
@@ -151,8 +153,8 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     delta_next_state_target = delta_next_state + noise[0, :, None]
 
     if model.head == "gaussian":
-        dist = model.dist_from_output(logits)
-        nll = weighted_mean(-dist.log_prob(delta_next_state_target), weight[0])
+        nll = _beta_nll(model, logits, delta_next_state_target)
+        nll = weighted_mean(nll, weight[0])
         return nll, (nll, jnp.zeros(()), jnp.zeros(()))
 
     delta_next_state_loss = (
@@ -177,6 +179,18 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
 
     loss = delta_next_state_loss + reward_loss + terminated_loss
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
+
+
+def _beta_nll(model: ENNModel, y, target):
+    """Per-point Gaussian NLL, each dim weighted by sg(σ^2β) (Seitzer et al. 2022).
+
+    β=0 is the NLL; β=1 gives the mean the MSE gradient. The per-point optimum
+    (μ, σ) is unchanged; only the weighting across points differs.
+    """
+    loc, scale = model._loc_scale(y)
+    nll = 0.5 * ((target - loc) / scale) ** 2 + jnp.log(scale)
+    weight = jax.lax.stop_gradient(scale ** (2 * model.beta_nll))
+    return (weight * nll).sum(-1)
 
 
 @nnx.jit
@@ -276,6 +290,7 @@ def _make_batched_model(
             predict_reward_terminated=predict_reward_terminated,
             head=head,
             min_scale=model_config.get("MIN_SCALE", 1e-3),
+            beta_nll=model_config.get("BETA_NLL", 0.5),
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
         )
