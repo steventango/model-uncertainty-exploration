@@ -665,6 +665,48 @@ noisy_mc_mbpo = Experiment(
     ),
 )
 
+# Full-length model rollouts (env resets) with predicted states clipped to the
+# per-seed range of observed states (--clip-to-data).
+clip_to_data = Experiment(
+    name="clip_to_data",
+    configs=(
+        *_every_tenth(
+            {"swimmer": 1000},
+            "gauss_eig_clip",
+            "eig",
+            model__head="gaussian",
+            clip_to_data=True,
+        ),
+        *_every_tenth({"swimmer": 1000}, "det_eig_clip", "eig", clip_to_data=True),
+        *sweep(
+            env="swimmer",
+            alpha=1.0,
+            beta=0.0,
+            mode="sample",
+            bonus="eig",
+            label="extrinsic_clip",
+            steps_per_rollout=100,
+            max_steps=10000,
+            clip_to_data=True,
+        ),
+        *(
+            cfg
+            for env in ("MountainCar-v0", "NoisyMountainCar-v0")
+            for head, head_ov in EIG_HEADS
+            for cfg in _every_tenth(
+                {env: 200}, f"{head}_eig_clip", "eig", clip_to_data=True, **head_ov
+            )
+        ),
+    ),
+    # Swimmer ~65-90 s/plan after the recompile fix -> ~2.5 h; classic ~1.3 h.
+    time_limit="8:00:00",
+    mem_per_cpu="64G",
+    description=(
+        "clip model states to the observed data range, full rollouts: Swimmer "
+        "(EIG det/gauss, extrinsic), MountainCar and NoisyMountainCar (EIG det/gauss)"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -689,5 +731,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         swimmer_eig,
         swimmer_mbpo,
         noisy_mc_mbpo,
+        clip_to_data,
     )
 }
