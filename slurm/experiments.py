@@ -458,12 +458,28 @@ ENN_FIX_ARMS = {
     "fixes_norff": ENN_FIXES,
 }
 
-enn_fixes_mc = Experiment(
-    name="enn_fixes_mc",
-    configs=tuple(
+# One fix at a time (the Pendulum ablation arms).
+ENN_SINGLE_FIX_ARMS = {
+    "basenet": {
+        "model__hidden_dim": 128,
+        "model__num_layers": 2,
+        "model__activation": "gelu",
+    },
+    "noz": {"model__index_input": False},
+    "rff05": {"model__prior": "rff", "model__prior_lengthscale": 0.5},
+    "rff1": {"model__prior": "rff", "model__prior_lengthscale": 1.0},
+    "l2": {"model__l2": 0.1},
+    "clip": {"model__grad_clip": 1.0},
+    "k8": {"model__num_index_samples": 8},
+}
+EIG_HEADS = (("det", {}), ("gauss", {"model__head": "gaussian"}))
+
+
+def _enn_fix_configs(arms: dict[str, dict]):
+    return tuple(
         cfg
-        for head, head_ov in (("det", {}), ("gauss", {"model__head": "gaussian"}))
-        for fix, fix_ov in ENN_FIX_ARMS.items()
+        for head, head_ov in EIG_HEADS
+        for fix, fix_ov in arms.items()
         for cfg in _every_tenth(
             {"MountainCar-v0": 200},
             f"{head}_eig_{fix}",
@@ -471,11 +487,21 @@ enn_fixes_mc = Experiment(
             **head_ov,
             **fix_ov,
         )
+    )
+
+
+# Combined arms first so their task ids (already submitted) stay fixed.
+enn_fixes_mc = Experiment(
+    name="enn_fixes_mc",
+    configs=(
+        *_enn_fix_configs(ENN_FIX_ARMS),
+        *_enn_fix_configs(ENN_SINGLE_FIX_ARMS),
     ),
     time_limit="6:00:00",
     description=(
-        "det/gauss EIG with the epinet fixes (with/without RFF prior) on MountainCar; "
-        "plan every 10% of truncation, 10 episodes; explore-only, sample mode"
+        "det/gauss EIG on MountainCar with the epinet fixes combined (with/without "
+        "RFF prior) and one at a time; plan every 10% of truncation, 10 episodes; "
+        "explore-only, sample mode"
     ),
 )
 
