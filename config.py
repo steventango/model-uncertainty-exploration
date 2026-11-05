@@ -22,6 +22,7 @@ class ENNConfig:
     head: Literal["deterministic", "gaussian"] = "deterministic"
     min_scale: float = 1e-3
     beta_nll: float = 0.5
+    eig_noise_floor: float = 0.0
     bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli"
     bootstrap_noise: float = 1.0
 

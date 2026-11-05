@@ -33,6 +33,7 @@ class ENNModel(WorldModel):
         head: str = "deterministic",
         min_scale: float = 1e-3,
         beta_nll: float = 0.5,
+        eig_noise_floor: float = 0.0,
         bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli",
         bootstrap_noise: float = 1.0,
     ):
@@ -47,6 +48,7 @@ class ENNModel(WorldModel):
         self.head = head
         self.min_scale = min_scale
         self.beta_nll = beta_nll
+        self.eig_noise_floor = eig_noise_floor
         self.enn = enn
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
@@ -113,7 +115,8 @@ class ENNModel(WorldModel):
             return super().uncertainty(x, z, kind, reduce_output)
         loc, scale = self._loc_scale(self.predict_samples(x, z))  # (S, obs_dim)
         if kind == "eig":
-            u = 0.5 * jnp.log1p(loc.var(axis=0) / (scale**2).mean(axis=0))
+            noise_var = (scale**2).mean(axis=0) + self.eig_noise_floor**2
+            u = 0.5 * jnp.log1p(loc.var(axis=0) / noise_var)
         else:
             u = loc.std(axis=0)
         return u.sum(axis=-1) if reduce_output else u
@@ -291,6 +294,7 @@ def _make_batched_model(
             head=head,
             min_scale=model_config.get("MIN_SCALE", 1e-3),
             beta_nll=model_config.get("BETA_NLL", 0.5),
+            eig_noise_floor=model_config.get("EIG_NOISE_FLOOR", 0.0),
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
         )
