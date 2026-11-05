@@ -21,6 +21,7 @@ from environments import (
     BRAX_BACKENDS,
     BRAX_ENVS,
     HIDDEN_STATE_ENVS,
+    has_oracle_reward,
     make_gymnax_env,
     make_state_reconstruction_wrapper,
 )
@@ -244,8 +245,10 @@ def main(args: Args):
             base_env, env_params = make_gymnax_env(args.env)
 
         if is_brax:
-            predict_reward_terminated = args.predict_reward_terminated or not hasattr(
-                base_env, "obs_to_reward_terminated"
+            # The oracle reward lives on the state-reconstruction wrapper (applied
+            # below), not on the raw brax env.
+            predict_reward_terminated = (
+                args.predict_reward_terminated or not has_oracle_reward(args.env)
             )
         else:
             predict_reward_terminated = args.predict_reward_terminated

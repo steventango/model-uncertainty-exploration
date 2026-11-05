@@ -279,6 +279,11 @@ def make_gymnax_env(env_name: str):
     return env, env.default_params
 
 
+def has_oracle_reward(env_name: str) -> bool:
+    """Whether the env's wrapper computes reward/termination from observations."""
+    return hasattr(_WRAPPER_MAP.get(env_name), "obs_to_reward_terminated")
+
+
 def make_state_reconstruction_wrapper(env, env_name: str) -> StateReconstructionWrapper:
     cls = _WRAPPER_MAP.get(env_name)
     if cls is None:
