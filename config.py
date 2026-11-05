@@ -71,6 +71,16 @@ class RNDConfig:
     update_steps: int = 100
 
 
+@dataclass(frozen=True)
+class PredictionErrorConfig:
+    """Prediction-error bonus (--explore-bonus prediction-error)."""
+
+    lr: float = 1e-3
+    hidden_dim: int = 64
+    batch_size: int = 256
+    update_steps: int = 100
+
+
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
