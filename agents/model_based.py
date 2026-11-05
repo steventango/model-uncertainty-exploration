@@ -17,7 +17,7 @@ from agents.base import (
     save_checkpoint,
 )
 from batching import seed_slice, vsplit
-from config import RNDConfig
+from config import PredictionErrorConfig, RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
 from model_env import ModelEnvironment, ResetSource, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
@@ -27,6 +27,11 @@ from ppo import (
     make_batched_train_state,
     select_config_train_state,
     unstack_train_state,
+)
+from prediction_error import (
+    PredictionError,
+    make_prediction_error,
+    make_train_prediction_error,
 )
 from rnd import RND, make_rnd, make_train_rnd
 
@@ -44,6 +49,8 @@ class ModelBasedState(NamedTuple):
     eval: PolicyState
     rnd: RND | None = None  # explore_bonus="rnd"
     rnd_optimizer: nnx.Optimizer | None = None
+    prediction_error: PredictionError | None = None  # "prediction-error"
+    prediction_error_optimizer: nnx.Optimizer | None = None
 
 
 class ModelBasedAgent:
@@ -74,6 +81,7 @@ class ModelBasedAgent:
         loggers: list[ExperimentLogger],
         solver: str,
         rnd_config: RNDConfig | None = None,
+        prediction_error_config: PredictionErrorConfig | None = None,
         val_data: ValData | None = None,
         debug: tuple[Env, str, str] | None = None,  # base_env, env name, seed-0 dir
     ):
@@ -91,6 +99,7 @@ class ModelBasedAgent:
         self.loggers = loggers
         self.solver = solver
         self.rnd_config = rnd_config
+        self.prediction_error_config = prediction_error_config
         self.val_data = val_data
         self.debug = debug
         self._train_model = make_batched_train_model(
@@ -101,12 +110,19 @@ class ModelBasedAgent:
             self._train_rnd = nnx.jit(
                 nnx.vmap(make_train_rnd(rnd_config), in_axes=(0, 0, 0, None, 0))
             )
+        if prediction_error_config is not None:
+            self._train_prediction_error = nnx.jit(
+                nnx.vmap(
+                    make_train_prediction_error(prediction_error_config),
+                    in_axes=(0, 0, 0, 0, 0, None, 0),
+                )
+            )
         self._train_ppo = nnx.jit(
             make_batched_train(model_env, model_env.default_params, ppo_config)
         )
 
     def init(self, key: jax.Array) -> ModelBasedState:
-        policy_key, model_key, rngs_key, val_key, rnd_key = vsplit(key, 5)
+        policy_key, model_key, rngs_key, val_key, rnd_key, pe_key = vsplit(key, 6)
         policy = make_batched_policy(
             self.ppo_config, self.env, self.env_params, policy_key
         )
@@ -130,6 +146,21 @@ class ModelBasedAgent:
                 return make_rnd(self.rnd_config, obs_dim, nnx.Rngs(params=key))
 
             rnd, rnd_optimizer = build_rnd(rnd_key)
+        pe = pe_optimizer = None
+        if self.prediction_error_config is not None:
+            in_features, obs_dim, _, act_dim = self.model_dims
+
+            @nnx.vmap
+            def build_prediction_error(key):
+                return make_prediction_error(
+                    self.prediction_error_config,
+                    in_features,
+                    obs_dim,
+                    act_dim,
+                    nnx.Rngs(params=key),
+                )
+
+            pe, pe_optimizer = build_prediction_error(pe_key)
         return ModelBasedState(
             models,
             model_train_state,
@@ -138,6 +169,8 @@ class ModelBasedAgent:
             policy,
             rnd,
             rnd_optimizer,
+            pe,
+            pe_optimizer,
         )
 
     def explore_policy(self, agent_state: ModelBasedState) -> PolicyState:
@@ -149,7 +182,9 @@ class ModelBasedAgent:
     def update(
         self, agent_state: ModelBasedState, experience: Experience, key: jax.Array
     ) -> ModelBasedState:
-        val_keys, plot_seed, unc_seed, ts_seed, train_seed, rnd_key = vsplit(key, 6)
+        val_keys, plot_seed, unc_seed, ts_seed, train_seed, rnd_key, pe_key = vsplit(
+            key, 7
+        )
         step = experience.size
 
         t0 = time.perf_counter()
@@ -220,6 +255,23 @@ class ModelBasedAgent:
             for b, logger in enumerate(self.loggers):
                 logger.log_scalar("rnd/loss", float(rnd_losses[b, -1]), step)
 
+        if self.prediction_error_config is not None:
+            forward_losses, error_losses = self._train_prediction_error(
+                agent_state.prediction_error,
+                agent_state.prediction_error_optimizer,
+                experience.buffer.obs,
+                experience.buffer.action,
+                experience.buffer.info["next_obs"],
+                jnp.asarray(experience.size),
+                pe_key,
+            )
+            for b, logger in enumerate(self.loggers):
+                for tag, losses in (
+                    ("prediction_error/forward_loss", forward_losses),
+                    ("prediction_error/error_loss", error_losses),
+                ):
+                    logger.log_scalar(tag, float(losses[b, -1]), step)
+
         num_configs = self.alphas.shape[0]
         train_states = make_batched_train_state(
             self.ppo_config,
@@ -231,6 +283,7 @@ class ModelBasedAgent:
         params = self.model_env.default_params.replace(
             model=agent_state.models,
             rnd=agent_state.rnd,
+            prediction_error=agent_state.prediction_error,
             alpha=self.alphas,
             beta=self.betas,
         )

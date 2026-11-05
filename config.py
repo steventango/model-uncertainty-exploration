@@ -71,6 +71,16 @@ class RNDConfig:
     update_steps: int = 100
 
 
+@dataclass(frozen=True)
+class PredictionErrorConfig:
+    """Prediction-error bonus (--explore-bonus prediction-error)."""
+
+    lr: float = 1e-3
+    hidden_dim: int = 64
+    batch_size: int = 256
+    update_steps: int = 100
+
+
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
@@ -87,7 +97,7 @@ class Args:
     solver: Literal["ppo"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
-    explore_bonus: Literal["std", "eig", "rnd"] = "eig"
+    explore_bonus: Literal["std", "eig", "rnd", "prediction-error"] = "eig"
     predict_reward_terminated: bool = False
     reset_source: Literal["env", "buffer", "init"] = "env"
     rollout_length: int | None = None
@@ -103,13 +113,18 @@ class Args:
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
     rnd: RNDConfig = field(default_factory=RNDConfig)
+    prediction_error: PredictionErrorConfig = field(
+        default_factory=PredictionErrorConfig
+    )
     model: ModelConfig = field(default_factory=ENNConfig)
 
     def __post_init__(self):
         if self.model_free and self.offline:
             raise ValueError("--model-free needs an online env")
-        if self.model_free and self.explore_bonus == "rnd":
-            raise ValueError("--explore-bonus rnd is a model-env bonus")
+        if self.model_free and self.explore_bonus in ("rnd", "prediction-error"):
+            raise ValueError(
+                f"--explore-bonus {self.explore_bonus} is a model-env bonus"
+            )
 
 
 def candidate_configs(m):
