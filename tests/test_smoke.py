@@ -66,6 +66,13 @@ CASES = {
         ppo=TINY_PPO,
         model=TINY_ENN,
     ),
+    "enn-gaussian-pendulum": Args(
+        cpu=True,
+        env="Pendulum-v1",
+        max_steps=400,
+        ppo=TINY_PPO,
+        model=ENNConfig(update_steps=10, hidden_dim=16, head="gaussian"),
+    ),
     "enn-bernoulli-bootstrap": Args(
         cpu=True,
         env="Pendulum-v1",
@@ -80,13 +87,6 @@ CASES = {
         predict_reward_terminated=True,
         ppo=TINY_PPO,
         model=dataclasses.replace(TINY_ENN, bootstrap="gaussian", bootstrap_noise=0.1),
-    ),
-    "enn-gaussian-pendulum": Args(
-        cpu=True,
-        env="Pendulum-v1",
-        max_steps=400,
-        ppo=TINY_PPO,
-        model=ENNConfig(update_steps=10, hidden_dim=16, head="gaussian"),
     ),
     "rnd-pendulum-2seeds": Args(
         cpu=True,
