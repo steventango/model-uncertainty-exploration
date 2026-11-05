@@ -2,6 +2,7 @@ import gymnax
 import jax.numpy as jnp
 
 from drifter_distractor import DrifterDistractor
+from noisy_mountain_car import NoisyMountainCar
 from wrappers import StateReconstructionWrapper
 
 
@@ -22,6 +23,13 @@ class MountainCarWrapper(StateReconstructionWrapper):
         from gymnax.environments.classic_control.mountain_car import EnvState
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
+
+
+class NoisyMountainCarWrapper(StateReconstructionWrapper):
+    def get_state(self, obs, last_action, time, next_obs=None):
+        from noisy_mountain_car import EnvState
+
+        return EnvState(position=obs[0], velocity=obs[1], time=time, noise=obs[2])
 
 
 class MountainCarContinuousWrapper(StateReconstructionWrapper):
@@ -216,6 +224,7 @@ class GenericBraxWrapper(BraxStateReconstructionWrapper):
 _WRAPPER_MAP = {
     "Pendulum-v1": PendulumWrapper,
     "MountainCar-v0": MountainCarWrapper,
+    "NoisyMountainCar-v0": NoisyMountainCarWrapper,
     "MountainCarContinuous-v0": MountainCarContinuousWrapper,
     "CartPole-v1": CartPoleWrapper,
     "Acrobot-v1": AcrobotWrapper,
@@ -252,7 +261,10 @@ BRAX_ENVS = frozenset(
 
 BRAX_BACKENDS = {"swimmer": "generalized"}
 
-CUSTOM_GYMNAX_ENVS = {"DrifterDistractor-v0": DrifterDistractor}
+CUSTOM_GYMNAX_ENVS = {
+    "DrifterDistractor-v0": DrifterDistractor,
+    "NoisyMountainCar-v0": NoisyMountainCar,
+}
 
 # Envs whose ground-truth dynamics depend on hidden state, so there is no
 # validation batch to compare the model against.

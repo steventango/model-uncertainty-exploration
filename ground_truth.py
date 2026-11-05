@@ -6,7 +6,14 @@ from env_config import make_state
 
 
 def true_transition(env, params, env_name, s1, s2, action):
-    """Ground-truth (delta_obs, reward, terminated) for a single transition."""
+    """Ground-truth (delta_obs, reward, terminated) for a single transition.
+
+    Envs with observation noise (``noise_std`` in params) are stepped noise-free,
+    so the ground truth is the conditional mean E[next_obs | obs, action]: the
+    target a mean model should predict, rather than one fixed noise draw.
+    """
+    if hasattr(params, "noise_std"):
+        params = params.replace(noise_std=0.0)
     state = make_state(env_name, s1, s2)
     obs = env.get_obs(state)
     if isinstance(env.action_space(params), spaces.Discrete):
