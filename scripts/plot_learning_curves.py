@@ -75,10 +75,14 @@ except ImportError:
 ENVS = [
     "Pendulum-v1",
     "MountainCar-v0",
+    "NoisyMountainCar-v0",
     "MountainCarContinuous-v0",
     "CartPole-v1",
     "Acrobot-v1",
 ]
+
+# Custom envs that share episode length with a gymnax env.
+GYMNAX_EPISODE_ENV = {"NoisyMountainCar-v0": "MountainCar-v0"}
 
 EXPLORE_POLICY = {
     "a1p0_b0p0": "exploit",
@@ -157,7 +161,7 @@ def _env_steps_per_iteration(env_name: str) -> int:
     """Env steps collected per outer iteration (matches main.py rollout config)."""
     import gymnax
 
-    _, env_params = gymnax.make(env_name)
+    _, env_params = gymnax.make(GYMNAX_EPISODE_ENV.get(env_name, env_name))
     return env_params.max_steps_in_episode // 10
 
 

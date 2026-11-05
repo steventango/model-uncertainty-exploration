@@ -6,9 +6,16 @@ import jax
 import jax.numpy as jnp
 from gymnax.environments import spaces
 
+MOUNTAIN_CAR_ENVS = (
+    "MountainCar-v0",
+    "NoisyMountainCar-v0",
+    "MountainCarContinuous-v0",
+)
+
 SUPPORTED_ENVS = (
     "Pendulum-v1",
     "MountainCar-v0",
+    "NoisyMountainCar-v0",
     "MountainCarContinuous-v0",
     "CartPole-v1",
     "Acrobot-v1",
@@ -79,6 +86,17 @@ def get_env_config(env_name: str) -> EnvConfig:
             dynamics_pred_label=r"$\widehat{\Delta\dot{x}}$",
             dynamics_err_label=r"$|\Delta\dot{x} - \widehat{\Delta\dot{x}}|$",
         ),
+        "NoisyMountainCar-v0": EnvConfig(
+            name="NoisyMountainCar-v0",
+            dynamics_dim=1,
+            delta_obs_labels=(r"$\Delta x$", r"$\Delta \dot{x}$", r"$\Delta n$"),
+            representative_actions=(0.0, 1.0, 2.0, 3.0),
+            x_label=r"$x$",
+            y_label=r"$\dot{x}$",
+            dynamics_label=r"$\Delta\dot{x}$",
+            dynamics_pred_label=r"$\widehat{\Delta\dot{x}}$",
+            dynamics_err_label=r"$|\Delta\dot{x} - \widehat{\Delta\dot{x}}|$",
+        ),
         "MountainCarContinuous-v0": EnvConfig(
             name="MountainCarContinuous-v0",
             dynamics_dim=1,
@@ -135,6 +153,10 @@ def make_state(env_name: str, s1, s2):
         from gymnax.environments.classic_control.pendulum import EnvState
 
         return EnvState(theta=s1, theta_dot=s2, last_u=jnp.zeros(()), time=0)
+    if env_name == "NoisyMountainCar-v0":
+        from noisy_mountain_car import EnvState
+
+        return EnvState(position=s1, velocity=s2, time=0, noise=jnp.zeros_like(s1))
     if env_name in ("MountainCar-v0", "MountainCarContinuous-v0"):
         if env_name == "MountainCar-v0":
             from gymnax.environments.classic_control.mountain_car import EnvState
@@ -170,6 +192,8 @@ def make_state(env_name: str, s1, s2):
 def obs_from_coords(env_name: str, s1, s2):
     if env_name == "Pendulum-v1":
         return jnp.stack([jnp.cos(s1), jnp.sin(s1), s2], axis=-1)
+    if env_name == "NoisyMountainCar-v0":
+        return jnp.stack([s1, s2, jnp.zeros_like(s1)], axis=-1)
     if env_name in ("MountainCar-v0", "MountainCarContinuous-v0"):
         return jnp.stack([s1, s2], axis=-1)
     if env_name == "CartPole-v1":
@@ -193,7 +217,7 @@ def grid_coords(env_name: str, env_params, num_grid: int = 100):
     if env_name == "Pendulum-v1":
         s1 = jnp.linspace(-jnp.pi, jnp.pi, num_grid)
         s2 = jnp.linspace(-env_params.max_speed, env_params.max_speed, num_grid)
-    elif env_name in ("MountainCar-v0", "MountainCarContinuous-v0"):
+    elif env_name in MOUNTAIN_CAR_ENVS:
         s1 = jnp.linspace(env_params.min_position, env_params.max_position, num_grid)
         s2 = jnp.linspace(-env_params.max_speed, env_params.max_speed, num_grid)
     elif env_name == "CartPole-v1":
@@ -234,7 +258,7 @@ def sample_validation_batch(rng, env, env_params, env_name: str, num_samples: in
             minval=-env_params.max_torque,
             maxval=env_params.max_torque,
         )
-    elif env_name == "MountainCar-v0":
+    elif env_name in ("MountainCar-v0", "NoisyMountainCar-v0"):
         rng, key_s1, key_s2, key_act = jax.random.split(rng, 4)
         s1 = jax.random.uniform(
             key_s1,
@@ -313,7 +337,7 @@ def action_visit_mask(env_name: str, visited_actions, act: float, *, discrete: b
 def visited_coords_from_obs(env_name: str, obs):
     if env_name == "Pendulum-v1":
         return jnp.arctan2(obs[:, 1], obs[:, 0]), obs[:, 2]
-    if env_name in ("MountainCar-v0", "MountainCarContinuous-v0"):
+    if env_name in MOUNTAIN_CAR_ENVS:
         return obs[:, 0], obs[:, 1]
     if env_name == "CartPole-v1":
         return obs[:, 0], obs[:, 2]
