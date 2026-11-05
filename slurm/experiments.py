@@ -605,6 +605,66 @@ swimmer_eig = Experiment(
     ),
 )
 
+
+# Swimmer with MBPO-style model rollouts: start from replay-buffer states and
+# truncate at H steps (the full 1000-step rollouts of swimmer_eig get exploited).
+def _swimmer_mbpo(label, alpha, beta, h, **ov):
+    return sweep(
+        env="swimmer",
+        alpha=alpha,
+        beta=beta,
+        mode="sample",
+        bonus="eig",
+        label=label,
+        steps_per_rollout=100,
+        max_steps=10000,
+        reset_source="buffer",
+        rollout_length=h,
+        **ov,
+    )
+
+
+swimmer_mbpo = Experiment(
+    name="swimmer_mbpo",
+    configs=(
+        *_swimmer_mbpo("extrinsic_h10", 1.0, 0.0, 10),
+        *_swimmer_mbpo("extrinsic_h50", 1.0, 0.0, 50),
+        *_swimmer_mbpo("gauss_eig_h10", 0.0, 1.0, 10, model__head="gaussian"),
+        *_swimmer_mbpo("det_eig_h10", 0.0, 1.0, 10),
+    ),
+    # swimmer_eig measured 140-180 s/plan at 30 seeds -> ~4-5 h for 100 plans.
+    time_limit="10:00:00",
+    mem_per_cpu="64G",
+    description=(
+        "Swimmer, buffer-start model rollouts truncated at H: extrinsic H=10/50, "
+        "EIG (Gaussian/Deterministic) H=10; plan every 100 steps, 10 episodes"
+    ),
+)
+
+# NoisyMountainCar with the same MBPO-style rollouts (buffer starts, H steps).
+noisy_mc_mbpo = Experiment(
+    name="noisy_mc_mbpo",
+    configs=tuple(
+        cfg
+        for head, head_ov in EIG_HEADS
+        for h in (10, 50)
+        for cfg in _every_tenth(
+            {"NoisyMountainCar-v0": 200},
+            f"{head}_eig_h{h}",
+            "eig",
+            reset_source="buffer",
+            rollout_length=h,
+            **head_ov,
+        )
+    ),
+    # bonus_ablation NoisyMountainCar tasks took ~2.5 h on one L40S.
+    time_limit="6:00:00",
+    description=(
+        "NoisyMountainCar, buffer-start model rollouts truncated at H in {10, 50}; "
+        "EIG (Deterministic/Gaussian); every-tenth"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -627,5 +687,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         enn_arch_mc,
         enn_arch64,
         swimmer_eig,
+        swimmer_mbpo,
+        noisy_mc_mbpo,
     )
 }
