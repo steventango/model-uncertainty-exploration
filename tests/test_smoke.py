@@ -13,7 +13,14 @@ import pytest
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 import main
-from config import Args, BLRConfig, ENNConfig, PPOConfig, RNDConfig
+from config import (
+    Args,
+    BLRConfig,
+    ENNConfig,
+    PPOConfig,
+    PredictionErrorConfig,
+    RNDConfig,
+)
 from offline_data import AREA_INDEX
 from ppo import Transition
 
@@ -81,6 +88,17 @@ CASES = {
         explore_bonus="rnd",
         ppo=TINY_PPO,
         rnd=RNDConfig(update_steps=10),
+        model=TINY_ENN,
+    ),
+    "prediction-error-cartpole-2seeds": Args(
+        cpu=True,
+        env="CartPole-v1",
+        num_seeds=2,
+        max_steps=100,
+        steps_per_rollout=50,
+        explore_bonus="prediction-error",
+        ppo=TINY_PPO,
+        prediction_error=PredictionErrorConfig(update_steps=10),
         model=TINY_ENN,
     ),
     "model-free-cartpole": Args(

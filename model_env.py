@@ -6,6 +6,7 @@ from flax import struct
 from gymnax.environments import environment, spaces
 
 from models import WorldModel
+from prediction_error import PredictionError
 from rnd import RND
 
 ResetSource = Literal["env", "buffer", "init"]
@@ -56,6 +57,7 @@ class ModelEnvParams:
     max_steps_in_episode: int = struct.field(pytree_node=False)
     model: WorldModel | None = None
     rnd: RND | None = None  # per-seed RND bonus (explore_bonus="rnd")
+    prediction_error: PredictionError | None = None  # per-seed, "prediction-error"
     alpha: float = 1.0
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
@@ -69,6 +71,7 @@ class ModelEnvParams:
             env_params=None,
             model=0,
             rnd=0,
+            prediction_error=0,
             alpha=None,
             beta=None,
             init_obs=0,
@@ -82,6 +85,7 @@ class ModelEnvParams:
             env_params=None,
             model=None,
             rnd=None,
+            prediction_error=None,
             alpha=0,
             beta=0,
             init_obs=None,
@@ -96,7 +100,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         env_params: environment.EnvParams,
         samples: int = 10,
         prediction_mode: Literal["mean", "sample"] = "mean",
-        explore_bonus: Literal["std", "eig", "rnd"] = "std",
+        explore_bonus: Literal["std", "eig", "rnd", "prediction-error"] = "std",
         oracle_reward_terminated: bool = True,
         reset_source: ResetSource = "env",
         max_steps_in_episode: int | None = None,
@@ -106,9 +110,10 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             raise ValueError(
                 f"prediction_mode must be 'mean' or 'sample', got {prediction_mode!r}"
             )
-        if explore_bonus not in ("std", "eig", "rnd"):
+        if explore_bonus not in ("std", "eig", "rnd", "prediction-error"):
             raise ValueError(
-                f"explore_bonus must be 'std', 'eig' or 'rnd', got {explore_bonus!r}"
+                "explore_bonus must be 'std', 'eig', 'rnd' or 'prediction-error', "
+                f"got {explore_bonus!r}"
             )
         if reset_source not in ("env", "buffer", "init"):
             raise ValueError(
@@ -210,7 +215,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         # (logarithmic in variance). Consequently --beta is not directly
         # comparable across the two bonus types and must be retuned when
         # switching between them.
-        if self.explore_bonus != "rnd":
+        if self.explore_bonus == "prediction-error":
+            r_intrinsic = params.prediction_error(state.obs, action)
+        elif self.explore_bonus != "rnd":
             r_intrinsic = model.uncertainty(x, state.z, self.explore_bonus)
 
         delta_obs = model.denormalize_delta_obs(delta_norm)
