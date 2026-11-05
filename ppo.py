@@ -1,3 +1,4 @@
+import functools
 from typing import NamedTuple
 
 import jax
@@ -274,6 +275,25 @@ def make_train(env, config):
     return train
 
 
+@functools.lru_cache
+def _make_tx(lr, max_grad_norm, anneal_lr, steps_per_update, num_updates):
+    """One optax transformation per config.
+
+    ``tx`` is static in the optimizer's graphdef, so a fresh transformation
+    per train state makes every new policy a jit cache miss (rollout, eval and
+    PPO training all recompile each plan).
+    """
+
+    def linear_schedule(count):
+        frac = 1.0 - (count // steps_per_update) / num_updates
+        return lr * frac
+
+    return optax.chain(
+        optax.clip_by_global_norm(max_grad_norm),
+        optax.adam(learning_rate=linear_schedule if anneal_lr else lr, eps=1e-5),
+    )
+
+
 def make_train_state(config, env, env_params, rngs):
     action_space = env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
@@ -288,24 +308,13 @@ def make_train_state(config, env, env_params, rngs):
         rngs=rngs,
     )
 
-    def linear_schedule(count):
-        frac = (
-            1.0
-            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
-            / config["NUM_UPDATES"]
-        )
-        return config["LR"] * frac
-
-    if config["ANNEAL_LR"]:
-        tx = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(learning_rate=linear_schedule, eps=1e-5),
-        )
-    else:
-        tx = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(config["LR"], eps=1e-5),
-        )
+    tx = _make_tx(
+        config["LR"],
+        config["MAX_GRAD_NORM"],
+        config["ANNEAL_LR"],
+        config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"],
+        config["NUM_UPDATES"],
+    )
     optimizer = nnx.Optimizer(network, tx, wrt=nnx.Param)
     normalize_vec_obs = NormalizeVecObs(
         jnp.zeros(env.observation_space(env_params).shape)
