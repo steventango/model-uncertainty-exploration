@@ -505,6 +505,33 @@ enn_fixes_mc = Experiment(
     ),
 )
 
+# Base-net architecture: activation x width (2 hidden layers) x LayerNorm.
+enn_arch_mc = Experiment(
+    name="enn_arch_mc",
+    configs=tuple(
+        cfg
+        for head, head_ov in EIG_HEADS
+        for act in ("relu", "tanh")
+        for width in (256, 128, 64)
+        for ln in (False, True)
+        for cfg in _every_tenth(
+            {"MountainCar-v0": 200},
+            f"{head}_eig_{act}_2x{width}{'_ln' if ln else ''}",
+            "eig",
+            **head_ov,
+            model__num_layers=2,
+            model__hidden_dim=width,
+            model__activation=act,
+            model__use_layer_norm=ln,
+        )
+    ),
+    time_limit="6:00:00",
+    description=(
+        "det/gauss EIG on MountainCar; ENN base net {relu, tanh} x 2x{256,128,64} "
+        "x LayerNorm on/off; plan every 10% of truncation, 10 episodes"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -524,5 +551,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long_variants,
         bonus_ablation,
         enn_fixes_mc,
+        enn_arch_mc,
     )
 }
