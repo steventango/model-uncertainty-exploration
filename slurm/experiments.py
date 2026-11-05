@@ -392,6 +392,93 @@ classic_plan_every_cheap_model_long_variants = Experiment(
     ),
 )
 
+# gymnax max_steps_in_episode per env (truncation length).
+CLASSIC_TRUNCATION = {
+    "Pendulum-v1": 200,
+    "MountainCar-v0": 200,
+    "MountainCarContinuous-v0": 999,
+    "CartPole-v1": 500,
+    "Acrobot-v1": 500,
+}
+NOISY_TRUNCATION = {**CLASSIC_TRUNCATION, "NoisyMountainCar-v0": 200}
+
+# label -> (bonus, overrides)
+BONUS_ARMS = {
+    "det_eig": ("eig", {}),
+    "gauss_eig": ("eig", {"model__head": "gaussian"}),
+    "pe": ("prediction-error", {}),
+    "rnd": ("rnd", {}),
+}
+
+
+def _every_tenth(envs: dict[str, int], label: str, bonus: str, **overrides):
+    return tuple(
+        cfg
+        for env, trunc in envs.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus=bonus,
+            label=label,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            **overrides,
+        )
+    )
+
+
+bonus_ablation = Experiment(
+    name="bonus_ablation",
+    configs=tuple(
+        cfg
+        for label, (bonus, ov) in BONUS_ARMS.items()
+        for cfg in _every_tenth(NOISY_TRUNCATION, label, bonus, **ov)
+    ),
+    time_limit="6:00:00",
+    description=(
+        "det_eig / gauss_eig / prediction-error / rnd x classic + NoisyMountainCar; "
+        "plan every 10% of truncation, 10 episodes; explore-only, sample mode"
+    ),
+)
+
+# The 1-D GP-matched epinet recipe (exp/epinet-fixes); norff drops the RFF prior.
+ENN_FIXES = {
+    "model__hidden_dim": 128,
+    "model__num_layers": 2,
+    "model__activation": "gelu",
+    "model__index_input": False,
+    "model__l2": 0.1,
+    "model__grad_clip": 1.0,
+    "model__num_index_samples": 8,
+}
+ENN_FIX_ARMS = {
+    "fixes": {**ENN_FIXES, "model__prior": "rff", "model__prior_lengthscale": 0.5},
+    "fixes_norff": ENN_FIXES,
+}
+
+enn_fixes_mc = Experiment(
+    name="enn_fixes_mc",
+    configs=tuple(
+        cfg
+        for head, head_ov in (("det", {}), ("gauss", {"model__head": "gaussian"}))
+        for fix, fix_ov in ENN_FIX_ARMS.items()
+        for cfg in _every_tenth(
+            {"MountainCar-v0": 200},
+            f"{head}_eig_{fix}",
+            "eig",
+            **head_ov,
+            **fix_ov,
+        )
+    ),
+    time_limit="6:00:00",
+    description=(
+        "det/gauss EIG with the epinet fixes (with/without RFF prior) on MountainCar; "
+        "plan every 10% of truncation, 10 episodes; explore-only, sample mode"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -409,5 +496,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_ppo_ent,
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
+        bonus_ablation,
+        enn_fixes_mc,
     )
 }
