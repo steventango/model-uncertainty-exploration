@@ -707,6 +707,74 @@ clip_to_data = Experiment(
     ),
 )
 
+# Rollout-horizon x reset-source grid, EIG (Gaussian) vs extrinsic, with the
+# 2x64 ReLU ENN and --clip-to-data. H=None is the full episode.
+ROLLOUT_GRID_ENVS = {
+    **CLASSIC_TRUNCATION,
+    "NoisyMountainCar-v0": 200,
+    "reacher": 1000,
+    "halfcheetah": 1000,
+}
+_ARCH_2X64_RELU = {
+    "model__num_layers": 2,
+    "model__hidden_dim": 64,
+    "model__activation": "relu",
+}
+
+
+def _rollout_grid_configs():
+    for env, trunc in ROLLOUT_GRID_ENVS.items():
+        for name, alpha, beta, bonus_ov in (
+            ("eig", 0.0, 1.0, {"model__head": "gaussian"}),
+            ("extrinsic", 1.0, 0.0, {}),
+        ):
+            for h in (1, 10, None):
+                for start in ("env", "buffer"):
+                    label = f"{name}_h{h or 'full'}_{start}"
+                    yield from sweep(
+                        env=env,
+                        alpha=alpha,
+                        beta=beta,
+                        mode="sample",
+                        bonus="eig",
+                        label=label,
+                        steps_per_rollout=trunc // 10,
+                        max_steps=10 * trunc,
+                        reset_source=start,
+                        clip_to_data=True,
+                        **({"rollout_length": h} if h else {}),
+                        **_ARCH_2X64_RELU,
+                        **bonus_ov,
+                    )
+
+
+_BRAX_GRID_ENVS = ("reacher", "halfcheetah")
+
+# Classic control + NoisyMountainCar: ~46-50 s/plan after the recompile fix
+# -> ~1.3 h per task.
+rollout_grid = Experiment(
+    name="rollout_grid",
+    configs=tuple(c for c in _rollout_grid_configs() if c.env not in _BRAX_GRID_ENVS),
+    time_limit="3:00:00",
+    description=(
+        "EIG (Gaussian) vs extrinsic x H in {1, 10, full} x reset {env, buffer}; "
+        "2x64 ReLU ENN, clip-to-data; classic control + NoisyMountainCar; every-tenth"
+    ),
+)
+
+# Brax: the halfcheetah smoke test spent ~75-87 s per eval (100 x 1000-step
+# episodes), so 100 evals plus PPO does not fit in 3 h.
+rollout_grid_brax = Experiment(
+    name="rollout_grid_brax",
+    configs=tuple(c for c in _rollout_grid_configs() if c.env in _BRAX_GRID_ENVS),
+    time_limit="6:00:00",
+    mem_per_cpu="64G",
+    description=(
+        "rollout_grid on reacher and halfcheetah (brax); plan every 100 steps, "
+        "10 episodes"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -732,5 +800,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         swimmer_mbpo,
         noisy_mc_mbpo,
         clip_to_data,
+        rollout_grid,
+        rollout_grid_brax,
     )
 }
