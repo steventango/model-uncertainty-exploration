@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Literal
 
 import distrax
@@ -133,12 +134,33 @@ class ENNModel(WorldModel):
         return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
 
 
-def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
+TRAINABLE = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
+
+
+def _loss_fn(
+    model: ENNModel,
+    batch,
+    indices,
+    rngs: nnx.Rngs,
+    num_index_samples: int = 1,
+    l2: float = 0.0,
+    num_data=1,
+):
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
-    z = jax.random.normal(rngs(), shape=(model.index_dim,))
+    c = model.bootstrap_c(indices)
+    zs = jax.random.normal(rngs(), shape=(num_index_samples, model.index_dim))
+    losses = [_index_loss(model, batch, x, c, z) for z in zs]
+    loss, aux = jax.tree.map(lambda *v: jnp.mean(jnp.stack(v)), *losses)
+    if l2 > 0:
+        sq = sum(jnp.sum(p**2) for p in jax.tree.leaves(nnx.state(model, TRAINABLE)))
+        loss = loss + l2 * sq / num_data
+    return loss, aux
+
+
+def _index_loss(model: ENNModel, batch, x, c, z):
     logits = model.batch_predict_sample(x, z)
-    cz = model.bootstrap_c(indices) @ z
+    cz = c @ z
     p = 0.5
     mask = (cz > norm.ppf(p)).astype(jnp.float32)
     if model.bootstrap == "bernoulli":
@@ -196,7 +218,7 @@ def _beta_nll(model: ENNModel, y, target):
     return (weight * nll).sum(-1)
 
 
-@nnx.jit
+@partial(nnx.jit, static_argnames=("num_index_samples", "l2"))
 def _train_step(
     model: ENNModel,
     optimizer: nnx.Optimizer,
@@ -204,9 +226,14 @@ def _train_step(
     rngs: nnx.Rngs,
     batch,
     indices,
+    num_index_samples: int = 1,
+    l2: float = 0.0,
+    num_data=1,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
+    (loss, aux), grads = grad_fn(
+        model, batch, indices, rngs, num_index_samples, l2, num_data
+    )
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -244,6 +271,8 @@ def _train_model(
     pointer: int,
     minibatch_size: int,
     rngs: nnx.Rngs,
+    num_index_samples: int = 1,
+    l2: float = 0.0,
 ):
     model.update_stats(dataset, pointer)
 
@@ -254,7 +283,17 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
+        _train_step(
+            model,
+            optimizer,
+            metrics,
+            rngs,
+            minibatch,
+            indices,
+            num_index_samples=num_index_samples,
+            l2=l2,
+            num_data=pointer,
+        )
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -283,6 +322,11 @@ def _make_batched_model(
             model_config["INDEX_DIM"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
             rngs=nnx.Rngs(params=key),
+            num_layers=model_config["NUM_LAYERS"],
+            activation=model_config["ACTIVATION"],
+            index_input=model_config["INDEX_INPUT"],
+            prior=model_config["PRIOR"],
+            prior_lengthscale=model_config["PRIOR_LENGTHSCALE"],
         )
         model = ENNModel(
             enn,
@@ -299,8 +343,9 @@ def _make_batched_model(
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
-        not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
-        optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
+        if model_config["GRAD_CLIP"] > 0:
+            tx = optax.chain(optax.clip_by_global_norm(model_config["GRAD_CLIP"]), tx)
+        optimizer = nnx.Optimizer(model, tx, wrt=TRAINABLE)
         metrics = nnx.MultiMetric(
             loss=nnx.metrics.Average("loss"),
             delta_next_state_loss=nnx.metrics.Average("delta_next_state_loss"),
@@ -313,7 +358,9 @@ def _make_batched_model(
     return model, (optimizer, metrics)
 
 
-def _make_batched_train_model(update_steps, minibatch_size):
+def _make_batched_train_model(
+    update_steps, minibatch_size, num_index_samples: int = 1, l2: float = 0.0
+):
     def core(model, optimizer, metrics, dataset, pointer, rngs):
         return _train_model(
             model,
@@ -324,6 +371,8 @@ def _make_batched_train_model(update_steps, minibatch_size):
             pointer,
             minibatch_size,
             rngs,
+            num_index_samples,
+            l2,
         )
 
     batched = nnx.jit(nnx.vmap(core, in_axes=(0, 0, 0, 0, None, 0), out_axes=0))
