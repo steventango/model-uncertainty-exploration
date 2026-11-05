@@ -580,6 +580,31 @@ enn_arch64 = Experiment(
     ),
 )
 
+# Swimmer (brax): plan every 100 steps (10% of the 1000-step episode), 10 episodes.
+swimmer_eig = Experiment(
+    name="swimmer_eig",
+    configs=(
+        *_every_tenth({"swimmer": 1000}, "gauss_eig", "eig", model__head="gaussian"),
+        *_every_tenth({"swimmer": 1000}, "det_eig", "eig"),
+        *sweep(
+            env="swimmer",
+            alpha=1.0,
+            beta=0.0,
+            mode="sample",
+            bonus="eig",
+            label="extrinsic",
+            steps_per_rollout=100,
+            max_steps=10000,
+        ),
+    ),
+    time_limit="24:00:00",
+    mem_per_cpu="64G",
+    description=(
+        "Swimmer: EIG (Gaussian) / EIG (Deterministic) explore-only vs extrinsic; "
+        "plan every 100 steps, 10 episodes"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -601,5 +626,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         enn_fixes_mc,
         enn_arch_mc,
         enn_arch64,
+        swimmer_eig,
     )
 }
