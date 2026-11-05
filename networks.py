@@ -165,11 +165,20 @@ class MLP(nnx.Module):
         rngs: nnx.Rngs,
         zero_out_init: bool = False,
         use_layer_norm: bool = False,
+        num_layers: int = 1,
+        activation: str = "tanh",
     ):
         self.use_layer_norm = use_layer_norm
+        self.activation = activation
         self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
         if use_layer_norm:
             self.ln1 = nnx.LayerNorm(hidden_features, rngs=rngs)
+        self.extra = nnx.List(
+            [
+                nnx.Linear(hidden_features, hidden_features, rngs=rngs)
+                for _ in range(num_layers - 1)
+            ]
+        )
         if zero_out_init:
             self.linear2 = nnx.Linear(
                 hidden_features,
@@ -184,15 +193,24 @@ class MLP(nnx.Module):
         features = self.linear1(x)
         if self.use_layer_norm:
             features = self.ln1(features)
-        features = nnx.tanh(features)
+        act = {"tanh": nnx.tanh, "gelu": nnx.gelu, "relu": nnx.relu}[self.activation]
+        features = act(features)
+        for layer in self.extra:
+            features = act(layer(features))
         y = self.linear2(features)
         return y, features
 
 
 class ProjectedMLP(nnx.Module):
     def __init__(
-        self, in_features: int, hidden_features: int, out_features: int, rngs: nnx.Rngs
+        self,
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        rngs: nnx.Rngs,
+        index_input: bool = True,
     ):
+        self.index_input = index_input
         self.mlp = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
@@ -203,7 +221,7 @@ class ProjectedMLP(nnx.Module):
         )
 
     def __call__(self, x, z, rngs: nnx.Rngs | None = None):
-        xz = jnp.concatenate([x, z], axis=-1)
+        xz = jnp.concatenate([x, z], axis=-1) if self.index_input else x
         y, _ = self.mlp(xz, rngs=rngs)
         y1 = y.reshape(-1, z.shape[-1])
         return (y1 * z).sum(axis=-1)
@@ -244,6 +262,35 @@ class MLPEnsemble(nnx.Module):
         return jnp.einsum("no,n->o", y, z)
 
 
+class RFFPrior(nnx.Module):
+    """Prior functions drawn from an RBF-kernel GP via random Fourier features.
+
+    Member j is p_j(x) = a_jᵀ cos(W_j x + b_j); the index-weighted sum Σ_j p_j(x) z_j
+    has unit prior variance per output.
+    """
+
+    def __init__(
+        self,
+        num_models: int,
+        in_features: int,
+        out_features: int,
+        lengthscale: float,
+        rngs: nnx.Rngs,
+        num_features: int = 64,
+    ):
+        kw, kb, ka = jax.random.split(rngs.params(), 3)
+        d, m = num_models, num_features
+        self.w = nnx.Variable(jax.random.normal(kw, (d, m, in_features)) / lengthscale)
+        self.b = nnx.Variable(jax.random.uniform(kb, (d, m), maxval=2 * jnp.pi))
+        self.a = nnx.Variable(
+            jax.random.normal(ka, (d, m, out_features)) * jnp.sqrt(2.0 / (m * d))
+        )
+
+    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        features = jnp.cos(jnp.einsum("dmi,i->dm", self.w[...], x) + self.b[...])
+        return jnp.einsum("dm,dmo,d->o", features, self.a[...], z)
+
+
 class EpiNet(nnx.Module):
     def __init__(
         self,
@@ -255,20 +302,29 @@ class EpiNet(nnx.Module):
         index_dim: int,
         *,
         rngs: nnx.Rngs,
+        index_input: bool = True,
+        prior: str = "mlp",
+        prior_lengthscale: float = 0.5,
     ):
         self.learnable = ProjectedMLP(
-            in_features=in_features + base_features + index_dim,
+            in_features=in_features + base_features + index_dim * index_input,
             hidden_features=learnable_hidden_features,
             out_features=out_features * index_dim,
             rngs=rngs,
+            index_input=index_input,
         )
-        self.prior = MLPEnsemble(
-            num_models=index_dim,
-            in_features=in_features,
-            hidden_features=prior_hidden_features,
-            out_features=out_features,
-            rngs=rngs,
-        )
+        if prior == "rff":
+            self.prior = RFFPrior(
+                index_dim, in_features, out_features, prior_lengthscale, rngs=rngs
+            )
+        else:
+            self.prior = MLPEnsemble(
+                num_models=index_dim,
+                in_features=in_features,
+                hidden_features=prior_hidden_features,
+                out_features=out_features,
+                rngs=rngs,
+            )
         self.prior_scale = 1.0
 
     def __call__(self, phi, x, z, rngs: nnx.Rngs | None = None):
@@ -289,12 +345,19 @@ class ENN(nnx.Module):
         *,
         use_layer_norm: bool = False,
         rngs: nnx.Rngs,
+        num_layers: int = 1,
+        activation: str = "tanh",
+        index_input: bool = True,
+        prior: str = "mlp",
+        prior_lengthscale: float = 0.5,
     ):
         self.base = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
             out_features=out_features,
             use_layer_norm=use_layer_norm,
+            num_layers=num_layers,
+            activation=activation,
             rngs=rngs,
         )
         self.epinet = EpiNet(
@@ -305,6 +368,9 @@ class ENN(nnx.Module):
             out_features=out_features,
             index_dim=index_dim,
             rngs=rngs,
+            index_input=index_input,
+            prior=prior,
+            prior_lengthscale=prior_lengthscale,
         )
         self.index_dim = index_dim
 

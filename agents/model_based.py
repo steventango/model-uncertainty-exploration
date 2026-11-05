@@ -94,7 +94,14 @@ class ModelBasedAgent:
         self.val_data = val_data
         self.debug = debug
         self._train_model = make_batched_train_model(
-            model_name, model_config["UPDATE_STEPS"], model_config["MINIBATCH_SIZE"]
+            model_name,
+            model_config["UPDATE_STEPS"],
+            model_config["MINIBATCH_SIZE"],
+            **(
+                {"num_index_samples": model_config["NUM_INDEX_SAMPLES"], "l2": model_config["L2"]}
+                if model_name == "enn"
+                else {}
+            ),
         )
         self._val_metrics = validation.make_batched_validation_metrics()
         if rnd_config is not None:

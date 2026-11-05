@@ -21,6 +21,13 @@ class ENNConfig:
     use_layer_norm: bool = False
     bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli"
     bootstrap_noise: float = 1.0
+    num_layers: int = 1
+    index_input: bool = True
+    prior: Literal["mlp", "rff"] = "mlp"
+    prior_lengthscale: float = 0.5
+    l2: float = 0.0
+    grad_clip: float = 0.0
+    num_index_samples: int = 1
 
 
 @dataclass(frozen=True)
