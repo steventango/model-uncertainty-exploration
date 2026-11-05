@@ -114,6 +114,7 @@ class Args:
     predict_reward_terminated: bool = False
     reset_source: Literal["env", "buffer", "init"] = "env"
     rollout_length: int | None = None
+    clip_to_data: bool = False
     steps_per_rollout: int | None = None
     eval_every: int | None = None
     uncertainty_threshold: float | None = None

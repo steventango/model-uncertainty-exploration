@@ -12,6 +12,19 @@ from rnd import RND
 ResetSource = Literal["env", "buffer", "init"]
 
 
+def data_range(obs: jnp.ndarray, next_obs: jnp.ndarray, count) -> tuple:
+    """Per-dim min/max over the valid buffer rows of ``obs`` and ``next_obs``.
+
+    Shapes ``(..., N, obs_dim)``; returns two ``(..., obs_dim)`` arrays.
+    """
+    valid = (jnp.arange(obs.shape[-2]) < count)[:, None]
+    both = jnp.concatenate([obs, next_obs], axis=-2)
+    valid = jnp.concatenate([valid, valid], axis=0)
+    low = jnp.min(jnp.where(valid, both, jnp.inf), axis=-2)
+    high = jnp.max(jnp.where(valid, both, -jnp.inf), axis=-2)
+    return low, high
+
+
 def reset_weights(
     terminated: jnp.ndarray,
     truncated: jnp.ndarray,
@@ -62,6 +75,10 @@ class ModelEnvParams:
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
+    # Per-seed data range of observed states, (obs_dim,); predicted states are
+    # clipped to it when set (--clip-to-data).
+    obs_low: jnp.ndarray | None = None
+    obs_high: jnp.ndarray | None = None
 
     def seed_vmap_axes(self) -> "ModelEnvParams":
         """vmap ``in_axes`` prefix that maps the per-seed ``model`` subtree and
@@ -76,6 +93,8 @@ class ModelEnvParams:
             beta=None,
             init_obs=0,
             init_weights=0,
+            obs_low=0,
+            obs_high=0,
         )
 
     def config_vmap_axes(self) -> "ModelEnvParams":
@@ -90,6 +109,8 @@ class ModelEnvParams:
             beta=0,
             init_obs=None,
             init_weights=None,
+            obs_low=None,
+            obs_high=None,
         )
 
 
@@ -227,6 +248,8 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
+        if params.obs_low is not None:
+            obs = jnp.clip(obs, params.obs_low, params.obs_high)
         if self.explore_bonus == "rnd":
             # Novelty of the predicted next observation.
             r_intrinsic = params.rnd(obs)
