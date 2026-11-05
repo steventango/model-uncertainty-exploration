@@ -51,6 +51,10 @@ class ExperimentLogger:
         self._log_time_series("dataset/reward", rewards, start_step)
         self._log_time_series("dataset/terminated", batch.terminated, start_step)
         self._log_time_series("dataset/truncated", batch.truncated, start_step)
+        if "mu" in batch.info:
+            mu = np.asarray(batch.info["mu"])
+            for i in range(mu.shape[1]):
+                self._log_time_series(f"dataset/mu_{i}", mu[:, i], start_step)
 
     def log_loss_history(self, history, iteration, max_points: int = 10):
         num_epochs = next(iter(history.values())).shape[0]

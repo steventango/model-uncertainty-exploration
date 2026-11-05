@@ -1,5 +1,7 @@
+import gymnax
 import jax.numpy as jnp
 
+from drifter_distractor import DrifterDistractor
 from wrappers import StateReconstructionWrapper
 
 
@@ -49,6 +51,16 @@ class AcrobotWrapper(StateReconstructionWrapper):
             velocity_2=obs[5],
             time=time,
         )
+
+
+class DrifterDistractorWrapper(StateReconstructionWrapper):
+    """The target means are hidden, so the state cannot be rebuilt from obs."""
+
+    def get_state(self, obs, last_action, time, next_obs=None):
+        raise NotImplementedError("DrifterDistractor target means are hidden.")
+
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        return jnp.zeros(()), jnp.bool_(False)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +219,7 @@ _WRAPPER_MAP = {
     "MountainCarContinuous-v0": MountainCarContinuousWrapper,
     "CartPole-v1": CartPoleWrapper,
     "Acrobot-v1": AcrobotWrapper,
+    "DrifterDistractor-v0": DrifterDistractorWrapper,
     # Brax environments
     "inverted_pendulum": InvertedPendulumBraxWrapper,
     "halfcheetah": HalfCheetahBraxWrapper,
@@ -238,6 +251,20 @@ BRAX_ENVS = frozenset(
 )
 
 BRAX_BACKENDS = {"swimmer": "generalized"}
+
+CUSTOM_GYMNAX_ENVS = {"DrifterDistractor-v0": DrifterDistractor}
+
+# Envs whose ground-truth dynamics depend on hidden state, so there is no
+# validation batch to compare the model against.
+HIDDEN_STATE_ENVS = frozenset({"DrifterDistractor-v0"})
+
+
+def make_gymnax_env(env_name: str):
+    cls = CUSTOM_GYMNAX_ENVS.get(env_name)
+    if cls is None:
+        return gymnax.make(env_name)
+    env = cls()
+    return env, env.default_params
 
 
 def make_state_reconstruction_wrapper(env, env_name: str) -> StateReconstructionWrapper:

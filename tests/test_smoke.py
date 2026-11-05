@@ -117,6 +117,15 @@ CASES = {
         ppo=TINY_PPO,
         model=TINY_ENN,
     ),
+    "enn-drifter-distractor": Args(
+        cpu=True,
+        env="DrifterDistractor-v0",
+        max_steps=100,
+        steps_per_rollout=50,
+        explore_bonus="eig",
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
     "pendulum-every-tenth": Args(
         env="Pendulum-v1", num_seeds=2, steps_per_rollout=20, max_steps=200
     ),

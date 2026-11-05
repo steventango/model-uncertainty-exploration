@@ -4,7 +4,6 @@ import os
 import time
 from datetime import datetime
 
-import gymnax
 import jax
 import jax.numpy as jnp
 import tyro
@@ -18,7 +17,13 @@ from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
+from environments import (
+    BRAX_BACKENDS,
+    BRAX_ENVS,
+    HIDDEN_STATE_ENVS,
+    make_gymnax_env,
+    make_state_reconstruction_wrapper,
+)
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from models.base import head_out_features
@@ -236,7 +241,7 @@ def main(args: Args):
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
             env_params = base_env.default_params
         else:
-            base_env, env_params = gymnax.make(args.env)
+            base_env, env_params = make_gymnax_env(args.env)
 
         if is_brax:
             predict_reward_terminated = args.predict_reward_terminated or not hasattr(
@@ -257,7 +262,9 @@ def main(args: Args):
         act_dim = action_space.n if discrete else None
         env = _wrap_env(base_env, discrete)
 
-        if is_brax:
+        if args.env in HIDDEN_STATE_ENVS:
+            val_data = None
+        elif is_brax:
             val_data = validation.generate_brax_validation_data(base_env, env_params)
         else:
             val_data = validation.generate_validation_data(
@@ -269,12 +276,15 @@ def main(args: Args):
         head = getattr(args.model, "head", "deterministic")
         out_features = head_out_features(head, obs_dim, predict_reward_terminated)
 
+        # Episode length, capped for continuing envs whose single episode spans
+        # the whole run.
+        horizon = min(env_params.max_steps_in_episode, 1000)
         # Real-env steps between re-plans: one episode by default, 1 to re-plan
         # after every real step.
-        rollout_steps = args.steps_per_rollout or env_params.max_steps_in_episode
+        rollout_steps = args.steps_per_rollout or horizon
         eval_every = args.eval_every or rollout_steps
         # Tied to episode length so plan-every-step does not shrink it to 1.
-        model_minibatch_size = env_params.max_steps_in_episode
+        model_minibatch_size = horizon
         max_steps = args.max_steps or (100_000 if is_brax else 1000)
         num_rollouts = max_steps // rollout_steps
         total_timesteps = num_rollouts * rollout_steps
@@ -288,7 +298,7 @@ def main(args: Args):
             "discrete": discrete,
             "action_dim": action_dim,
         }
-        debug = args.debug and not is_brax
+        debug = args.debug and not is_brax and val_data is not None
 
     model_config = model_config_dict(
         args.model, max_data=dataset_size, minibatch_size=model_minibatch_size
@@ -313,7 +323,7 @@ def main(args: Args):
         eval_config = {
             **rollout_config,
             "NUM_ENVS": 100,
-            "NUM_STEPS": env_params.max_steps_in_episode,
+            "NUM_STEPS": horizon,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
 
