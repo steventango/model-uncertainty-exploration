@@ -101,7 +101,7 @@ class WorldModel(nnx.Module):
         """Epistemic uncertainty at a single x given S epistemic indices z."""
         var = self.variance(x, z)
         if kind == "eig":
-            u = 0.5 * jnp.log(1.0 + var)
+            u = 0.5 * jnp.log1p(var)
         else:
             u = jnp.sqrt(var)
         return u.sum(axis=-1) if reduce_output else u

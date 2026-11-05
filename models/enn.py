@@ -1,3 +1,5 @@
+from typing import Literal
+
 import distrax
 import jax
 import jax.numpy as jnp
@@ -22,6 +24,7 @@ class ENNModel(WorldModel):
     def __init__(
         self,
         enn: ENN,
+        bootstrap_key: jax.Array,
         in_features: int,
         obs_dim: int,
         act_dim: int | None = None,
@@ -29,6 +32,8 @@ class ENNModel(WorldModel):
         predict_reward_terminated: bool = True,
         head: str = "deterministic",
         min_scale: float = 1e-3,
+        bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli",
+        bootstrap_noise: float = 1.0,
     ):
         super().__init__(
             in_features=in_features,
@@ -41,6 +46,9 @@ class ENNModel(WorldModel):
         self.head = head
         self.min_scale = min_scale
         self.enn = enn
+        self.bootstrap = bootstrap
+        self.bootstrap_noise = bootstrap_noise
+        self.bootstrap_key = nnx.Variable(jax.random.key_data(bootstrap_key))
 
     @property
     def index_dim(self):
@@ -108,79 +116,61 @@ class ENNModel(WorldModel):
             u = loc.std(axis=0)
         return u.sum(axis=-1) if reduce_output else u
 
-
-def _projections(model: ENNModel, n, z, rngs: nnx.Rngs):
-    """Per-datapoint ENN perturbation c_iᵀz with c_i uniform on the sphere (~N(0,1))."""
-    c = jax.random.normal(rngs(), shape=(n, model.index_dim))
-    c = c / jnp.linalg.norm(c, axis=-1, keepdims=True)
-    return (c * z).sum(axis=-1)
-
-
-def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
-    """NLL of the predictive distribution at one sampled epistemic index z."""
-    x = model.normalize_input(model.build_input(batch.obs, batch.action))
-    z = jax.random.normal(rngs(), shape=(model.index_dim,))
-    y = model.batch_predict_sample(x, z)
-    target = model._targets(batch.obs, batch.info["next_obs"])
-    proj = _projections(model, batch.obs.shape[0], z, rngs)
-    # ENN target perturbation at the observation-noise level (predicted σ).
-    loc, scale = model._loc_scale(y)
-    target = target + jax.lax.stop_gradient(scale) * proj[:, None]
-    return -distrax.MultivariateNormalDiag(loc, scale).log_prob(target).mean()
+    def bootstrap_c(self, indices):
+        """Fixed unit vectors c_i of dataset rows for the delta, reward and terminated heads.  (3, N, index_dim)"""
+        key = jax.random.wrap_key_data(self.bootstrap_key[...])
+        c = jax.vmap(
+            lambda i: jax.random.normal(
+                jax.random.fold_in(key, i), (3, self.index_dim)
+            ),
+            out_axes=1,
+        )(indices)
+        return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
 
 
-def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
-    if model.head != "deterministic":
-        nll = _distribution_loss(model, batch, rngs)
-        return nll, (nll, jnp.zeros(()), jnp.zeros(()))
-    sigma = 1.0
+def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
+    cz = model.bootstrap_c(indices) @ z
+    p = 0.5
+    mask = (cz > norm.ppf(p)).astype(jnp.float32)
+    if model.bootstrap == "bernoulli":
+        noise = jnp.zeros_like(cz)
+        weight = mask
+    else:
+        noise = model.bootstrap_noise * cz
+        weight = jnp.ones_like(cz)
 
-    delta_next_state_c = jax.random.normal(
-        rngs(), shape=(batch.obs.shape[0], model.index_dim)
-    )
-    delta_next_state_c = delta_next_state_c / jnp.linalg.norm(
-        delta_next_state_c, axis=-1, keepdims=True
-    )
+    def weighted_mean(loss, w):
+        return (loss * w).sum() / jnp.maximum(w.sum(), 1.0)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
-    delta_next_state_target = delta_next_state + sigma * (delta_next_state_c * z).sum(
-        axis=-1, keepdims=True
-    )
+    delta_next_state_target = delta_next_state + noise[0, :, None]
+
+    if model.head == "gaussian":
+        dist = model.dist_from_output(logits)
+        nll = weighted_mean(-dist.log_prob(delta_next_state_target), weight[0])
+        return nll, (nll, jnp.zeros(()), jnp.zeros(()))
+
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
-    delta_next_state_loss = delta_next_state_loss.mean()
+    delta_next_state_loss = weighted_mean(delta_next_state_loss.mean(-1), weight[0])
 
     if model.predict_reward_terminated:
-        reward_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
-        reward_target = model.normalize_reward(batch.reward) + sigma * (
-            reward_c * z
-        ).sum(axis=-1)
+        reward_target = model.normalize_reward(batch.reward) + noise[1]
         reward_loss = (logits[..., -2] - reward_target) ** 2
-        reward_loss = reward_loss.mean()
+        reward_loss = weighted_mean(reward_loss, weight[1])
 
-        terminated_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        terminated_c = terminated_c / jnp.linalg.norm(
-            terminated_c, axis=-1, keepdims=True
-        )
-        p = 0.5
-        mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
         terminated_target = batch.terminated.astype(jnp.float32)
         terminated_pred = logits[..., -1]
         terminated_loss = optax.sigmoid_binary_cross_entropy(
             terminated_pred, terminated_target
         )
-        terminated_loss = (terminated_loss * mask).sum() / jnp.maximum(mask.sum(), 1.0)
+        terminated_loss = weighted_mean(terminated_loss, mask[2])
     else:
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())
@@ -196,9 +186,10 @@ def _train_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    indices,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, rngs)
+    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -215,8 +206,9 @@ def _eval_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    indices,
 ):
-    loss, aux = _loss_fn(model, batch, rngs)
+    loss, aux = _loss_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -245,7 +237,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch)
+        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -277,12 +269,15 @@ def _make_batched_model(
         )
         model = ENNModel(
             enn,
+            jax.random.fold_in(key, 1),
             in_features,
             obs_dim,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
             head=head,
             min_scale=model_config.get("MIN_SCALE", 1e-3),
+            bootstrap=model_config["BOOTSTRAP"],
+            bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))

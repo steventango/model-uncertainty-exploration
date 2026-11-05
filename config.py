@@ -21,6 +21,8 @@ class ENNConfig:
     use_layer_norm: bool = False
     head: Literal["deterministic", "gaussian"] = "deterministic"
     min_scale: float = 1e-3
+    bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli"
+    bootstrap_noise: float = 1.0
 
 
 @dataclass(frozen=True)
