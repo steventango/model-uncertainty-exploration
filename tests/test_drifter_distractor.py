@@ -11,6 +11,7 @@ from drifter_distractor import (
     EnvParams,
     action_targets,
 )
+from environments import make_gymnax_env, make_state_reconstruction_wrapper
 
 ENV = DrifterDistractor()
 PARAMS = ENV.default_params
@@ -33,6 +34,15 @@ def _run(actions, params=PARAMS, seed=0):
     assert not np.any(np.asarray(done))
     assert np.all(np.asarray(reward) == 0.0)
     return np.asarray(obs), np.asarray(mu)
+
+
+def test_registered():
+    env, params = make_gymnax_env("DrifterDistractor-v0")
+    assert isinstance(env, DrifterDistractor)
+    assert params == PARAMS
+    wrapped = make_state_reconstruction_wrapper(env, "DrifterDistractor-v0")
+    reward, terminated = wrapped.obs_to_reward_terminated(jnp.zeros(1), 0, jnp.zeros(1))
+    assert reward == 0.0 and not terminated
 
 
 def test_reset():
