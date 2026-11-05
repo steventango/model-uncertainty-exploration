@@ -179,6 +179,13 @@ class MLP(nnx.Module):
                 for _ in range(num_layers - 1)
             ]
         )
+        if use_layer_norm:
+            self.extra_ln = nnx.List(
+                [
+                    nnx.LayerNorm(hidden_features, rngs=rngs)
+                    for _ in range(num_layers - 1)
+                ]
+            )
         if zero_out_init:
             self.linear2 = nnx.Linear(
                 hidden_features,
@@ -195,8 +202,11 @@ class MLP(nnx.Module):
             features = self.ln1(features)
         act = {"tanh": nnx.tanh, "gelu": nnx.gelu, "relu": nnx.relu}[self.activation]
         features = act(features)
-        for layer in self.extra:
-            features = act(layer(features))
+        for i, layer in enumerate(self.extra):
+            features = layer(features)
+            if self.use_layer_norm:
+                features = self.extra_ln[i](features)
+            features = act(features)
         y = self.linear2(features)
         return y, features
 
