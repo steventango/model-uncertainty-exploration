@@ -532,6 +532,54 @@ enn_arch_mc = Experiment(
     ),
 )
 
+# 64-unit base net: depth x activation x LayerNorm x L2, on Pendulum and MountainCar.
+# MountainCar cells already covered by enn_arch_mc / bonus_ablation / enn_fixes_mc
+# (2x64 without L2, the 1x64 tanh baseline, and 1x64 tanh + L2) are skipped.
+_MC_DONE = {(2, a, ln, 0.0) for a in ("relu", "tanh") for ln in (False, True)} | {
+    (1, "tanh", False, 0.0),
+    (1, "tanh", False, 0.1),
+}
+
+
+def _arch64_configs():
+    for env, trunc in (("Pendulum-v1", 200), ("MountainCar-v0", 200)):
+        for head, head_ov in EIG_HEADS:
+            for layers in (1, 2):
+                for act in ("relu", "tanh"):
+                    for ln in (False, True):
+                        for l2 in (0.0, 0.1):
+                            if (
+                                env == "MountainCar-v0"
+                                and (layers, act, ln, l2) in _MC_DONE
+                            ):
+                                continue
+                            label = (
+                                f"{head}_eig_{act}_{layers}x64"
+                                f"{'_ln' if ln else ''}{'_l2' if l2 else ''}"
+                            )
+                            yield from _every_tenth(
+                                {env: trunc},
+                                label,
+                                "eig",
+                                **head_ov,
+                                model__num_layers=layers,
+                                model__hidden_dim=64,
+                                model__activation=act,
+                                model__use_layer_norm=ln,
+                                model__l2=l2,
+                            )
+
+
+enn_arch64 = Experiment(
+    name="enn_arch64",
+    configs=tuple(_arch64_configs()),
+    time_limit="6:00:00",
+    description=(
+        "det/gauss EIG; ENN base 64 units x {1,2} layers x {relu,tanh} x LN x L2 "
+        "{0,0.1}; Pendulum full grid, MountainCar missing cells; every-tenth"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -552,5 +600,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         bonus_ablation,
         enn_fixes_mc,
         enn_arch_mc,
+        enn_arch64,
     )
 }
