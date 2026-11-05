@@ -1,17 +1,25 @@
 from typing import Literal
 
+import distrax
 import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
 from jax.scipy.stats import norm
 
-from models.base import WorldModel, register_model
+from models.base import WorldModel, head_out_features, register_model
 from networks import ENN
 
 
 class ENNModel(WorldModel):
-    """ENN-based dynamics model. Epistemic uncertainty via index-variable sampling."""
+    """ENN-based dynamics model. Epistemic uncertainty via index-variable sampling.
+
+    ``head`` selects the output:
+      deterministic: point estimate of the normalized delta-obs (+ reward/terminated).
+      gaussian: diagonal Gaussian over the normalized delta-obs (aleatoric noise).
+    For the distributional head each epistemic index z yields a full predictive
+    distribution; exploration uses only the disagreement across z (epistemic).
+    """
 
     def __init__(
         self,
@@ -22,6 +30,9 @@ class ENNModel(WorldModel):
         act_dim: int | None = None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
+        head: str = "deterministic",
+        min_scale: float = 1e-3,
+        beta_nll: float = 0.5,
         bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli",
         bootstrap_noise: float = 1.0,
     ):
@@ -32,6 +43,10 @@ class ENNModel(WorldModel):
             eps=eps,
             predict_reward_terminated=predict_reward_terminated,
         )
+        head_out_features(head, obs_dim, predict_reward_terminated)  # validates
+        self.head = head
+        self.min_scale = min_scale
+        self.beta_nll = beta_nll
         self.enn = enn
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
@@ -49,9 +64,59 @@ class ENNModel(WorldModel):
         return jax.random.normal(key, (num_samples, self.index_dim))
 
     def predict_mean(self, x):
-        """Deterministic base-network output for a single normalized input."""
+        """Expected normalized delta-obs from the base network for a single input.
+
+        gaussian: the Gaussian loc.
+        """
         y, _ = self.enn.base(x)
+        if self.head == "gaussian":
+            return y[..., : self.obs_dim]
         return y
+
+    # --- Distributional head ---
+
+    def _loc_scale(self, y):
+        loc, raw_scale = y[..., : self.obs_dim], y[..., self.obs_dim :]
+        return loc, jax.nn.softplus(raw_scale) + self.min_scale
+
+    def dist_from_output(self, y) -> distrax.Distribution:
+        """Raw network output → distrax predictive distribution."""
+        if self.head == "gaussian":
+            return distrax.MultivariateNormalDiag(*self._loc_scale(y))
+        raise ValueError("deterministic head has no predictive distribution")
+
+    def sample_delta(self, x, index, key):
+        if self.head == "deterministic":
+            return super().sample_delta(x, index, key)
+        return self.dist_from_output(self.predict_sample(x, index)).sample(seed=key)
+
+    def _targets(self, obs, next_obs):
+        """Distribution-space targets: the normalized delta-obs."""
+        return self.normalize_delta_obs(next_obs - obs)
+
+    def nll(self, x, obs, next_obs):
+        if self.head == "deterministic":
+            return super().nll(x, obs, next_obs)
+        y, _ = self.enn.base(x)
+        return -self.dist_from_output(y).log_prob(self._targets(obs, next_obs))
+
+    def uncertainty(self, x, z, kind="std", reduce_output=True):
+        """Epistemic-only uncertainty at a single x over S indices z.
+
+        Aleatoric noise is excluded: it is the spread *within* each index's
+        predictive distribution, while these measure disagreement *across* z.
+          eig: ½ log(1 + Var_z[μ] / E_z[σ²]) per obs dim (Gaussian information
+            gain with the predicted aleatoric noise).
+          std: sqrt(Var_z) of the mean μ.
+        """
+        if self.head == "deterministic":
+            return super().uncertainty(x, z, kind, reduce_output)
+        loc, scale = self._loc_scale(self.predict_samples(x, z))  # (S, obs_dim)
+        if kind == "eig":
+            u = 0.5 * jnp.log1p(loc.var(axis=0) / (scale**2).mean(axis=0))
+        else:
+            u = loc.std(axis=0)
+        return u.sum(axis=-1) if reduce_output else u
 
     def bootstrap_c(self, indices):
         """Fixed unit vectors c_i of dataset rows for the delta, reward and terminated heads.  (3, N, index_dim)"""
@@ -86,6 +151,12 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
     delta_next_state_target = delta_next_state + noise[0, :, None]
+
+    if model.head == "gaussian":
+        nll = _beta_nll(model, logits, delta_next_state_target)
+        nll = weighted_mean(nll, weight[0])
+        return nll, (nll, jnp.zeros(()), jnp.zeros(()))
+
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
@@ -108,6 +179,18 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
 
     loss = delta_next_state_loss + reward_loss + terminated_loss
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
+
+
+def _beta_nll(model: ENNModel, y, target):
+    """Per-point Gaussian NLL, each dim weighted by sg(σ^2β) (Seitzer et al. 2022).
+
+    β=0 is the NLL; β=1 gives the mean the MSE gradient. The per-point optimum
+    (μ, σ) is unchanged; only the weighting across points differs.
+    """
+    loc, scale = model._loc_scale(y)
+    nll = 0.5 * ((target - loc) / scale) ** 2 + jnp.log(scale)
+    weight = jax.lax.stop_gradient(scale ** (2 * model.beta_nll))
+    return (weight * nll).sum(-1)
 
 
 @nnx.jit
@@ -184,6 +267,7 @@ def _make_batched_model(
     act_dim,
     keys,
     predict_reward_terminated: bool = True,
+    head: str = "deterministic",
 ):
     @nnx.vmap
     def build(key):
@@ -204,6 +288,9 @@ def _make_batched_model(
             obs_dim,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
+            head=head,
+            min_scale=model_config.get("MIN_SCALE", 1e-3),
+            beta_nll=model_config.get("BETA_NLL", 0.5),
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
         )
