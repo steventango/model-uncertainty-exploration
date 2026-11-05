@@ -296,6 +296,9 @@ def main(args: Args):
 
     hparams_extra = {}
     rnd_config = args.rnd if args.explore_bonus == "rnd" else None
+    prediction_error_config = (
+        args.prediction_error if args.explore_bonus == "prediction-error" else None
+    )
     if not args.offline:
         rollout_config = {
             **config,
@@ -327,7 +330,7 @@ def main(args: Args):
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model", "rnd")
+            if k not in ("ppo", "model", "rnd", "prediction_error")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])
@@ -337,6 +340,11 @@ def main(args: Args):
             model=model_config,
             run=hparams_run,
             **({"rnd": dataclasses.asdict(rnd_config)} if rnd_config else {}),
+            **(
+                {"prediction_error": dataclasses.asdict(prediction_error_config)}
+                if prediction_error_config
+                else {}
+            ),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
@@ -375,6 +383,7 @@ def main(args: Args):
             loggers=loggers,
             solver=args.solver,
             rnd_config=rnd_config,
+            prediction_error_config=prediction_error_config,
             val_data=val_data,
             debug=(base_env, args.env, seed_dirs[0]) if debug else None,
         )
