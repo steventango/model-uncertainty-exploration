@@ -775,6 +775,32 @@ rollout_grid_brax = Experiment(
     ),
 )
 
+# PPO rollout length per update. The default (2048 envs x 10 steps) caps
+# real-env Pendulum at ~-228; 64 x 200 reached ~-155 in-model (1 seed). The
+# 10-step cell is bonus_ablation's det_eig / gauss_eig.
+ppo_steps = Experiment(
+    name="ppo_steps",
+    configs=tuple(
+        cfg
+        for steps in (128, 256)
+        for label, (bonus, ov) in BONUS_ARMS.items()
+        if label in ("det_eig", "gauss_eig")
+        for cfg in _every_tenth(
+            NOISY_TRUNCATION,
+            f"{label}_ppo{steps}",
+            bonus,
+            ppo__num_steps=steps,
+            ppo__num_envs=64,
+            **ov,
+        )
+    ),
+    time_limit="8:00:00",
+    description=(
+        "det_eig / gauss_eig x PPO 64 envs x {128, 256} steps per update; "
+        "classic + NoisyMountainCar, every-tenth"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -802,5 +828,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         clip_to_data,
         rollout_grid,
         rollout_grid_brax,
+        ppo_steps,
     )
 }
