@@ -801,6 +801,50 @@ ppo_steps = Experiment(
     ),
 )
 
+# Candidate general recipe: Gaussian ENN (2x64 ReLU), buffer starts, H=10, no
+# clip. Arms differ only in the reward: EIG, extrinsic + EIG, extrinsic.
+RECIPE_ENVS = {**ROLLOUT_GRID_ENVS, "swimmer": 1000}
+_RECIPE_BRAX = ("reacher", "halfcheetah", "swimmer")
+
+
+def _recipe_configs():
+    for env, trunc in RECIPE_ENVS.items():
+        for label, alpha, beta in (
+            ("eig", 0.0, 1.0),
+            ("mixed", 1.0, 1.0),
+            ("extrinsic", 1.0, 0.0),
+        ):
+            yield from sweep(
+                env=env,
+                alpha=alpha,
+                beta=beta,
+                mode="sample",
+                bonus="eig",
+                label=label,
+                steps_per_rollout=trunc // 10,
+                max_steps=10 * trunc,
+                reset_source="buffer",
+                rollout_length=10,
+                model__head="gaussian",
+                **_ARCH_2X64_RELU,
+            )
+
+
+recipe = Experiment(
+    name="recipe",
+    configs=tuple(c for c in _recipe_configs() if c.env not in _RECIPE_BRAX),
+    time_limit="4:00:00",
+    description="eig / mixed (a=1,b=1) / extrinsic; Gaussian 2x64 ReLU, buffer H=10; classic",
+)
+
+recipe_brax = Experiment(
+    name="recipe_brax",
+    configs=tuple(c for c in _recipe_configs() if c.env in _RECIPE_BRAX),
+    time_limit="10:00:00",
+    mem_per_cpu="64G",
+    description="recipe on reacher, halfcheetah, swimmer",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -829,5 +873,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         rollout_grid,
         rollout_grid_brax,
         ppo_steps,
+        recipe,
+        recipe_brax,
     )
 }
