@@ -55,16 +55,6 @@ class ENNModel(WorldModel):
         return y
 
     def bootstrap_c(self, indices, num: int):
-        """The bootstrap vectors c_ik of the buffer rows ``indices`` (ENN eqs. 8-9).
-
-        Each row i gets ``num`` vectors drawn uniformly from the unit sphere in
-        R^index_dim. They are a deterministic function of the row index and the
-        model's bootstrap key, so a row sees the same c_ik every time it is
-        sampled; fresh draws per minibatch would average the perturbation away.
-
-        Returns:
-            (N, num, index_dim) unit vectors.
-        """
         key = self.bootstrap_key[...]
         c = jax.vmap(
             lambda i: jax.random.normal(
@@ -74,20 +64,11 @@ class ENNModel(WorldModel):
         return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
 
 
-def _bootstrap(model: ENNModel, indices, z, num_outputs: int):
-    """Per-row keep mask (N,) and per-output target noise (N, num_outputs).
-
-    none: keep every row, no noise.
-    bernoulli (ENN eq. 8): one c_i per row; the whole transition, every head,
-      enters index z's loss iff c_i^T z > Phi^-1(p), p = 1/2.
-    gaussian (ENN eq. 9): an independent c_ik per regression output k, target
-      noise sigma * c_ik^T z, matching the per-output noise the squared error assumes.
-    """
+def _bootstrap(model: ENNModel, indices, z, num_outputs: int, p: float = 0.5):
     n = indices.shape[0]
     keep = jnp.ones(n, dtype=bool)
     noise = jnp.zeros((n, num_outputs))
     if model.bootstrap == "bernoulli":
-        p = 0.5
         cz = model.bootstrap_c(indices, 1)[:, 0] @ z
         keep = cz > norm.ppf(p)
     elif model.bootstrap == "gaussian":
@@ -104,9 +85,7 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     keep, noise = _bootstrap(model, indices, z, num_outputs)
 
     def masked_mean(loss):
-        """Mean over kept rows; 0 (not NaN) when the bootstrap drops them all."""
-        where = keep.reshape(keep.shape + (1,) * (loss.ndim - 1))
-        return jnp.where(keep.any(), jnp.mean(loss, where=where), 0.0)
+        return jnp.where(keep.any(), jnp.mean(loss, where=keep), 0.0)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
@@ -114,7 +93,7 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
-    delta_next_state_loss = masked_mean(delta_next_state_loss)
+    delta_next_state_loss = masked_mean(delta_next_state_loss.mean(-1))
 
     if model.predict_reward_terminated:
         reward_target = model.normalize_reward(batch.reward) + noise[:, model.obs_dim]
