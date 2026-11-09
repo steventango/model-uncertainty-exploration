@@ -392,6 +392,59 @@ classic_plan_every_cheap_model_long_variants = Experiment(
     ),
 )
 
+# gymnax max_steps_in_episode per classic env (truncation length).
+CLASSIC_TRUNCATION = {
+    "Pendulum-v1": 200,
+    "MountainCar-v0": 200,
+    "MountainCarContinuous-v0": 999,
+    "CartPole-v1": 500,
+    "Acrobot-v1": 500,
+}
+
+classic_plan_every_tenth = Experiment(
+    name="classic_plan_every_tenth",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+        )
+    ),
+    description=(
+        "plan every 10% of the truncation length, 10 episodes of real steps "
+        "(100 plans); explore-only (alpha=0 beta=1) eig bonus, sample mode"
+    ),
+)
+
+classic_plan_every_tenth_gp = Experiment(
+    name="classic_plan_every_tenth_gp",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            model="gp",
+            label="gp",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+        )
+    ),
+    description=(
+        "classic_plan_every_tenth with the exact GP world model (gpjax, pathwise "
+        "samples) instead of the ENN"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -409,5 +462,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_ppo_ent,
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
+        classic_plan_every_tenth,
+        classic_plan_every_tenth_gp,
     )
 }

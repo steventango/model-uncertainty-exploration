@@ -1,3 +1,4 @@
+import importlib
 from typing import Literal
 
 import jax
@@ -179,12 +180,20 @@ def register_model(name: str):
     return decorator
 
 
+def _factories(model_type: str) -> dict:
+    # Models not imported eagerly by models/__init__ (gp: gpjax builds arrays at
+    # import, which would pin the JAX backend before --cpu applies) register here.
+    if model_type not in _REGISTRY:
+        importlib.import_module(f"models.{model_type}")
+    return _REGISTRY[model_type]
+
+
 def make_batched_model(model_type: str, *args, **kwargs):
-    return _REGISTRY[model_type]["make_batched_model"](*args, **kwargs)
+    return _factories(model_type)["make_batched_model"](*args, **kwargs)
 
 
 def make_batched_train_model(model_type: str, *args, **kwargs):
-    return _REGISTRY[model_type]["make_batched_train_model"](*args, **kwargs)
+    return _factories(model_type)["make_batched_train_model"](*args, **kwargs)
 
 
 def make_batched_rngs(keys):

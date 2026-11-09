@@ -13,7 +13,7 @@ import pytest
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 import main
-from config import Args, BLRConfig, ENNConfig, PPOConfig, RNDConfig
+from config import Args, BLRConfig, ENNConfig, GPConfig, PPOConfig, RNDConfig
 from offline_data import AREA_INDEX
 from ppo import Transition
 
@@ -29,6 +29,7 @@ TINY_PPO = PPOConfig(
 )
 TINY_ENN = ENNConfig(update_steps=10, hidden_dim=16)
 TINY_BLR = BLRConfig(num_samples=4)
+TINY_GP = GPConfig(update_steps=10, num_features=16, num_samples=4)
 
 CASES = {
     "enn-pendulum": Args(
@@ -65,6 +66,15 @@ CASES = {
         eval_every=100,
         ppo=TINY_PPO,
         model=TINY_ENN,
+    ),
+    "gp-pendulum-2seeds": Args(
+        cpu=True,
+        env="Pendulum-v1",
+        num_seeds=2,
+        max_steps=100,
+        steps_per_rollout=50,
+        ppo=TINY_PPO,
+        model=TINY_GP,
     ),
     "rnd-pendulum-2seeds": Args(
         cpu=True,

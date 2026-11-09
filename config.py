@@ -37,6 +37,17 @@ class BLRConfig:
 
 
 @dataclass(frozen=True)
+class GPConfig:
+    """Exact Gaussian process (ARD-RBF per output) with pathwise posterior samples."""
+
+    name: ClassVar[str] = "gp"
+    lr: float | tuple[float, ...] = 0.05
+    update_steps: int | tuple[int, ...] = 100
+    num_features: int | tuple[int, ...] = 512
+    num_samples: int | tuple[int, ...] = 16
+
+
+@dataclass(frozen=True)
 class PPOConfig:
     """PPO hyperparameters."""
 
@@ -74,6 +85,7 @@ class RNDConfig:
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
+    | Annotated[GPConfig, tyro.conf.subcommand("gp")]
 )
 
 
@@ -137,7 +149,7 @@ def candidate_configs(m):
 
 
 def model_config_dict(
-    m: ENNConfig | BLRConfig,
+    m: ENNConfig | BLRConfig | GPConfig,
     *,
     max_data: int,
     minibatch_size: int,
@@ -152,6 +164,8 @@ def model_config_dict(
     d["MINIBATCH_SIZE"] = minibatch_size
     if isinstance(m, BLRConfig) and m.feature_type == "rbf":
         d["NUM_FEATURES"] = max_data
+    if isinstance(m, GPConfig):
+        d["MAX_DATA"] = max_data
     return d
 
 
