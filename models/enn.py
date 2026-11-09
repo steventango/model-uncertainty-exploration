@@ -16,7 +16,6 @@ class ENNModel(WorldModel):
     def __init__(
         self,
         enn: ENN,
-        bootstrap_key: jax.Array,
         in_features: int,
         obs_dim: int,
         act_dim: int | None = None,
@@ -24,6 +23,8 @@ class ENNModel(WorldModel):
         predict_reward_terminated: bool = True,
         bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli",
         bootstrap_noise: float = 1.0,
+        *,
+        rngs: nnx.Rngs,
     ):
         super().__init__(
             in_features=in_features,
@@ -35,7 +36,7 @@ class ENNModel(WorldModel):
         self.enn = enn
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
-        self.bootstrap_key = nnx.Variable(jax.random.key_data(bootstrap_key))
+        self.bootstrap_key = nnx.Variable(jax.random.key_data(rngs.bootstrap()))
 
     @property
     def index_dim(self):
@@ -187,6 +188,7 @@ def _make_batched_model(
 ):
     @nnx.vmap
     def build(key):
+        rngs = nnx.Rngs(key)
         enn = ENN(
             in_features,
             model_config["HIDDEN_DIM"],
@@ -195,17 +197,17 @@ def _make_batched_model(
             out_features,
             model_config["INDEX_DIM"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
-            rngs=nnx.Rngs(params=key),
+            rngs=rngs,
         )
         model = ENNModel(
             enn,
-            jax.random.fold_in(key, 1),
             in_features,
             obs_dim,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
+            rngs=rngs,
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
