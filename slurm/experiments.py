@@ -422,6 +422,28 @@ classic_plan_every_tenth = Experiment(
     ),
 )
 
+bootstrap_check = Experiment(
+    name="bootstrap_check",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for boot in ("none", "bernoulli")
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label=f"boot_{boot}",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            model__bootstrap=boot,
+        )
+    ),
+    description="classic_plan_every_tenth, ENN bootstrap none vs bernoulli",
+    time_limit="4:00:00",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -440,5 +462,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
         classic_plan_every_tenth,
+        bootstrap_check,
     )
 }
