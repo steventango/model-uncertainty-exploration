@@ -441,7 +441,6 @@ bootstrap_check = Experiment(
         )
     ),
     description="classic_plan_every_tenth, ENN bootstrap none vs bernoulli",
-    time_limit="4:00:00",
 )
 
 EXPERIMENTS: dict[str, Experiment] = {
