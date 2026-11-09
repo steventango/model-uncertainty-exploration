@@ -36,7 +36,7 @@ class ENNModel(WorldModel):
         self.enn = enn
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
-        self.bootstrap_key = nnx.Variable(jax.random.key_data(rngs.bootstrap()))
+        self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
     def index_dim(self):
@@ -56,7 +56,7 @@ class ENNModel(WorldModel):
 
     def bootstrap_c(self, indices):
         """Fixed unit vectors c_i of dataset rows for the delta, reward and terminated heads.  (3, N, index_dim)"""
-        key = jax.random.wrap_key_data(self.bootstrap_key[...])
+        key = self.bootstrap_key[...]
         c = jax.vmap(
             lambda i: jax.random.normal(
                 jax.random.fold_in(key, i), (3, self.index_dim)
