@@ -20,7 +20,7 @@ class ENNModel(WorldModel):
         act_dim: int | None = None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
-        bootstrap: Literal["none", "bernoulli", "gaussian"] = "bernoulli",
+        bootstrap: Literal["none", "bernoulli", "gaussian"] = "none",
         bootstrap_noise: float = 1.0,
         *,
         rngs: nnx.Rngs,
