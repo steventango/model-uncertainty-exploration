@@ -1,3 +1,5 @@
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -19,6 +21,10 @@ class ENNModel(WorldModel):
         act_dim: int | None = None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
+        bootstrap: Literal["none", "bernoulli", "gaussian"] = "none",
+        bootstrap_noise: float = 1.0,
+        *,
+        rngs: nnx.Rngs,
     ):
         super().__init__(
             in_features=in_features,
@@ -28,6 +34,9 @@ class ENNModel(WorldModel):
             predict_reward_terminated=predict_reward_terminated,
         )
         self.enn = enn
+        self.bootstrap = bootstrap
+        self.bootstrap_noise = bootstrap_noise
+        self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
     def index_dim(self):
@@ -45,56 +54,58 @@ class ENNModel(WorldModel):
         y, _ = self.enn.base(x)
         return y
 
+    def bootstrap_c(self, indices, num: int):
+        key = self.bootstrap_key[...]
+        c = jax.vmap(
+            lambda i: jax.random.normal(
+                jax.random.fold_in(key, i), (num, self.index_dim)
+            )
+        )(indices)
+        return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
 
-def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs):
-    sigma = 1.0
+
+def _bootstrap(model: ENNModel, indices, z, num_outputs: int, p: float = 0.5):
+    n = indices.shape[0]
+    keep = jnp.ones(n, dtype=bool)
+    noise = jnp.zeros((n, num_outputs))
+    if model.bootstrap == "bernoulli":
+        cz = model.bootstrap_c(indices, 1)[:, 0] @ z
+        keep = cz > norm.ppf(p)
+    elif model.bootstrap == "gaussian":
+        noise = model.bootstrap_noise * (model.bootstrap_c(indices, num_outputs) @ z)
+    return keep, noise
+
+
+def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
+    num_outputs = model.obs_dim + int(model.predict_reward_terminated)
+    keep, noise = _bootstrap(model, indices, z, num_outputs)
 
-    delta_next_state_c = jax.random.normal(
-        rngs(), shape=(batch.obs.shape[0], model.index_dim)
-    )
-    delta_next_state_c = delta_next_state_c / jnp.linalg.norm(
-        delta_next_state_c, axis=-1, keepdims=True
-    )
+    def masked_mean(loss):
+        return jnp.where(keep.any(), jnp.mean(loss, where=keep), 0.0)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
-    delta_next_state_target = delta_next_state + sigma * (delta_next_state_c * z).sum(
-        axis=-1, keepdims=True
-    )
+    delta_next_state_target = delta_next_state + noise[:, : model.obs_dim]
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
-    delta_next_state_loss = delta_next_state_loss.mean()
+    delta_next_state_loss = masked_mean(delta_next_state_loss.mean(-1))
 
     if model.predict_reward_terminated:
-        reward_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
-        reward_target = model.normalize_reward(batch.reward) + sigma * (
-            reward_c * z
-        ).sum(axis=-1)
+        reward_target = model.normalize_reward(batch.reward) + noise[:, model.obs_dim]
         reward_loss = (logits[..., -2] - reward_target) ** 2
-        reward_loss = reward_loss.mean()
+        reward_loss = masked_mean(reward_loss)
 
-        terminated_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        terminated_c = terminated_c / jnp.linalg.norm(
-            terminated_c, axis=-1, keepdims=True
-        )
-        p = 0.5
-        mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
         terminated_target = batch.terminated.astype(jnp.float32)
         terminated_pred = logits[..., -1]
         terminated_loss = optax.sigmoid_binary_cross_entropy(
             terminated_pred, terminated_target
         )
-        terminated_loss = (terminated_loss * mask).sum() / jnp.maximum(mask.sum(), 1.0)
+        terminated_loss = masked_mean(terminated_loss)
     else:
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())
@@ -110,9 +121,10 @@ def _train_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    indices,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, rngs)
+    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -129,8 +141,9 @@ def _eval_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
+    indices,
 ):
-    loss, aux = _loss_fn(model, batch, rngs)
+    loss, aux = _loss_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -159,7 +172,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch)
+        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -178,6 +191,7 @@ def _make_batched_model(
 ):
     @nnx.vmap
     def build(key):
+        rngs = nnx.Rngs(key)
         enn = ENN(
             in_features,
             model_config["HIDDEN_DIM"],
@@ -186,7 +200,7 @@ def _make_batched_model(
             out_features,
             model_config["INDEX_DIM"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
-            rngs=nnx.Rngs(params=key),
+            rngs=rngs,
         )
         model = ENNModel(
             enn,
@@ -194,6 +208,9 @@ def _make_batched_model(
             obs_dim,
             act_dim=act_dim,
             predict_reward_terminated=predict_reward_terminated,
+            bootstrap=model_config["BOOTSTRAP"],
+            bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
+            rngs=rngs,
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))

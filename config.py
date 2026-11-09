@@ -19,6 +19,8 @@ class ENNConfig:
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
+    bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
+    bootstrap_noise: float = 1.0
 
 
 @dataclass(frozen=True)
