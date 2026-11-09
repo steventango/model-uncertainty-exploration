@@ -75,24 +75,24 @@ class ENNModel(WorldModel):
 
 
 def _bootstrap(model: ENNModel, indices, z, num_outputs: int):
-    """Per-row loss weights (N,) and per-output target noise (N, num_outputs).
+    """Per-row keep mask (N,) and per-output target noise (N, num_outputs).
 
-    none: weights 1, no noise.
+    none: keep every row, no noise.
     bernoulli (ENN eq. 8): one c_i per row; the whole transition, every head,
       enters index z's loss iff c_i^T z > Phi^-1(p), p = 1/2.
     gaussian (ENN eq. 9): an independent c_ik per regression output k, target
       noise sigma * c_ik^T z, matching the per-output noise the squared error assumes.
     """
     n = indices.shape[0]
-    weight = jnp.ones(n)
+    keep = jnp.ones(n, dtype=bool)
     noise = jnp.zeros((n, num_outputs))
     if model.bootstrap == "bernoulli":
         p = 0.5
         cz = model.bootstrap_c(indices, 1)[:, 0] @ z
-        weight = (cz > norm.ppf(p)).astype(jnp.float32)
+        keep = cz > norm.ppf(p)
     elif model.bootstrap == "gaussian":
         noise = model.bootstrap_noise * (model.bootstrap_c(indices, num_outputs) @ z)
-    return weight, noise
+    return keep, noise
 
 
 def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
@@ -101,10 +101,12 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
     num_outputs = model.obs_dim + int(model.predict_reward_terminated)
-    weight, noise = _bootstrap(model, indices, z, num_outputs)
+    keep, noise = _bootstrap(model, indices, z, num_outputs)
 
-    def weighted_mean(loss, w):
-        return (loss * w).sum() / jnp.maximum(w.sum(), 1.0)
+    def masked_mean(loss):
+        """Mean over kept rows; 0 (not NaN) when the bootstrap drops them all."""
+        where = keep.reshape(keep.shape + (1,) * (loss.ndim - 1))
+        return jnp.where(keep.any(), jnp.mean(loss, where=where), 0.0)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
@@ -112,19 +114,19 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
-    delta_next_state_loss = weighted_mean(delta_next_state_loss.mean(-1), weight)
+    delta_next_state_loss = masked_mean(delta_next_state_loss)
 
     if model.predict_reward_terminated:
         reward_target = model.normalize_reward(batch.reward) + noise[:, model.obs_dim]
         reward_loss = (logits[..., -2] - reward_target) ** 2
-        reward_loss = weighted_mean(reward_loss, weight)
+        reward_loss = masked_mean(reward_loss)
 
         terminated_target = batch.terminated.astype(jnp.float32)
         terminated_pred = logits[..., -1]
         terminated_loss = optax.sigmoid_binary_cross_entropy(
             terminated_pred, terminated_target
         )
-        terminated_loss = weighted_mean(terminated_loss, weight)
+        terminated_loss = masked_mean(terminated_loss)
     else:
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())
