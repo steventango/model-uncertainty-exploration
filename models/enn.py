@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
+from jax.scipy.stats import norm
 
 from models.base import WorldModel, register_model
 from networks import ENN
@@ -54,9 +55,15 @@ class ENNModel(WorldModel):
         return y
 
     def bootstrap_c(self, indices, num: int):
-        """Fixed unit vectors c_ik of dataset rows (ENN eqs. 8-9), num per row.  (N, num, index_dim)
+        """The bootstrap vectors c_ik of the buffer rows ``indices`` (ENN eqs. 8-9).
 
-        Keyed by buffer row, so each row keeps the same vectors for the whole run.
+        Each row i gets ``num`` vectors drawn uniformly from the unit sphere in
+        R^index_dim. They are a deterministic function of the row index and the
+        model's bootstrap key, so a row sees the same c_ik every time it is
+        sampled; fresh draws per minibatch would average the perturbation away.
+
+        Returns:
+            (N, num, index_dim) unit vectors.
         """
         key = self.bootstrap_key[...]
         c = jax.vmap(
@@ -72,7 +79,7 @@ def _bootstrap(model: ENNModel, indices, z, num_outputs: int):
 
     none: weights 1, no noise.
     bernoulli (ENN eq. 8): one c_i per row; the whole transition, every head,
-      enters index z's loss iff c_i^T z > Phi^-1(1/2) = 0.
+      enters index z's loss iff c_i^T z > Phi^-1(p), p = 1/2.
     gaussian (ENN eq. 9): an independent c_ik per regression output k, target
       noise sigma * c_ik^T z, matching the per-output noise the squared error assumes.
     """
@@ -80,8 +87,9 @@ def _bootstrap(model: ENNModel, indices, z, num_outputs: int):
     weight = jnp.ones(n)
     noise = jnp.zeros((n, num_outputs))
     if model.bootstrap == "bernoulli":
+        p = 0.5
         cz = model.bootstrap_c(indices, 1)[:, 0] @ z
-        weight = (cz > 0).astype(jnp.float32)
+        weight = (cz > norm.ppf(p)).astype(jnp.float32)
     elif model.bootstrap == "gaussian":
         noise = model.bootstrap_noise * (model.bootstrap_c(indices, num_outputs) @ z)
     return weight, noise
@@ -92,7 +100,6 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
-    # Regression outputs: the delta-obs dims, plus the reward when predicted.
     num_outputs = model.obs_dim + int(model.predict_reward_terminated)
     weight, noise = _bootstrap(model, indices, z, num_outputs)
 
@@ -117,7 +124,6 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
         terminated_loss = optax.sigmoid_binary_cross_entropy(
             terminated_pred, terminated_target
         )
-        # Binary target: Bernoulli-weighted, never noised.
         terminated_loss = weighted_mean(terminated_loss, weight)
     else:
         reward_loss = jnp.zeros(())
