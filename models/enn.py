@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-from jax.scipy.stats import norm
 
 from models.base import WorldModel, register_model
 from networks import ENN
@@ -21,7 +20,7 @@ class ENNModel(WorldModel):
         act_dim: int | None = None,
         eps: float = 1e-8,
         predict_reward_terminated: bool = True,
-        bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli",
+        bootstrap: Literal["none", "bernoulli", "gaussian"] = "bernoulli",
         bootstrap_noise: float = 1.0,
         *,
         rngs: nnx.Rngs,
@@ -54,16 +53,38 @@ class ENNModel(WorldModel):
         y, _ = self.enn.base(x)
         return y
 
-    def bootstrap_c(self, indices):
-        """Fixed unit vectors c_i of dataset rows for the delta, reward and terminated heads.  (3, N, index_dim)"""
+    def bootstrap_c(self, indices, num: int):
+        """Fixed unit vectors c_ik of dataset rows (ENN eqs. 8-9), num per row.  (N, num, index_dim)
+
+        Keyed by buffer row, so each row keeps the same vectors for the whole run.
+        """
         key = self.bootstrap_key[...]
         c = jax.vmap(
             lambda i: jax.random.normal(
-                jax.random.fold_in(key, i), (3, self.index_dim)
-            ),
-            out_axes=1,
+                jax.random.fold_in(key, i), (num, self.index_dim)
+            )
         )(indices)
         return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
+
+
+def _bootstrap(model: ENNModel, indices, z, num_outputs: int):
+    """Per-row loss weights (N,) and per-output target noise (N, num_outputs).
+
+    none: weights 1, no noise.
+    bernoulli (ENN eq. 8): one c_i per row; the whole transition, every head,
+      enters index z's loss iff c_i^T z > Phi^-1(1/2) = 0.
+    gaussian (ENN eq. 9): an independent c_ik per regression output k, target
+      noise sigma * c_ik^T z, matching the per-output noise the squared error assumes.
+    """
+    n = indices.shape[0]
+    weight = jnp.ones(n)
+    noise = jnp.zeros((n, num_outputs))
+    if model.bootstrap == "bernoulli":
+        cz = model.bootstrap_c(indices, 1)[:, 0] @ z
+        weight = (cz > 0).astype(jnp.float32)
+    elif model.bootstrap == "gaussian":
+        noise = model.bootstrap_noise * (model.bootstrap_c(indices, num_outputs) @ z)
+    return weight, noise
 
 
 def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
@@ -71,38 +92,33 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
-    cz = model.bootstrap_c(indices) @ z
-    p = 0.5
-    mask = (cz > norm.ppf(p)).astype(jnp.float32)
-    if model.bootstrap == "bernoulli":
-        noise = jnp.zeros_like(cz)
-        weight = mask
-    else:
-        noise = model.bootstrap_noise * cz
-        weight = jnp.ones_like(cz)
+    # Regression outputs: the delta-obs dims, plus the reward when predicted.
+    num_outputs = model.obs_dim + int(model.predict_reward_terminated)
+    weight, noise = _bootstrap(model, indices, z, num_outputs)
 
     def weighted_mean(loss, w):
         return (loss * w).sum() / jnp.maximum(w.sum(), 1.0)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
-    delta_next_state_target = delta_next_state + noise[0, :, None]
+    delta_next_state_target = delta_next_state + noise[:, : model.obs_dim]
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
-    delta_next_state_loss = weighted_mean(delta_next_state_loss.mean(-1), weight[0])
+    delta_next_state_loss = weighted_mean(delta_next_state_loss.mean(-1), weight)
 
     if model.predict_reward_terminated:
-        reward_target = model.normalize_reward(batch.reward) + noise[1]
+        reward_target = model.normalize_reward(batch.reward) + noise[:, model.obs_dim]
         reward_loss = (logits[..., -2] - reward_target) ** 2
-        reward_loss = weighted_mean(reward_loss, weight[1])
+        reward_loss = weighted_mean(reward_loss, weight)
 
         terminated_target = batch.terminated.astype(jnp.float32)
         terminated_pred = logits[..., -1]
         terminated_loss = optax.sigmoid_binary_cross_entropy(
             terminated_pred, terminated_target
         )
-        terminated_loss = weighted_mean(terminated_loss, mask[2])
+        # Binary target: Bernoulli-weighted, never noised.
+        terminated_loss = weighted_mean(terminated_loss, weight)
     else:
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())

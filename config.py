@@ -19,7 +19,9 @@ class ENNConfig:
     activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
-    bootstrap: Literal["bernoulli", "gaussian"] = "bernoulli"
+    # ENN data perturbation (Osband et al. eqs. 8-9): none, a shared per-transition
+    # Bernoulli mask, or independent per-output Gaussian target noise.
+    bootstrap: Literal["none", "bernoulli", "gaussian"] = "bernoulli"
     bootstrap_noise: float = 1.0
 
 
