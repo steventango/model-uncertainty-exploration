@@ -422,6 +422,29 @@ classic_plan_every_tenth = Experiment(
     ),
 )
 
+classic_plan_every_tenth_gp = Experiment(
+    name="classic_plan_every_tenth_gp",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            model="gp",
+            label="gp",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+        )
+    ),
+    description=(
+        "classic_plan_every_tenth with the exact GP world model (gpjax, pathwise "
+        "samples) instead of the ENN"
+    ),
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -440,5 +463,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
         classic_plan_every_tenth,
+        classic_plan_every_tenth_gp,
     )
 }
