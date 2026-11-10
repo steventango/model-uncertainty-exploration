@@ -58,6 +58,7 @@ class ModelEnvParams:
     rnd: RND | None = None  # per-seed RND bonus (explore_bonus="rnd")
     alpha: float = 1.0
     beta: float = 0.0
+    sample: bool = True
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
 
@@ -71,6 +72,7 @@ class ModelEnvParams:
             rnd=0,
             alpha=None,
             beta=None,
+            sample=None,
             init_obs=0,
             init_weights=0,
         )
@@ -84,6 +86,7 @@ class ModelEnvParams:
             rnd=None,
             alpha=0,
             beta=0,
+            sample=0,
             init_obs=None,
             init_weights=None,
         )
@@ -136,6 +139,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
                 if self._max_steps_override is not None
                 else self._real_env_params.max_steps_in_episode
             ),
+            sample=self.prediction_mode == "sample",
         )
 
     def step(
@@ -195,10 +199,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         model = params.model
         x = model.single_input(state.obs, action)
-        if self.prediction_mode == "mean":
-            y = model.predict_mean(x)
-        else:
-            y = model.predict_sample(x, state.z[0])
+        y = jnp.where(
+            params.sample, model.predict_sample(x, state.z[0]), model.predict_mean(x)
+        )
         # NOTE: the "eig" and "std" bonuses are on different scales and are NOT
         # magnitude-matched. "std" is the posterior standard deviation (linear,
         # in normalized output units) while "eig" is ½ log(1 + σ²_ep) nats

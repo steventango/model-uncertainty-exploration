@@ -71,6 +71,7 @@ class ModelBasedAgent:
         reset_source: ResetSource,
         alpha: float,
         beta: float,
+        samples: tuple[bool, bool],
         loggers: list[ExperimentLogger],
         solver: str,
         rnd_config: RNDConfig | None = None,
@@ -88,6 +89,7 @@ class ModelBasedAgent:
         self.reset_source = reset_source
         self.alphas = jnp.array([alpha, 1.0])
         self.betas = jnp.array([beta, 0.0])
+        self.samples = jnp.array(samples)
         self.loggers = loggers
         self.solver = solver
         self.rnd_config = rnd_config
@@ -233,6 +235,7 @@ class ModelBasedAgent:
             rnd=agent_state.rnd,
             alpha=self.alphas,
             beta=self.betas,
+            sample=self.samples,
         )
         if self.reset_source != "env":
             weights = reset_weights(

@@ -96,6 +96,7 @@ class Args:
     solver: Literal["ppo"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
+    eval_model_env_mode: Literal["mean", "sample"] | None = None
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
     predict_reward_terminated: bool = False
     reset_source: Literal["env", "buffer", "init"] = "env"

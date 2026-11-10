@@ -372,6 +372,10 @@ def main(args: Args):
             reset_source=reset_source,
             alpha=args.alpha,
             beta=args.beta,
+            samples=(
+                args.model_env_mode == "sample",
+                (args.eval_model_env_mode or args.model_env_mode) == "sample",
+            ),
             loggers=loggers,
             solver=args.solver,
             rnd_config=rnd_config,
