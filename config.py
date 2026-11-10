@@ -19,6 +19,8 @@ class ENNConfig:
     activation: str = "tanh"
     num_layers: int | tuple[int, ...] = 1
     l2: float | tuple[float, ...] = 0.0
+    epinet_num_layers: int | tuple[int, ...] = 1
+    epinet_activation: str = "tanh"
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"

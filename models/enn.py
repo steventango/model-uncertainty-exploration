@@ -212,6 +212,8 @@ def _make_batched_model(
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
             num_layers=model_config["NUM_LAYERS"],
             activation=model_config["ACTIVATION"],
+            epinet_num_layers=model_config["EPINET_NUM_LAYERS"],
+            epinet_activation=model_config["EPINET_ACTIVATION"],
             rngs=rngs,
         )
         model = ENNModel(
