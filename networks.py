@@ -166,7 +166,9 @@ class ProjectedMLP(nnx.Module):
         rngs: nnx.Rngs,
         num_layers: int = 1,
         activation: str = "tanh",
+        z_input: bool = True,
     ):
+        self.z_input = z_input
         self.mlp = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
@@ -179,8 +181,9 @@ class ProjectedMLP(nnx.Module):
         )
 
     def __call__(self, x, z, rngs: nnx.Rngs | None = None):
-        xz = jnp.concatenate([x, z], axis=-1)
-        y, _ = self.mlp(xz, rngs=rngs)
+        if self.z_input:
+            x = jnp.concatenate([x, z], axis=-1)
+        y, _ = self.mlp(x, rngs=rngs)
         y1 = y.reshape(-1, z.shape[-1])
         return (y1 * z).sum(axis=-1)
 
@@ -236,15 +239,17 @@ class EpiNet(nnx.Module):
         *,
         num_layers: int = 1,
         activation: str = "tanh",
+        z_input: bool = True,
         rngs: nnx.Rngs,
     ):
         self.learnable = ProjectedMLP(
-            in_features=in_features + base_features + index_dim,
+            in_features=in_features + base_features + index_dim * z_input,
             hidden_features=learnable_hidden_features,
             out_features=out_features * index_dim,
             rngs=rngs,
             num_layers=num_layers,
             activation=activation,
+            z_input=z_input,
         )
         self.prior = MLPEnsemble(
             num_models=index_dim,
@@ -278,6 +283,7 @@ class ENN(nnx.Module):
         activation: str = "tanh",
         epinet_num_layers: int = 1,
         epinet_activation: str = "tanh",
+        epinet_z_input: bool = True,
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
@@ -298,6 +304,7 @@ class ENN(nnx.Module):
             index_dim=index_dim,
             num_layers=epinet_num_layers,
             activation=epinet_activation,
+            z_input=epinet_z_input,
             rngs=rngs,
         )
         self.index_dim = index_dim

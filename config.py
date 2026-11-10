@@ -13,6 +13,7 @@ class EpinetConfig:
     index_dim: int | tuple[int, ...] = 8
     num_layers: int | tuple[int, ...] = 1
     activation: str = "tanh"
+    z_input: bool = True
 
 
 @dataclass(frozen=True)
