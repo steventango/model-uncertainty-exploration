@@ -2,7 +2,7 @@
 #SBATCH --time=3:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem-per-cpu=32G
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --output=/scratch/%u/logs/mue/%x/%j_%a.out
