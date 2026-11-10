@@ -1,3 +1,5 @@
+from typing import Literal
+
 import distrax
 import jax
 import jax.numpy as jnp
@@ -30,7 +32,11 @@ class ENNModel(WorldModel):
         predict_reward_terminated: bool = True,
         head: str = "deterministic",
         min_scale: float = 1e-3,
-        l2_reg: float = 0.0,
+        bootstrap: Literal["none", "bernoulli", "gaussian"] = "none",
+        bootstrap_noise: float = 1.0,
+        l2: float = 0.0,
+        *,
+        rngs: nnx.Rngs,
     ):
         super().__init__(
             in_features=in_features,
@@ -42,8 +48,11 @@ class ENNModel(WorldModel):
         head_out_features(head, obs_dim, predict_reward_terminated)  # validates
         self.head = head
         self.min_scale = min_scale
-        self.l2_reg = l2_reg
         self.enn = enn
+        self.bootstrap = bootstrap
+        self.bootstrap_noise = bootstrap_noise
+        self.l2 = l2
+        self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
     def index_dim(self):
@@ -148,6 +157,15 @@ class ENNModel(WorldModel):
                 u = jnp.sqrt(loc.var(axis=0))
         return u.sum(axis=-1) if reduce_output else u
 
+    def bootstrap_c(self, indices, num: int):
+        key = self.bootstrap_key[...]
+        c = jax.vmap(
+            lambda i: jax.random.normal(
+                jax.random.fold_in(key, i), (num, self.index_dim)
+            )
+        )(indices)
+        return c / jnp.linalg.norm(c, axis=-1, keepdims=True)
+
 
 def _projections(model: ENNModel, n, z, rngs: nnx.Rngs):
     """Per-datapoint ENN perturbation c_iᵀz with c_i uniform on the sphere (~N(0,1))."""
@@ -175,81 +193,56 @@ def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
     return (nll * mask).sum() / jnp.maximum(mask.sum(), 1.0)
 
 
-_TRAINABLE = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
+def _bootstrap(model: ENNModel, indices, z, num_outputs: int, p: float = 0.5):
+    n = indices.shape[0]
+    keep = jnp.ones(n, dtype=bool)
+    noise = jnp.zeros((n, num_outputs))
+    if model.bootstrap == "bernoulli":
+        cz = model.bootstrap_c(indices, 1)[:, 0] @ z
+        keep = cz > norm.ppf(p)
+    elif model.bootstrap == "gaussian":
+        noise = model.bootstrap_noise * (model.bootstrap_c(indices, num_outputs) @ z)
+    return keep, noise
 
 
-def _l2_penalty(model: ENNModel, n_data):
-    """(λ/N)·‖θ‖² over the trainable (non-prior) parameters.
-
-    With the per-datapoint *mean* loss this is the MAP objective
-    Σ_i ℓ_i + λ‖θ‖² divided by N: k samples at an input are weighed against a
-    fixed prior strength λ regardless of the dataset size, so evidence (and
-    hence epistemic uncertainty) scales with visit counts. Adam's normalized
-    steps preserve this objective's stationary points, unlike AdamW's
-    decoupled decay, which bounds weights at ~1/wd irrespective of the data.
-    """
-    sq = sum(jnp.sum(p**2) for p in jax.tree.leaves(nnx.state(model, _TRAINABLE)))
-    return model.l2_reg * sq / jnp.maximum(n_data, 1)
-
-
-def _loss_fn(model: ENNModel, batch, rngs: nnx.Rngs, n_data):
+def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     if model.head != "deterministic":
         nll = _distribution_loss(model, batch, rngs)
-        return nll + _l2_penalty(model, n_data), (nll, jnp.zeros(()), jnp.zeros(()))
-    sigma = 1.0
+        return nll, (nll, jnp.zeros(()), jnp.zeros(()))
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
     logits = model.batch_predict_sample(x, z)
+    num_outputs = model.obs_dim + int(model.predict_reward_terminated)
+    keep, noise = _bootstrap(model, indices, z, num_outputs)
 
-    delta_next_state_c = jax.random.normal(
-        rngs(), shape=(batch.obs.shape[0], model.index_dim)
-    )
-    delta_next_state_c = delta_next_state_c / jnp.linalg.norm(
-        delta_next_state_c, axis=-1, keepdims=True
-    )
+    def masked_mean(loss):
+        return jnp.where(keep.any(), jnp.mean(loss, where=keep), 0.0)
 
     delta_next_state = batch.info["next_obs"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
-    delta_next_state_target = delta_next_state + sigma * (delta_next_state_c * z).sum(
-        axis=-1, keepdims=True
-    )
+    delta_next_state_target = delta_next_state + noise[:, : model.obs_dim]
     delta_next_state_loss = (
         logits[..., : model.obs_dim] - delta_next_state_target
     ) ** 2
-    delta_next_state_loss = delta_next_state_loss.mean()
+    delta_next_state_loss = masked_mean(delta_next_state_loss.mean(-1))
 
     if model.predict_reward_terminated:
-        reward_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        reward_c = reward_c / jnp.linalg.norm(reward_c, axis=-1, keepdims=True)
-        reward_target = model.normalize_reward(batch.reward) + sigma * (
-            reward_c * z
-        ).sum(axis=-1)
+        reward_target = model.normalize_reward(batch.reward) + noise[:, model.obs_dim]
         reward_loss = (logits[..., -2] - reward_target) ** 2
-        reward_loss = reward_loss.mean()
+        reward_loss = masked_mean(reward_loss)
 
-        terminated_c = jax.random.normal(
-            rngs(), shape=(batch.obs.shape[0], model.index_dim)
-        )
-        terminated_c = terminated_c / jnp.linalg.norm(
-            terminated_c, axis=-1, keepdims=True
-        )
-        p = 0.5
-        mask = ((terminated_c * z).sum(axis=-1) > norm.ppf(p)).astype(jnp.float32)
         terminated_target = batch.terminated.astype(jnp.float32)
         terminated_pred = logits[..., -1]
         terminated_loss = optax.sigmoid_binary_cross_entropy(
             terminated_pred, terminated_target
         )
-        terminated_loss = (terminated_loss * mask).sum() / jnp.maximum(mask.sum(), 1.0)
+        terminated_loss = masked_mean(terminated_loss)
     else:
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())
 
     loss = delta_next_state_loss + reward_loss + terminated_loss
-    loss = loss + _l2_penalty(model, n_data)
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
 
 
@@ -260,10 +253,10 @@ def _train_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
-    n_data,
+    indices,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, rngs, n_data)
+    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -280,9 +273,9 @@ def _eval_step(
     metrics: nnx.MultiMetric,
     rngs: nnx.Rngs,
     batch,
-    n_data,
+    indices,
 ):
-    loss, aux = _loss_fn(model, batch, rngs, n_data)
+    loss, aux = _loss_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -303,6 +296,7 @@ def _train_model(
     rngs: nnx.Rngs,
 ):
     model.update_stats(dataset, pointer)
+    optimizer.opt_state.hyperparams["l2"][...] = model.l2 / pointer
 
     def train_step_fn(train_state, _):
         model, optimizer, metrics, rngs = train_state
@@ -311,7 +305,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch, pointer)
+        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -326,13 +320,6 @@ def _train_model(
 # deterministic transitions the base learns margins of ~5-10 that transfer to
 # unseen states through shared weights, so an O(1) prior leaves MI ~0 there.
 _DEFAULT_PRIOR_SCALE = {"deterministic": 1.0, "gaussian": 1.0, "categorical": 10.0}
-
-# Default λ of the (λ/N)·‖θ‖² MAP penalty per head. Without it, cross-entropy
-# training collapses the categorical posterior after ~1 visit (MI drops >90%),
-# more so the longer it trains. λ=1 tracks a Dirichlet posterior's decay with
-# visit counts on RiverSwim and is insensitive to training length. Other heads
-# keep their previous (unregularized) objective.
-_DEFAULT_L2_REG = {"deterministic": 0.0, "gaussian": 0.0, "categorical": 1.0}
 
 
 def _head_default(defaults, configured, head):
@@ -351,18 +338,24 @@ def _make_batched_model(
 ):
     @nnx.vmap
     def build(key):
+        rngs = nnx.Rngs(key)
+        epinet = model_config["EPINET"]
         enn = ENN(
             in_features,
             model_config["HIDDEN_DIM"],
-            model_config["LEARNABLE_HIDDEN_DIM"],
-            model_config["PRIOR_HIDDEN_DIM"],
+            epinet["learnable_hidden_dim"],
+            epinet["prior_hidden_dim"],
             out_features,
-            model_config["INDEX_DIM"],
+            epinet["index_dim"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
+            num_layers=model_config["NUM_LAYERS"],
+            activation=model_config["ACTIVATION"],
+            epinet_num_layers=epinet["num_layers"],
+            epinet_activation=epinet["activation"],
             prior_scale=_head_default(
                 _DEFAULT_PRIOR_SCALE, model_config.get("PRIOR_SCALE"), head
             ),
-            rngs=nnx.Rngs(params=key),
+            rngs=rngs,
         )
         model = ENNModel(
             enn,
@@ -372,9 +365,17 @@ def _make_batched_model(
             predict_reward_terminated=predict_reward_terminated,
             head=head,
             min_scale=model_config.get("MIN_SCALE", 1e-3),
-            l2_reg=_head_default(_DEFAULT_L2_REG, model_config.get("L2_REG"), head),
+            bootstrap=model_config["BOOTSTRAP"],
+            bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
+            l2=model_config["L2"],
+            rngs=rngs,
         )
-        tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
+        tx = optax.inject_hyperparams(
+            lambda l2: optax.chain(
+                optax.add_decayed_weights(l2),
+                optax.adamw(model_config["LR"], weight_decay=1e-4),
+            )
+        )(l2=0.0)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
         optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
         metrics = nnx.MultiMetric(

@@ -7,26 +7,32 @@ import tyro
 
 
 @dataclass(frozen=True)
+class EpinetConfig:
+    learnable_hidden_dim: int | tuple[int, ...] = 15
+    prior_hidden_dim: int | tuple[int, ...] = 5
+    index_dim: int | tuple[int, ...] = 8
+    num_layers: int | tuple[int, ...] = 2
+    activation: str = "silu"
+
+
+@dataclass(frozen=True)
 class ENNConfig:
     """Epistemic Neural Network"""
 
     name: ClassVar[str] = "enn"
     lr: float | tuple[float, ...] = 1e-3
-    hidden_dim: int | tuple[int, ...] = 64
-    learnable_hidden_dim: int | tuple[int, ...] = 15
-    prior_hidden_dim: int | tuple[int, ...] = 5
-    index_dim: int | tuple[int, ...] = 8
-    activation: str = "tanh"
+    hidden_dim: int | tuple[int, ...] = 200
+    activation: str = "silu"
+    num_layers: int | tuple[int, ...] = 4
+    l2: float | tuple[float, ...] = 0.1
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
+    bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
+    bootstrap_noise: float = 1.0
+    epinet: EpinetConfig = field(default_factory=EpinetConfig)
     head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
     min_scale: float = 1e-3
-    # Scale of the epinet's fixed random prior function. None picks the head's
-    # default (10 for categorical logits, else 1; see models/enn.py).
     prior_scale: float | None = None
-    # λ of the MAP penalty (λ/N)·‖θ‖² on trainable weights (N = dataset size).
-    # None picks the head's default (1 for categorical, else 0; see models/enn.py).
-    l2_reg: float | None = None
 
 
 @dataclass(frozen=True)
