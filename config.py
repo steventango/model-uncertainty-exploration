@@ -22,6 +22,8 @@ class ENNConfig:
     epinet_num_layers: int | tuple[int, ...] = 1
     epinet_activation: str = "tanh"
     epinet_z_input: bool = True
+    epinet_prior: Literal["mlp", "rff"] = "mlp"
+    epinet_rff_lengthscale: float | tuple[float, ...] = 1.0
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"

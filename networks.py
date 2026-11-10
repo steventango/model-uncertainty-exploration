@@ -270,6 +270,35 @@ class MLPEnsemble(nnx.Module):
         return jnp.einsum("no,n->o", y, z)
 
 
+class RFFEnsemble(nnx.Module):
+    def __init__(
+        self,
+        num_models: int,
+        in_features: int,
+        out_features: int,
+        rngs: nnx.Rngs,
+        num_features: int = 64,
+        lengthscale: float = 1.0,
+    ):
+        k1, k2, k3 = jax.random.split(rngs.params(), 3)
+        shape = (num_models, in_features, num_features)
+        self.freq = nnx.Param(jax.random.normal(k1, shape) / lengthscale)
+        self.phase = nnx.Param(
+            jax.random.uniform(k2, (num_models, num_features), maxval=2 * jnp.pi)
+        )
+        self.weight = nnx.Param(
+            jax.random.normal(k3, (num_models, num_features, out_features))
+            / jnp.sqrt(num_models)
+        )
+        self.num_features = num_features
+
+    def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        features = jnp.cos(jnp.einsum("i,nif->nf", x, self.freq[...]) + self.phase[...])
+        features = features * jnp.sqrt(2.0 / self.num_features)
+        y = jnp.einsum("nf,nfo->no", features, self.weight[...])
+        return jnp.einsum("no,n->o", y, z)
+
+
 class EpiNet(nnx.Module):
     def __init__(
         self,
@@ -283,6 +312,8 @@ class EpiNet(nnx.Module):
         num_layers: int = 1,
         activation: str = "tanh",
         z_input: bool = True,
+        prior: str = "mlp",
+        rff_lengthscale: float = 1.0,
         rngs: nnx.Rngs,
     ):
         self.learnable = ProjectedMLP(
@@ -294,15 +325,24 @@ class EpiNet(nnx.Module):
             activation=activation,
             z_input=z_input,
         )
-        self.prior = MLPEnsemble(
-            num_models=index_dim,
-            in_features=in_features,
-            hidden_features=prior_hidden_features,
-            out_features=out_features,
-            rngs=rngs,
-            num_layers=num_layers,
-            activation=activation,
-        )
+        if prior == "rff":
+            self.prior = RFFEnsemble(
+                num_models=index_dim,
+                in_features=in_features,
+                out_features=out_features,
+                rngs=rngs,
+                lengthscale=rff_lengthscale,
+            )
+        else:
+            self.prior = MLPEnsemble(
+                num_models=index_dim,
+                in_features=in_features,
+                hidden_features=prior_hidden_features,
+                out_features=out_features,
+                rngs=rngs,
+                num_layers=num_layers,
+                activation=activation,
+            )
         self.prior_scale = 1.0
 
     def __call__(self, phi, x, z, rngs: nnx.Rngs | None = None):
@@ -327,6 +367,8 @@ class ENN(nnx.Module):
         epinet_num_layers: int = 1,
         epinet_activation: str = "tanh",
         epinet_z_input: bool = True,
+        epinet_prior: str = "mlp",
+        epinet_rff_lengthscale: float = 1.0,
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
@@ -348,6 +390,8 @@ class ENN(nnx.Module):
             num_layers=epinet_num_layers,
             activation=epinet_activation,
             z_input=epinet_z_input,
+            prior=epinet_prior,
+            rff_lengthscale=epinet_rff_lengthscale,
             rngs=rngs,
         )
         self.index_dim = index_dim
