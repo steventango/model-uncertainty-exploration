@@ -534,14 +534,14 @@ mbpo_net_h160 = Experiment(
             bonus="eig",
             label=arm,
             steps_per_rollout=trunc // 10,
-            max_steps=min(10 * trunc, 2000),
+            max_steps=5 * trunc,
             **PPO_H160,
             **overrides,
         )
     ),
     description=(
         "mbpo_net arms and the old ENN with a longer PPO horizon "
-        "(128 envs x 160 steps per update instead of 2048 x 10), at most 2000 steps"
+        "(128 envs x 160 steps per update instead of 2048 x 10), 5 episodes"
     ),
     time_limit="3:00:00",
 )
