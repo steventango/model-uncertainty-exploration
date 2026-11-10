@@ -1,9 +1,66 @@
+from itertools import pairwise
+
 import distrax
 import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
-from flax.nnx.nn.initializers import constant, orthogonal
+from flax.nnx.nn.initializers import orthogonal
+from flax.nnx.nn.linear import default_kernel_init
+
+
+class Block(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        activation: str,
+        use_layer_norm: bool,
+        kernel_init,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.linear = nnx.Linear(
+            in_features, out_features, kernel_init=kernel_init, rngs=rngs
+        )
+        self.norm = nnx.LayerNorm(out_features, rngs=rngs) if use_layer_norm else None
+        self.activation = getattr(nnx, activation)
+
+    def __call__(self, x):
+        x = self.linear(x)
+        if self.norm is not None:
+            x = self.norm(x)
+        return self.activation(x)
+
+
+class MLP(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        rngs: nnx.Rngs,
+        num_layers: int = 1,
+        activation: str = "tanh",
+        use_layer_norm: bool = False,
+        kernel_init=default_kernel_init,
+        out_kernel_init=default_kernel_init,
+    ):
+        sizes = [in_features] + [hidden_features] * num_layers
+        self.blocks = nnx.List(
+            [
+                Block(i, o, activation, use_layer_norm, kernel_init, rngs=rngs)
+                for i, o in pairwise(sizes)
+            ]
+        )
+        self.out = nnx.Linear(
+            hidden_features, out_features, kernel_init=out_kernel_init, rngs=rngs
+        )
+
+    def __call__(self, x, rngs: nnx.Rngs | None = None):
+        for block in self.blocks:
+            x = block(x)
+        return self.out(x), x
 
 
 class Actor(nnx.Module):
@@ -18,50 +75,23 @@ class Actor(nnx.Module):
         *,
         rngs: nnx.Rngs,
     ):
-        self.action_dim = action_dim
         self.discrete = discrete
-        self.use_layer_norm = use_layer_norm
-        if activation == "relu":
-            self.activation = nnx.relu
-        else:
-            self.activation = nnx.tanh
-        self.dense1 = nnx.Linear(
+        self.mlp = MLP(
             state_dim,
             hidden_dim,
+            action_dim,
+            rngs=rngs,
+            num_layers=2,
+            activation=activation,
+            use_layer_norm=use_layer_norm,
             kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            rngs=rngs,
+            out_kernel_init=orthogonal(0.01),
         )
-        self.dense2 = nnx.Linear(
-            hidden_dim,
-            hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            rngs=rngs,
-        )
-        self.dense3 = nnx.Linear(
-            hidden_dim,
-            self.action_dim,
-            kernel_init=orthogonal(0.01),
-            bias_init=constant(0.0),
-            rngs=rngs,
-        )
-        if use_layer_norm:
-            self.ln1 = nnx.LayerNorm(hidden_dim, rngs=rngs)
-            self.ln2 = nnx.LayerNorm(hidden_dim, rngs=rngs)
         if not discrete:
-            self.log_std = nnx.Param(jnp.zeros(self.action_dim))
+            self.log_std = nnx.Param(jnp.zeros(action_dim))
 
     def __call__(self, x: jax.Array):
-        actor_mean = self.dense1(x)
-        if self.use_layer_norm:
-            actor_mean = self.ln1(actor_mean)
-        actor_mean = self.activation(actor_mean)
-        actor_mean = self.dense2(actor_mean)
-        if self.use_layer_norm:
-            actor_mean = self.ln2(actor_mean)
-        actor_mean = self.activation(actor_mean)
-        actor_mean = self.dense3(actor_mean)
+        actor_mean, _ = self.mlp(x)
         if self.discrete:
             return distrax.Categorical(logits=actor_mean)
         return distrax.MultivariateNormalDiag(
@@ -79,46 +109,20 @@ class Critic(nnx.Module):
         *,
         rngs: nnx.Rngs,
     ):
-        self.use_layer_norm = use_layer_norm
-        if activation == "relu":
-            self.activation = nnx.relu
-        else:
-            self.activation = nnx.tanh
-        self.dense1 = nnx.Linear(
+        self.mlp = MLP(
             state_dim,
             hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            rngs=rngs,
-        )
-        self.dense2 = nnx.Linear(
-            hidden_dim,
-            hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            rngs=rngs,
-        )
-        self.dense3 = nnx.Linear(
-            hidden_dim,
             1,
-            kernel_init=orthogonal(1.0),
-            bias_init=constant(0.0),
             rngs=rngs,
+            num_layers=2,
+            activation=activation,
+            use_layer_norm=use_layer_norm,
+            kernel_init=orthogonal(np.sqrt(2)),
+            out_kernel_init=orthogonal(1.0),
         )
-        if use_layer_norm:
-            self.ln1 = nnx.LayerNorm(hidden_dim, rngs=rngs)
-            self.ln2 = nnx.LayerNorm(hidden_dim, rngs=rngs)
 
     def __call__(self, x: jax.Array):
-        critic = self.dense1(x)
-        if self.use_layer_norm:
-            critic = self.ln1(critic)
-        critic = self.activation(critic)
-        critic = self.dense2(critic)
-        if self.use_layer_norm:
-            critic = self.ln2(critic)
-        critic = self.activation(critic)
-        critic = self.dense3(critic)
+        critic, _ = self.mlp(x)
         return jnp.squeeze(critic, axis=-1)
 
 
@@ -134,9 +138,6 @@ class ActorCritic(nnx.Module):
         *,
         rngs: nnx.Rngs,
     ):
-        self.action_dim = action_dim
-        self.discrete = discrete
-        self.activation = activation
         self.actor = Actor(
             state_dim,
             action_dim,
@@ -156,60 +157,6 @@ class ActorCritic(nnx.Module):
         return pi, critic
 
 
-class MLP(nnx.Module):
-    def __init__(
-        self,
-        in_features: int,
-        hidden_features: int,
-        out_features: int,
-        rngs: nnx.Rngs,
-        zero_out_init: bool = False,
-        use_layer_norm: bool = False,
-        num_layers: int = 1,
-        activation: str = "tanh",
-    ):
-        self.use_layer_norm = use_layer_norm
-        self.activation = getattr(nnx, activation)
-        self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
-        if use_layer_norm:
-            self.ln1 = nnx.LayerNorm(hidden_features, rngs=rngs)
-        self.hidden = nnx.List(
-            [
-                nnx.Linear(hidden_features, hidden_features, rngs=rngs)
-                for _ in range(num_layers - 1)
-            ]
-        )
-        if use_layer_norm:
-            self.hidden_ln = nnx.List(
-                [
-                    nnx.LayerNorm(hidden_features, rngs=rngs)
-                    for _ in range(num_layers - 1)
-                ]
-            )
-        if zero_out_init:
-            self.linear2 = nnx.Linear(
-                hidden_features,
-                out_features,
-                rngs=rngs,
-                kernel_init=nnx.initializers.zeros,
-            )
-        else:
-            self.linear2 = nnx.Linear(hidden_features, out_features, rngs=rngs)
-
-    def __call__(self, x, rngs: nnx.Rngs | None = None):
-        features = self.linear1(x)
-        if self.use_layer_norm:
-            features = self.ln1(features)
-        features = self.activation(features)
-        for i, layer in enumerate(self.hidden):
-            features = layer(features)
-            if self.use_layer_norm:
-                features = self.hidden_ln[i](features)
-            features = self.activation(features)
-        y = self.linear2(features)
-        return y, features
-
-
 class ProjectedMLP(nnx.Module):
     def __init__(
         self, in_features: int, hidden_features: int, out_features: int, rngs: nnx.Rngs
@@ -219,7 +166,7 @@ class ProjectedMLP(nnx.Module):
             hidden_features=hidden_features,
             out_features=out_features,
             rngs=rngs,
-            zero_out_init=True,
+            out_kernel_init=nnx.initializers.zeros,
             use_layer_norm=False,
         )
 
