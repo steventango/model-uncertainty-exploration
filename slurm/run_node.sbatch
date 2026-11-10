@@ -1,6 +1,8 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --exclusive
+#SBATCH --mem=0
 
 set -euo pipefail
 
@@ -8,7 +10,7 @@ EXPERIMENT="${EXPERIMENT:?EXPERIMENT not set}"
 TASKS="${TASKS:?TASKS not set (space-separated task ids, one per GPU)}"
 cd "${SLURM_SUBMIT_DIR}"
 
-module load python/3.13 cuda/12
+module load python/3.13 cuda/12.9
 
 export MPLBACKEND=Agg
 export OMP_NUM_THREADS=1
