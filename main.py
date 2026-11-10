@@ -4,7 +4,6 @@ import os
 import time
 from datetime import datetime
 
-import gymnax
 import jax
 import jax.numpy as jnp
 import tyro
@@ -18,7 +17,12 @@ from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
+from environments import (
+    BRAX_BACKENDS,
+    BRAX_ENVS,
+    make_gymnax_env,
+    make_state_reconstruction_wrapper,
+)
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
@@ -234,7 +238,7 @@ def main(args: Args):
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
             env_params = base_env.default_params
         else:
-            base_env, env_params = gymnax.make(args.env)
+            base_env, env_params = make_gymnax_env(args.env)
 
         if is_brax:
             predict_reward_terminated = args.predict_reward_terminated or not hasattr(
