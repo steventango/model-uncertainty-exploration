@@ -21,6 +21,7 @@ class ENNConfig:
     l2: float | tuple[float, ...] = 0.0
     epinet_num_layers: int | tuple[int, ...] = 1
     epinet_activation: str = "tanh"
+    epinet_z_input: bool = True
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
