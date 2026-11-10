@@ -295,7 +295,9 @@ def main(args: Args):
         # Cap the rolling dataset buffer; the RBF feature bank places one center
         # per stored datapoint, so NUM_FEATURES (rbf) is derived from this same
         # value (see model_config_dict) to keep the two in lockstep.
-        dataset_size = min(10000, total_timesteps)
+        dataset_size = (
+            min(10000, total_timesteps) if args.model.name == "blr" else total_timesteps
+        )
         log_prefix = args.env
         hparams_run = {
             "num_rollouts": num_rollouts,
