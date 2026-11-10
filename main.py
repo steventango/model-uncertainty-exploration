@@ -18,6 +18,7 @@ from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
+from deep_sea import DeepSeaOneHot
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
@@ -226,12 +227,16 @@ def main(args: Args):
         hparams_run = {"num_rollouts": 1, "N_train": N, "action_dim": action_dim}
         val_data = None
         debug = False
+        discrete_obs = False
 
     else:
         is_brax = args.env in BRAX_ENVS
         if is_brax:
             backend = BRAX_BACKENDS.get(args.env, "positional")
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
+            env_params = base_env.default_params
+        elif args.env.startswith("DeepSea-"):
+            base_env = DeepSeaOneHot(int(args.env.split("-")[1]))
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)
@@ -247,16 +252,21 @@ def main(args: Args):
         # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
         # gated on oracle_reward_terminated). Skip it when --predict_reward_terminated is
         # set so envs without a registered wrapper don't hit the wrapper's ValueError.
-        if not predict_reward_terminated:
+        if not predict_reward_terminated and not hasattr(
+            base_env, "obs_to_reward_terminated"
+        ):
             base_env = make_state_reconstruction_wrapper(base_env, args.env)
         action_space = base_env.action_space(env_params)
         discrete = isinstance(action_space, spaces.Discrete)
         action_dim = action_space.n if discrete else action_space.shape[0]
         act_dim = action_space.n if discrete else None
+        discrete_obs = getattr(base_env, "discrete_obs", False)
         env = _wrap_env(base_env, discrete)
 
         if is_brax:
             val_data = validation.generate_brax_validation_data(base_env, env_params)
+        elif args.env.startswith("DeepSea-"):
+            val_data = None
         else:
             val_data = validation.generate_validation_data(
                 base_env, env_params, args.env
@@ -325,7 +335,7 @@ def main(args: Args):
     seed_dirs, loggers = [], []
     for b in range(B):
         seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
-        logger = ExperimentLogger(seed_dir)
+        logger = ExperimentLogger(seed_dir, discrete_obs=discrete_obs)
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
