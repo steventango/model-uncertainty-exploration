@@ -422,6 +422,55 @@ classic_plan_every_tenth = Experiment(
     ),
 )
 
+MBPO_NET = {
+    "model__hidden_dim": 200,
+    "model__num_layers": 4,
+    "model__activation": "silu",
+    "model__l2": 0.03,
+}
+EPINETS = {
+    "existing": {},
+    "paper": {"model__epinet_num_layers": 2, "model__epinet_activation": "relu"},
+    "silu_prior": {
+        "model__epinet_num_layers": 2,
+        "model__epinet_activation": "silu",
+        "model__epinet_z_input": False,
+    },
+    "rff_prior": {
+        "model__epinet_num_layers": 2,
+        "model__epinet_activation": "silu",
+        "model__epinet_z_input": False,
+        "model__epinet_prior": "rff",
+    },
+}
+
+mbpo_net = Experiment(
+    name="mbpo_net",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for epinet, overrides in EPINETS.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label=f"epinet_{epinet}",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            **MBPO_NET,
+            **overrides,
+        )
+    ),
+    description=(
+        "classic_plan_every_tenth with an MBPO-size ENN base (4x200 SiLU, L2/N 0.03); "
+        "epinet variants: existing, paper (2-layer ReLU), linear-in-z SiLU with a "
+        "SiLU ensemble prior or an RFF prior"
+    ),
+    time_limit="6:00:00",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -440,5 +489,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long,
         classic_plan_every_cheap_model_long_variants,
         classic_plan_every_tenth,
+        mbpo_net,
     )
 }
