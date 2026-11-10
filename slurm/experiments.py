@@ -460,14 +460,14 @@ classic_plan_every_tenth_gp_h160 = Experiment(
             model="gp",
             label="gp",
             steps_per_rollout=trunc // 10,
-            max_steps=10 * trunc,
+            max_steps=5 * trunc,
             ppo__num_envs=128,
             ppo__num_steps=160,
         )
     ),
     description=(
         "classic_plan_every_tenth_gp with a longer PPO horizon "
-        "(128 envs x 160 steps per update instead of 2048 x 10)"
+        "(128 envs x 160 steps per update instead of 2048 x 10), 5 episodes"
     ),
     time_limit="6:00:00",
 )
