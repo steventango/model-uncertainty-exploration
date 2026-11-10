@@ -17,6 +17,7 @@ class ENNConfig:
     prior_hidden_dim: int | tuple[int, ...] = 5
     index_dim: int | tuple[int, ...] = 8
     activation: str = "tanh"
+    num_layers: int | tuple[int, ...] = 1
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"

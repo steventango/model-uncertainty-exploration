@@ -200,6 +200,8 @@ def _make_batched_model(
             out_features,
             model_config["INDEX_DIM"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
+            num_layers=model_config["NUM_LAYERS"],
+            activation=model_config["ACTIVATION"],
             rngs=rngs,
         )
         model = ENNModel(

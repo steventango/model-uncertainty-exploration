@@ -165,11 +165,20 @@ class MLP(nnx.Module):
         rngs: nnx.Rngs,
         zero_out_init: bool = False,
         use_layer_norm: bool = False,
+        num_layers: int = 1,
+        activation: str = "tanh",
     ):
         self.use_layer_norm = use_layer_norm
+        self.activation = getattr(nnx, activation)
         self.linear1 = nnx.Linear(in_features, hidden_features, rngs=rngs)
         if use_layer_norm:
             self.ln1 = nnx.LayerNorm(hidden_features, rngs=rngs)
+        self.hidden = nnx.List(
+            [
+                nnx.Linear(hidden_features, hidden_features, rngs=rngs)
+                for _ in range(num_layers - 1)
+            ]
+        )
         if zero_out_init:
             self.linear2 = nnx.Linear(
                 hidden_features,
@@ -184,7 +193,9 @@ class MLP(nnx.Module):
         features = self.linear1(x)
         if self.use_layer_norm:
             features = self.ln1(features)
-        features = nnx.tanh(features)
+        features = self.activation(features)
+        for layer in self.hidden:
+            features = self.activation(layer(features))
         y = self.linear2(features)
         return y, features
 
@@ -288,6 +299,8 @@ class ENN(nnx.Module):
         index_dim: int,
         *,
         use_layer_norm: bool = False,
+        num_layers: int = 1,
+        activation: str = "tanh",
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
@@ -295,6 +308,8 @@ class ENN(nnx.Module):
             hidden_features=hidden_features,
             out_features=out_features,
             use_layer_norm=use_layer_norm,
+            num_layers=num_layers,
+            activation=activation,
             rngs=rngs,
         )
         self.epinet = EpiNet(
