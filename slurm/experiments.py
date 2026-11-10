@@ -546,6 +546,32 @@ mbpo_net_h160 = Experiment(
     time_limit="3:00:00",
 )
 
+eval_mean_h160 = Experiment(
+    name="eval_mean_h160",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="silu_z_eval_mean",
+            steps_per_rollout=trunc // 10,
+            max_steps=5 * trunc,
+            eval_model_env_mode="mean",
+            **PPO_H160,
+            **H160_ARMS["silu_z"],
+        )
+    ),
+    description=(
+        "mbpo_net_h160 silu_z with the eval policy trained in the model mean "
+        "(explore policy still in samples)"
+    ),
+    time_limit="3:00:00",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -567,5 +593,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         mbpo_net,
         mbpo_net_ablation,
         mbpo_net_h160,
+        eval_mean_h160,
     )
 }
