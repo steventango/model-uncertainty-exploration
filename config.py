@@ -11,8 +11,8 @@ class EpinetConfig:
     learnable_hidden_dim: int | tuple[int, ...] = 15
     prior_hidden_dim: int | tuple[int, ...] = 5
     index_dim: int | tuple[int, ...] = 8
-    num_layers: int | tuple[int, ...] = 1
-    activation: str = "tanh"
+    num_layers: int | tuple[int, ...] = 2
+    activation: str = "silu"
 
 
 @dataclass(frozen=True)
