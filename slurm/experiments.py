@@ -511,6 +511,40 @@ mbpo_net_ablation = Experiment(
     time_limit="6:00:00",
 )
 
+PPO_H160 = {"ppo__num_envs": 128, "ppo__num_steps": 160}
+H160_ARMS = {
+    "old_enn": {},
+    "existing": MBPO_NET,
+    "paper": {**MBPO_NET, **EPINETS["paper"]},
+    "silu_z": {**MBPO_NET, **EPINET_ABLATIONS["silu_z"]},
+}
+
+mbpo_net_h160 = Experiment(
+    name="mbpo_net_h160",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for arm, overrides in H160_ARMS.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label=arm,
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            **PPO_H160,
+            **overrides,
+        )
+    ),
+    description=(
+        "mbpo_net arms and the old ENN with a longer PPO horizon "
+        "(128 envs x 160 steps per update instead of 2048 x 10)"
+    ),
+    time_limit="6:00:00",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -531,5 +565,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_tenth,
         mbpo_net,
         mbpo_net_ablation,
+        mbpo_net_h160,
     )
 }
