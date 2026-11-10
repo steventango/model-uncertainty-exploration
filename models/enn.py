@@ -78,13 +78,7 @@ def _bootstrap(model: ENNModel, indices, z, num_outputs: int, p: float = 0.5):
     return keep, noise
 
 
-def _l2(model: ENNModel, pointer):
-    base = model.enn.base
-    layers = [base.linear1, *base.hidden, base.linear2]
-    return model.l2 / pointer * sum(jnp.sum(layer.kernel[...] ** 2) for layer in layers)
-
-
-def _loss_fn(model: ENNModel, batch, indices, pointer, rngs: nnx.Rngs):
+def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
@@ -118,7 +112,7 @@ def _loss_fn(model: ENNModel, batch, indices, pointer, rngs: nnx.Rngs):
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())
 
-    loss = delta_next_state_loss + reward_loss + terminated_loss + _l2(model, pointer)
+    loss = delta_next_state_loss + reward_loss + terminated_loss
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
 
 
@@ -130,10 +124,9 @@ def _train_step(
     rngs: nnx.Rngs,
     batch,
     indices,
-    pointer,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, indices, pointer, rngs)
+    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -151,9 +144,8 @@ def _eval_step(
     rngs: nnx.Rngs,
     batch,
     indices,
-    pointer,
 ):
-    loss, aux = _loss_fn(model, batch, indices, pointer, rngs)
+    loss, aux = _loss_fn(model, batch, indices, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -174,6 +166,7 @@ def _train_model(
     rngs: nnx.Rngs,
 ):
     model.update_stats(dataset, pointer)
+    optimizer.opt_state.hyperparams["l2"][...] = model.l2 / pointer
 
     def train_step_fn(train_state, _):
         model, optimizer, metrics, rngs = train_state
@@ -182,7 +175,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch, indices, pointer)
+        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -230,7 +223,12 @@ def _make_batched_model(
             l2=model_config["L2"],
             rngs=rngs,
         )
-        tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
+        tx = optax.inject_hyperparams(
+            lambda l2: optax.chain(
+                optax.add_decayed_weights(l2),
+                optax.adamw(model_config["LR"], weight_decay=1e-4),
+            )
+        )(l2=0.0)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
         optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
         metrics = nnx.MultiMetric(
