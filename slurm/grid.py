@@ -42,7 +42,7 @@ class Experiment:
     num_seeds: int = 30
     description: str = ""
     time_limit: str = "3:00:00"
-    mem_per_cpu: str = "4G"
+    mem_per_cpu: str = "8G"
 
     @property
     def num_tasks(self) -> int:

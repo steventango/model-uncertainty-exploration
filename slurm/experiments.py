@@ -327,7 +327,7 @@ classic_plan_every_cheap_model_long = Experiment(
         )
     ),
     time_limit="6:00:00",
-    mem_per_cpu="32G",
+    mem_per_cpu="64G",
     description=(
         "plan every step, up to 1000 real steps (or 6h timeout); "
         "ENN update_steps//10 + full PPO; stress-test post-100 stability"
@@ -383,7 +383,7 @@ classic_plan_every_cheap_model_long_variants = Experiment(
         ),
     ),
     time_limit="30:00:00",
-    mem_per_cpu="32G",
+    mem_per_cpu="64G",
     description=(
         "plan every step, up to 1000 real steps (30h wall budget); cheap ENN "
         "(update_steps//10) + full PPO; exploit/explore x mean/sample, eig "
