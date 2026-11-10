@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --exclusive
-#SBATCH --mem=0
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 
 set -euo pipefail
 
