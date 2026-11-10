@@ -209,6 +209,8 @@ def _make_batched_model(
             epinet_num_layers=epinet["num_layers"],
             epinet_activation=epinet["activation"],
             epinet_z_input=epinet["z_input"],
+            epinet_prior=epinet["prior"],
+            epinet_rff_lengthscale=epinet["rff_lengthscale"],
             rngs=rngs,
         )
         model = ENNModel(

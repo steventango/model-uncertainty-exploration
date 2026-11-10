@@ -14,6 +14,8 @@ class EpinetConfig:
     num_layers: int | tuple[int, ...] = 1
     activation: str = "tanh"
     z_input: bool = True
+    prior: Literal["mlp", "rff"] = "mlp"
+    rff_lengthscale: float | tuple[float, ...] = 1.0
 
 
 @dataclass(frozen=True)
