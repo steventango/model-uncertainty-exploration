@@ -512,11 +512,12 @@ mbpo_net_ablation = Experiment(
 )
 
 PPO_H160 = {"ppo__num_envs": 128, "ppo__num_steps": 160}
+MBPO_NET_OPTAX_L2 = {**MBPO_NET, "model__l2": 0.1}
 H160_ARMS = {
     "old_enn": {},
-    "existing": MBPO_NET,
-    "paper": {**MBPO_NET, **EPINETS["paper"]},
-    "silu_z": {**MBPO_NET, **EPINET_ABLATIONS["silu_z"]},
+    "existing": MBPO_NET_OPTAX_L2,
+    "paper": {**MBPO_NET_OPTAX_L2, **EPINETS["paper"]},
+    "silu_z": {**MBPO_NET_OPTAX_L2, **EPINET_ABLATIONS["silu_z"]},
 }
 
 mbpo_net_h160 = Experiment(
