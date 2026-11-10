@@ -23,6 +23,7 @@ class ENNModel(WorldModel):
         predict_reward_terminated: bool = True,
         bootstrap: Literal["none", "bernoulli", "gaussian"] = "none",
         bootstrap_noise: float = 1.0,
+        l2: float = 0.0,
         *,
         rngs: nnx.Rngs,
     ):
@@ -36,6 +37,7 @@ class ENNModel(WorldModel):
         self.enn = enn
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
+        self.l2 = l2
         self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
@@ -76,7 +78,13 @@ def _bootstrap(model: ENNModel, indices, z, num_outputs: int, p: float = 0.5):
     return keep, noise
 
 
-def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
+def _l2(model: ENNModel, pointer):
+    base = model.enn.base
+    layers = [base.linear1, *base.hidden, base.linear2]
+    return model.l2 / pointer * sum(jnp.sum(layer.kernel[...] ** 2) for layer in layers)
+
+
+def _loss_fn(model: ENNModel, batch, indices, pointer, rngs: nnx.Rngs):
     x = model.build_input(batch.obs, batch.action)
     x = model.normalize_input(x)
     z = jax.random.normal(rngs(), shape=(model.index_dim,))
@@ -110,7 +118,7 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
         reward_loss = jnp.zeros(())
         terminated_loss = jnp.zeros(())
 
-    loss = delta_next_state_loss + reward_loss + terminated_loss
+    loss = delta_next_state_loss + reward_loss + terminated_loss + _l2(model, pointer)
     return loss, (delta_next_state_loss, reward_loss, terminated_loss)
 
 
@@ -122,9 +130,10 @@ def _train_step(
     rngs: nnx.Rngs,
     batch,
     indices,
+    pointer,
 ):
     grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
-    (loss, aux), grads = grad_fn(model, batch, indices, rngs)
+    (loss, aux), grads = grad_fn(model, batch, indices, pointer, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -142,8 +151,9 @@ def _eval_step(
     rngs: nnx.Rngs,
     batch,
     indices,
+    pointer,
 ):
-    loss, aux = _loss_fn(model, batch, indices, rngs)
+    loss, aux = _loss_fn(model, batch, indices, pointer, rngs)
     delta_next_state_loss, reward_loss, terminated_loss = aux
     metrics.update(
         loss=loss,
@@ -172,7 +182,7 @@ def _train_model(
             lambda x: jnp.take(x, indices, axis=0), dataset
         )
         metrics.reset()
-        _train_step(model, optimizer, metrics, rngs, minibatch, indices)
+        _train_step(model, optimizer, metrics, rngs, minibatch, indices, pointer)
         return (model, optimizer, metrics, rngs), metrics.compute()
 
     train_state = (model, optimizer, metrics, rngs)
@@ -212,6 +222,7 @@ def _make_batched_model(
             predict_reward_terminated=predict_reward_terminated,
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
+            l2=model_config["L2"],
             rngs=rngs,
         )
         tx = optax.adamw(model_config["LR"], weight_decay=1e-4)
