@@ -471,6 +471,46 @@ mbpo_net = Experiment(
     time_limit="6:00:00",
 )
 
+EPINET_ABLATIONS = {
+    "silu_z": {"model__epinet_num_layers": 2, "model__epinet_activation": "silu"},
+    "rff_z": {
+        "model__epinet_num_layers": 2,
+        "model__epinet_activation": "silu",
+        "model__epinet_prior": "rff",
+    },
+    "silu_1layer": {
+        "model__epinet_num_layers": 1,
+        "model__epinet_activation": "silu",
+        "model__epinet_z_input": False,
+    },
+}
+
+mbpo_net_ablation = Experiment(
+    name="mbpo_net_ablation",
+    configs=tuple(
+        cfg
+        for env, trunc in CLASSIC_TRUNCATION.items()
+        for epinet, overrides in EPINET_ABLATIONS.items()
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label=f"epinet_{epinet}",
+            steps_per_rollout=trunc // 10,
+            max_steps=10 * trunc,
+            **MBPO_NET,
+            **overrides,
+        )
+    ),
+    description=(
+        "mbpo_net epinet ablations: 2-layer SiLU with z input, RFF prior with z input, "
+        "1-layer SiLU without z input"
+    ),
+    time_limit="6:00:00",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -490,5 +530,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         classic_plan_every_cheap_model_long_variants,
         classic_plan_every_tenth,
         mbpo_net,
+        mbpo_net_ablation,
     )
 }
