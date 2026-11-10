@@ -186,10 +186,10 @@ def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
         loc, scale = model._loc_scale(y)
         target = target + jax.lax.stop_gradient(scale) * proj[:, None]
         return -distrax.MultivariateNormalDiag(loc, scale).log_prob(target).mean()
-    # Categorical: discrete analogue of the perturbation (as for the terminated
-    # head) — each index fits a random half of the data.
-    mask = (proj > norm.ppf(0.5)).astype(jnp.float32)
     nll = -distrax.Categorical(logits=y).log_prob(target)
+    if model.bootstrap != "bernoulli":
+        return nll.mean()
+    mask = (proj > norm.ppf(0.5)).astype(jnp.float32)
     return (nll * mask).sum() / jnp.maximum(mask.sum(), 1.0)
 
 
