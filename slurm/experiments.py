@@ -443,6 +443,7 @@ classic_plan_every_tenth_gp = Experiment(
         "classic_plan_every_tenth with the exact GP world model (gpjax, pathwise "
         "samples) instead of the ENN"
     ),
+    time_limit="6:00:00",
 )
 
 EXPERIMENTS: dict[str, Experiment] = {
