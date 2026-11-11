@@ -7,7 +7,7 @@ from gymnax.environments.bsuite.deep_sea import DeepSea, EnvParams
 
 @struct.dataclass
 class DeepSeaParams(EnvParams):
-    action_map: jax.Array | None = None
+    seed: int = 0
 
 
 class DeepSeaOneHot(environment.Environment):
@@ -35,10 +35,12 @@ class DeepSeaOneHot(environment.Environment):
         self.goal = self.num_cells - 1
 
     def params_for_seed(self, seed) -> DeepSeaParams:
-        action_map = jax.random.bernoulli(
-            jax.random.key(seed), 0.5, (self.size, self.size)
+        return DeepSeaParams(max_steps_in_episode=self.size, seed=seed)
+
+    def action_map(self, params):
+        return jax.random.bernoulli(
+            jax.random.key(params.seed), 0.5, (self.size, self.size)
         ).astype(jnp.float32)
-        return DeepSeaParams(max_steps_in_episode=self.size, action_map=action_map)
 
     @property
     def default_params(self) -> DeepSeaParams:
@@ -58,12 +60,12 @@ class DeepSeaOneHot(environment.Environment):
 
     def reset_env(self, key, params):
         _, state = self._env.reset_env(key, params)
-        state = state.replace(action_mapping=params.action_map)
+        state = state.replace(action_mapping=self.action_map(params))
         return self._obs(state), state
 
     def obs_to_reward_terminated(self, obs, action, next_obs, params):
         a = jnp.reshape(action, ()).astype(jnp.float32)
-        right_action = params.action_map[self.cell_rows, self.cell_cols]
+        right_action = self.action_map(params)[self.cell_rows, self.cell_cols]
         right = a * right_action + (1 - a) * (1 - right_action)
         p_right = (obs[:-1] * right).sum()
         reward = p_right * (obs[self.goal] - 0.01 / self.size)
