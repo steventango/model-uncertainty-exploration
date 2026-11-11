@@ -14,6 +14,17 @@ class PendulumWrapper(StateReconstructionWrapper):
             time=time,
         )
 
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        from gymnax.environments.classic_control.pendulum import angle_normalize
+
+        params = self._env.default_params
+        state = self.get_state(obs, action, 0)
+        u = jnp.clip(jnp.reshape(action, ()), -params.max_torque, params.max_torque)
+        reward = -(
+            angle_normalize(state.theta) ** 2 + 0.1 * state.theta_dot**2 + 0.001 * u**2
+        )
+        return reward, jnp.array(False)
+
 
 class MountainCarWrapper(StateReconstructionWrapper):
     def get_state(self, obs, last_action, time, next_obs=None):
@@ -21,12 +32,23 @@ class MountainCarWrapper(StateReconstructionWrapper):
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        params = self._env.default_params
+        terminated = self._env.is_terminal(self.get_state(next_obs, action, 0), params)
+        return jnp.array(-1.0), terminated
+
 
 class MountainCarContinuousWrapper(StateReconstructionWrapper):
     def get_state(self, obs, last_action, time, next_obs=None):
         from gymnax.environments.classic_control.continuous_mountain_car import EnvState
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
+
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        params = self._env.default_params
+        terminated = self._env.is_terminal(self.get_state(next_obs, action, 0), params)
+        reward = -0.1 * jnp.reshape(action, ()) ** 2 + 100 * terminated
+        return reward, terminated
 
 
 class CartPoleWrapper(StateReconstructionWrapper):
@@ -36,6 +58,12 @@ class CartPoleWrapper(StateReconstructionWrapper):
         return EnvState(
             x=obs[0], x_dot=obs[1], theta=obs[2], theta_dot=obs[3], time=time
         )
+
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        params = self._env.default_params
+        prev_terminal = self._env.is_terminal(self.get_state(obs, action, 0), params)
+        terminated = self._env.is_terminal(self.get_state(next_obs, action, 0), params)
+        return 1.0 - prev_terminal, terminated
 
 
 class AcrobotWrapper(StateReconstructionWrapper):
@@ -49,6 +77,11 @@ class AcrobotWrapper(StateReconstructionWrapper):
             velocity_2=obs[5],
             time=time,
         )
+
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        params = self._env.default_params
+        terminated = self._env.is_terminal(self.get_state(next_obs, action, 0), params)
+        return -1.0 * (1 - terminated), terminated
 
 
 # ---------------------------------------------------------------------------
