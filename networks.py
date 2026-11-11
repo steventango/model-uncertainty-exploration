@@ -264,6 +264,40 @@ class EpiNet(nnx.Module):
         ) + self.prior_scale * jax.lax.stop_gradient(self.prior(x, z, rngs=rngs))
 
 
+class Frozen(nnx.Variable):
+    pass
+
+
+class OneHotEmbed(nnx.Module):
+    def __init__(self, blocks, mode, dim, trainable, *, rngs: nnx.Rngs):
+        self.blocks = tuple(blocks)
+        self.mode = mode
+        self.dims = self.blocks
+        if mode == "random":
+            self.dims = (dim or self.blocks[0],) + self.blocks[1:]
+            table = nnx.Param if trainable else Frozen
+            self.tables = nnx.List(
+                [
+                    table(jax.random.normal(rngs.params(), (k, d)))
+                    for k, d in zip(self.blocks, self.dims)
+                ]
+            )
+
+    @property
+    def out_features(self):
+        return sum(self.dims)
+
+    def __call__(self, x):
+        if self.mode == "identity":
+            return x
+        parts = jnp.split(x, np.cumsum(self.blocks)[:-1], axis=-1)
+        if self.mode == "scaled":
+            parts = [p * np.sqrt(k) for p, k in zip(parts, self.blocks)]
+        else:
+            parts = [p @ t[...] for p, t in zip(parts, self.tables)]
+        return jnp.concatenate(parts, axis=-1)
+
+
 class ENN(nnx.Module):
     def __init__(
         self,
@@ -280,8 +314,20 @@ class ENN(nnx.Module):
         epinet_num_layers: int = 1,
         epinet_activation: str = "tanh",
         prior_scale: float = 1.0,
+        embed_blocks: tuple[int, ...] | None = None,
+        embed: str = "identity",
+        embed_dim: int | None = None,
+        embed_trainable: bool = False,
         rngs: nnx.Rngs,
     ):
+        self.embed = OneHotEmbed(
+            embed_blocks or (in_features,),
+            embed if embed_blocks else "identity",
+            embed_dim,
+            embed_trainable,
+            rngs=rngs,
+        )
+        in_features = self.embed.out_features
         self.base = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
@@ -305,7 +351,11 @@ class ENN(nnx.Module):
         )
         self.index_dim = index_dim
 
+    def base_out(self, x, rngs: nnx.Rngs | None = None):
+        return self.base(self.embed(x), rngs=rngs)
+
     def __call__(self, x, z, rngs: nnx.Rngs | None = None):
+        x = self.embed(x)
         y, features = self.base(x, rngs=rngs)
         phi = jnp.concatenate([x, features], axis=-1)
         return y, y + self.epinet(jax.lax.stop_gradient(phi), x, z, rngs=rngs)

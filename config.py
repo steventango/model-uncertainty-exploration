@@ -33,6 +33,9 @@ class ENNConfig:
     head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
     min_scale: float = 1e-3
     prior_scale: float | None = None
+    embed: Literal["identity", "scaled", "random"] = "identity"
+    embed_dim: int | None = None
+    embed_trainable: bool = False
 
 
 @dataclass(frozen=True)

@@ -70,7 +70,7 @@ class ENNModel(WorldModel):
 
         gaussian: the Gaussian loc. categorical: E[one_hot(s')] - obs = probs - obs.
         """
-        y, _ = self.enn.base(x)
+        y, _ = self.enn.base_out(x)
         if self.head == "gaussian":
             return y[..., : self.obs_dim]
         if self.head == "categorical":
@@ -113,7 +113,7 @@ class ENNModel(WorldModel):
     def nll(self, x, obs, next_obs):
         if self.head == "deterministic":
             return super().nll(x, obs, next_obs)
-        y, _ = self.enn.base(x)
+        y, _ = self.enn.base_out(x)
         return -self.dist_from_output(y).log_prob(self._targets(obs, next_obs))
 
     def update_stats(self, dataset, pointer):
@@ -355,6 +355,12 @@ def _make_batched_model(
             prior_scale=_head_default(
                 _DEFAULT_PRIOR_SCALE, model_config.get("PRIOR_SCALE"), head
             ),
+            embed_blocks=(
+                (obs_dim, in_features - obs_dim) if head == "categorical" else None
+            ),
+            embed=model_config.get("EMBED", "identity"),
+            embed_dim=model_config.get("EMBED_DIM"),
+            embed_trainable=model_config.get("EMBED_TRAINABLE", False),
             rngs=rngs,
         )
         model = ENNModel(
