@@ -46,14 +46,14 @@ class ModelBasedState(NamedTuple):
     eval: PolicyState
     rnd: RND | None = None  # explore_bonus="rnd"
     rnd_optimizer: nnx.Optimizer | None = None
-    ppo_states: Any = None  # (B, C) PPO train states kept for --warm-start-policy
+    solver_states: Any = None  # (B, C) train states kept for --warm-start-policy
 
 
 class ModelBasedAgent:
-    """Fit a world model to the data, then train PPO inside it.
+    """Fit a world model to the data, then train PPO or SAC inside it.
 
-    PPO trains two configs per seed: explore (alpha, beta from the args) acts in
-    the real env, and eval (alpha=1, beta=0, no bonus) is evaluated.
+    The solver trains two configs per seed: explore (alpha, beta from the args)
+    acts in the real env, and eval (alpha=1, beta=0, no bonus) is evaluated.
     """
 
     on_policy: ClassVar[bool] = False
@@ -260,8 +260,8 @@ class ModelBasedAgent:
             )
 
         num_configs = self.alphas.shape[0]
-        if self.warm_start_policy and agent_state.ppo_states is not None:
-            train_states = agent_state.ppo_states
+        if self.warm_start_policy and agent_state.solver_states is not None:
+            train_states = agent_state.solver_states
         else:
             train_states = self.solver_module.make_batched_train_state(
                 self.ppo_config,
@@ -321,7 +321,7 @@ class ModelBasedAgent:
         return agent_state._replace(
             explore=select_config_train_state(trained, self.EXPLORE),
             eval=select_config_train_state(trained, self.EVAL),
-            ppo_states=trained if self.warm_start_policy else None,
+            solver_states=trained if self.warm_start_policy else None,
         )
 
     def save(self, agent_state: ModelBasedState, seed_dir: str, b: int) -> None:
