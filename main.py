@@ -236,7 +236,7 @@ def main(args: Args):
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
             env_params = base_env.default_params
         elif args.env.startswith("DeepSea-"):
-            base_env = DeepSeaOneHot(int(args.env.split("-")[1]))
+            base_env = DeepSeaOneHot(int(args.env.split("-")[1]), map_seed=args.seed)
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)
