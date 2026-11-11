@@ -9,11 +9,12 @@ from flax.nnx.nn.initializers import orthogonal
 from flax.nnx.nn.linear import default_kernel_init
 
 
-def onehot_rows_init(n):
+def onehot_rows_init(n, num_blocks):
     def init(key, shape, dtype=jnp.float32):
         k1, k2 = jax.random.split(key)
         w = default_kernel_init(k2, shape, dtype)
-        return w.at[:n].set(jax.random.normal(k1, (n, shape[1]), dtype))
+        rows = jax.random.normal(k1, (n, shape[1]), dtype) / np.sqrt(num_blocks)
+        return w.at[:n].set(rows)
 
     return init
 
@@ -346,7 +347,7 @@ class ENN(nnx.Module):
         in_features = self.embed.out_features
         first_kernel_init = None
         if embed_blocks and self.embed.mode == "identity" and onehot_init == "normal":
-            first_kernel_init = onehot_rows_init(in_features)
+            first_kernel_init = onehot_rows_init(in_features, len(embed_blocks))
         self.base = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
