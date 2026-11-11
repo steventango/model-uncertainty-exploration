@@ -44,6 +44,7 @@ class ModelBasedState(NamedTuple):
     eval: PolicyState
     rnd: RND | None = None  # explore_bonus="rnd"
     rnd_optimizer: nnx.Optimizer | None = None
+    ppo_states: Any = None  # (B, C) PPO train states kept for --warm-start-policy
 
 
 class ModelBasedAgent:
@@ -78,6 +79,7 @@ class ModelBasedAgent:
         val_data: ValData | None = None,
         debug: tuple[Env, str, str] | None = None,  # base_env, env name, seed-0 dir
         z_per_plan: bool = False,
+        warm_start_policy: bool = False,
     ):
         self.model_name = model_name
         self.model_config = model_config
@@ -90,6 +92,7 @@ class ModelBasedAgent:
         self.model_env = model_env
         self.reset_source = reset_source
         self.z_per_plan = z_per_plan
+        self.warm_start_policy = warm_start_policy
         self.alphas = jnp.array([alpha, 1.0])
         self.betas = jnp.array([beta, 0.0])
         self.loggers = loggers
@@ -227,12 +230,15 @@ class ModelBasedAgent:
                 logger.log_scalar("rnd/loss", float(rnd_losses[b, -1]), step)
 
         num_configs = self.alphas.shape[0]
-        train_states = make_batched_train_state(
-            self.ppo_config,
-            self.model_env,
-            self.model_env.default_params,
-            vsplit(ts_seed, num_configs).T,  # (B, C)
-        )
+        if self.warm_start_policy and agent_state.ppo_states is not None:
+            train_states = agent_state.ppo_states
+        else:
+            train_states = make_batched_train_state(
+                self.ppo_config,
+                self.model_env,
+                self.model_env.default_params,
+                vsplit(ts_seed, num_configs).T,  # (B, C)
+            )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         params = self.model_env.default_params.replace(
             env_params=self.model_env.seed_env_params
@@ -279,6 +285,7 @@ class ModelBasedAgent:
         return agent_state._replace(
             explore=select_config_train_state(trained, self.EXPLORE),
             eval=select_config_train_state(trained, self.EVAL),
+            ppo_states=trained if self.warm_start_policy else None,
         )
 
     def save(self, agent_state: ModelBasedState, seed_dir: str, b: int) -> None:

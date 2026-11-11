@@ -417,6 +417,7 @@ def main(args: Args):
             val_data=val_data,
             debug=(base_env, args.env, seed_dirs[0]) if debug else None,
             z_per_plan=args.z_per_plan,
+            warm_start_policy=args.warm_start_policy,
         )
 
     if args.offline:

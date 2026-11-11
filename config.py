@@ -116,6 +116,7 @@ class Args:
     checkpoint_every: int | None = None
     greedy_explore: bool = False
     z_per_plan: bool = False
+    warm_start_policy: bool = False
     uncertainty_threshold: float | None = None
     max_steps: int | None = None
     offline: bool = False
