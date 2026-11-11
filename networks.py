@@ -9,6 +9,15 @@ from flax.nnx.nn.initializers import orthogonal
 from flax.nnx.nn.linear import default_kernel_init
 
 
+def onehot_rows_init(n):
+    def init(key, shape, dtype=jnp.float32):
+        k1, k2 = jax.random.split(key)
+        w = default_kernel_init(k2, shape, dtype)
+        return w.at[:n].set(jax.random.normal(k1, (n, shape[1]), dtype))
+
+    return init
+
+
 class Block(nnx.Module):
     def __init__(
         self,
@@ -45,12 +54,14 @@ class MLP(nnx.Module):
         use_layer_norm: bool = False,
         kernel_init=default_kernel_init,
         out_kernel_init=default_kernel_init,
+        first_kernel_init=None,
     ):
         sizes = [in_features] + [hidden_features] * num_layers
+        inits = [first_kernel_init or kernel_init] + [kernel_init] * (num_layers - 1)
         self.blocks = nnx.List(
             [
-                Block(i, o, activation, use_layer_norm, kernel_init, rngs=rngs)
-                for i, o in pairwise(sizes)
+                Block(i, o, activation, use_layer_norm, init, rngs=rngs)
+                for (i, o), init in zip(pairwise(sizes), inits)
             ]
         )
         self.out = nnx.Linear(
@@ -166,6 +177,7 @@ class ProjectedMLP(nnx.Module):
         rngs: nnx.Rngs,
         num_layers: int = 1,
         activation: str = "tanh",
+        first_kernel_init=None,
     ):
         self.mlp = MLP(
             in_features=in_features,
@@ -173,6 +185,7 @@ class ProjectedMLP(nnx.Module):
             out_features=out_features,
             rngs=rngs,
             out_kernel_init=nnx.initializers.zeros,
+            first_kernel_init=first_kernel_init,
             use_layer_norm=False,
             num_layers=num_layers,
             activation=activation,
@@ -195,6 +208,7 @@ class MLPEnsemble(nnx.Module):
         rngs: nnx.Rngs,
         num_layers: int = 1,
         activation: str = "tanh",
+        first_kernel_init=None,
     ):
         keys = jax.random.split(rngs.params(), num_models)
 
@@ -207,6 +221,7 @@ class MLPEnsemble(nnx.Module):
                 use_layer_norm=False,
                 num_layers=num_layers,
                 activation=activation,
+                first_kernel_init=first_kernel_init,
                 rngs=nnx.Rngs(params=key),
             )
 
@@ -237,6 +252,7 @@ class EpiNet(nnx.Module):
         num_layers: int = 1,
         activation: str = "tanh",
         prior_scale: float = 1.0,
+        first_kernel_init=None,
         rngs: nnx.Rngs,
     ):
         self.learnable = ProjectedMLP(
@@ -246,6 +262,7 @@ class EpiNet(nnx.Module):
             rngs=rngs,
             num_layers=num_layers,
             activation=activation,
+            first_kernel_init=first_kernel_init,
         )
         self.prior = MLPEnsemble(
             num_models=index_dim,
@@ -255,6 +272,7 @@ class EpiNet(nnx.Module):
             rngs=rngs,
             num_layers=num_layers,
             activation=activation,
+            first_kernel_init=first_kernel_init,
         )
         self.prior_scale = prior_scale
 
@@ -291,10 +309,7 @@ class OneHotEmbed(nnx.Module):
         if self.mode == "identity":
             return x
         parts = jnp.split(x, np.cumsum(self.blocks)[:-1], axis=-1)
-        if self.mode == "scaled":
-            parts = [p * np.sqrt(k) for p, k in zip(parts, self.blocks)]
-        else:
-            parts = [p @ t[...] for p, t in zip(parts, self.tables)]
+        parts = [p @ t[...] for p, t in zip(parts, self.tables)]
         return jnp.concatenate(parts, axis=-1)
 
 
@@ -318,6 +333,7 @@ class ENN(nnx.Module):
         embed: str = "identity",
         embed_dim: int | None = None,
         embed_trainable: bool = False,
+        onehot_init: str = "lecun",
         rngs: nnx.Rngs,
     ):
         self.embed = OneHotEmbed(
@@ -328,6 +344,9 @@ class ENN(nnx.Module):
             rngs=rngs,
         )
         in_features = self.embed.out_features
+        first_kernel_init = None
+        if embed_blocks and self.embed.mode == "identity" and onehot_init == "normal":
+            first_kernel_init = onehot_rows_init(in_features)
         self.base = MLP(
             in_features=in_features,
             hidden_features=hidden_features,
@@ -335,6 +354,7 @@ class ENN(nnx.Module):
             use_layer_norm=use_layer_norm,
             num_layers=num_layers,
             activation=activation,
+            first_kernel_init=first_kernel_init,
             rngs=rngs,
         )
         self.epinet = EpiNet(
@@ -347,6 +367,7 @@ class ENN(nnx.Module):
             num_layers=epinet_num_layers,
             activation=epinet_activation,
             prior_scale=prior_scale,
+            first_kernel_init=first_kernel_init,
             rngs=rngs,
         )
         self.index_dim = index_dim

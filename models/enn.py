@@ -361,6 +361,7 @@ def _make_batched_model(
             embed=model_config.get("EMBED", "identity"),
             embed_dim=model_config.get("EMBED_DIM"),
             embed_trainable=model_config.get("EMBED_TRAINABLE", False),
+            onehot_init=model_config.get("ONEHOT_INIT", "lecun"),
             rngs=rngs,
         )
         model = ENNModel(
