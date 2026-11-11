@@ -42,7 +42,7 @@ def make_rollout(config, env, env_params, training=True):
             else:
                 network_last_obs = last_obs
             pi, value = network(network_last_obs)
-            action = pi.sample(seed=_rng)
+            action = pi.mode() if config.get("GREEDY", False) else pi.sample(seed=_rng)
             log_prob = pi.log_prob(action)
 
             # STEP ENV

@@ -338,9 +338,11 @@ def main(args: Args):
             "NUM_STEPS": rollout_steps,
             "TOTAL_TIMESTEPS": total_timesteps,
             "DATASET_SIZE": dataset_size,
+            "GREEDY": args.greedy_explore,
         }
         eval_config = {
             **rollout_config,
+            "GREEDY": False,
             "NUM_ENVS": 100,
             "NUM_STEPS": env_params.max_steps_in_episode,
         }

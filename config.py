@@ -114,6 +114,7 @@ class Args:
     steps_per_rollout: int | None = None
     eval_every: int | None = None
     checkpoint_every: int | None = None
+    greedy_explore: bool = False
     uncertainty_threshold: float | None = None
     max_steps: int | None = None
     offline: bool = False
