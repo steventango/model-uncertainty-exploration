@@ -77,6 +77,7 @@ class ModelBasedAgent:
         rnd_config: RNDConfig | None = None,
         val_data: ValData | None = None,
         debug: tuple[Env, str, str] | None = None,  # base_env, env name, seed-0 dir
+        z_per_plan: bool = False,
     ):
         self.model_name = model_name
         self.model_config = model_config
@@ -88,6 +89,7 @@ class ModelBasedAgent:
         self.env_params = env_params
         self.model_env = model_env
         self.reset_source = reset_source
+        self.z_per_plan = z_per_plan
         self.alphas = jnp.array([alpha, 1.0])
         self.betas = jnp.array([beta, 0.0])
         self.loggers = loggers
@@ -251,6 +253,10 @@ class ModelBasedAgent:
             params = params.replace(
                 init_obs=experience.buffer.obs, init_weights=weights
             )
+        if self.z_per_plan:
+            shape = (self.model_env.samples, agent_state.models.index_dim)
+            z = jax.vmap(lambda k: jax.random.normal(jax.random.fold_in(k, 1), shape))(train_seed)
+            params = params.replace(z=z)
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
         jax.block_until_ready(out)

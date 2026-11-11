@@ -115,6 +115,7 @@ class Args:
     eval_every: int | None = None
     checkpoint_every: int | None = None
     greedy_explore: bool = False
+    z_per_plan: bool = False
     uncertainty_threshold: float | None = None
     max_steps: int | None = None
     offline: bool = False

@@ -60,6 +60,7 @@ class ModelEnvParams:
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
+    z: jnp.ndarray | None = None  # per-seed epistemic indices shared by every episode
     per_seed_env_params: bool = struct.field(pytree_node=False, default=False)
 
     def seed_vmap_axes(self) -> "ModelEnvParams":
@@ -74,6 +75,7 @@ class ModelEnvParams:
             beta=None,
             init_obs=0,
             init_weights=0,
+            z=0,
         )
 
     def config_vmap_axes(self) -> "ModelEnvParams":
@@ -87,6 +89,7 @@ class ModelEnvParams:
             beta=0,
             init_obs=None,
             init_weights=None,
+            z=None,
         )
 
 
@@ -265,7 +268,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
                 key_idx, params.init_obs.shape[0], p=params.init_weights
             )
             obs = params.init_obs[idx]
-        z = model.sample_index(key_z, self.samples)
+        z = model.sample_index(key_z, self.samples) if params.z is None else params.z
         state = ModelEnvState(
             obs=obs,
             terminated=jnp.bool_(False),
