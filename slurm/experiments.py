@@ -572,6 +572,39 @@ eval_mean_h160 = Experiment(
     time_limit="3:00:00",
 )
 
+MUJOCO_ENVS = (
+    "inverted_pendulum",
+    "inverted_double_pendulum",
+    "reacher",
+    "swimmer",
+    "halfcheetah",
+)
+
+mujoco_h160 = Experiment(
+    name="mujoco_h160",
+    configs=tuple(
+        cfg
+        for env in MUJOCO_ENVS
+        for cfg in sweep(
+            env=env,
+            alpha=0.0,
+            beta=1.0,
+            mode="sample",
+            bonus="eig",
+            label="epinet",
+            steps_per_rollout=100,
+            max_steps=5000,
+            **PPO_H160,
+            **H160_ARMS["silu_z"],
+        )
+    ),
+    description=(
+        "mbpo_net_h160 silu_z (MBPO net, 2-layer SiLU epinet with z) on brax: "
+        "plan every 100 steps of the 1000-step episode, 5 episodes"
+    ),
+    time_limit="3:00:00",
+)
+
 EXPERIMENTS: dict[str, Experiment] = {
     exp.name: exp
     for exp in (
@@ -594,5 +627,6 @@ EXPERIMENTS: dict[str, Experiment] = {
         mbpo_net_ablation,
         mbpo_net_h160,
         eval_mean_h160,
+        mujoco_h160,
     )
 }
