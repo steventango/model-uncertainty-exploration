@@ -16,7 +16,7 @@ import plotting
 import validation
 from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
-from config import Args, model_config_dict, ppo_config_dict
+from config import Args, model_config_dict, ppo_config_dict, sac_config_dict
 from data import collate_rollout
 from deep_sea import DeepSeaOneHot
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
@@ -310,9 +310,14 @@ def main(args: Args):
     model_config = model_config_dict(
         args.model, max_data=dataset_size, minibatch_size=model_minibatch_size
     )
-    config = ppo_config_dict(
-        args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
-    )
+    if args.solver == "sac":
+        config = sac_config_dict(
+            args.sac, env_name=args.env, seed=args.seed, offline=args.offline
+        )
+    else:
+        config = ppo_config_dict(
+            args.ppo, env_name=args.env, seed=args.seed, offline=args.offline
+        )
 
     hparams_extra = {}
     rnd_config = args.rnd if args.explore_bonus == "rnd" else None
@@ -347,7 +352,7 @@ def main(args: Args):
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model", "rnd")
+            if k not in ("ppo", "sac", "model", "rnd")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])

@@ -17,6 +17,7 @@ from agents.base import (
 from batching import seed_slice
 from logger import ExperimentLogger, log_time
 from ppo import (
+    make_train_state,
     make_update,
 )
 
@@ -73,7 +74,9 @@ class ModelFreeAgent:
 
     def init(self, key: jax.Array) -> ModelFreeState:
         return ModelFreeState(
-            make_batched_policy(self.config, self.env, self.env_params, key)
+            make_batched_policy(
+                make_train_state, self.config, self.env, self.env_params, key
+            )
         )
 
     def explore_policy(self, agent_state: ModelFreeState) -> PolicyState:

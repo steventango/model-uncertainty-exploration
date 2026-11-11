@@ -11,14 +11,19 @@ from networks import ActorCritic
 from normalization import NormalizeVecObs, NormalizeVecReward
 from ppo import (
     Transition,
-    make_train_state,
     unstack_train_state,
 )
+from sac import SAC, SACOptimizer
 from wrappers import BraxGymnaxWrapper, GymnaxWrapper
 
 Env = environment.Environment | GymnaxWrapper | BraxGymnaxWrapper
 Config = dict[str, Any]
-PolicyState = tuple[ActorCritic, nnx.Optimizer, NormalizeVecObs, NormalizeVecReward]
+PolicyState = tuple[
+    ActorCritic | SAC,
+    nnx.Optimizer | SACOptimizer,
+    NormalizeVecObs,
+    NormalizeVecReward,
+]
 
 
 class Experience(NamedTuple):
@@ -53,7 +58,11 @@ class Agent[S](Protocol):
 
 
 def make_batched_policy(
-    config: Config, env: Env, env_params: environment.EnvParams, keys: jax.Array
+    make_train_state,
+    config: Config,
+    env: Env,
+    env_params: environment.EnvParams,
+    keys: jax.Array,
 ) -> PolicyState:
     @nnx.vmap
     def build(key):
