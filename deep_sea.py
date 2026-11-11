@@ -16,8 +16,8 @@ class DeepSeaOneHot(environment.Environment):
     one-hot obs.
 
     Reachable cell (row, column), column <= row, is class row * (row + 1) / 2 +
-    column; one extra last class marks "past the bottom row", so every
-    observation, terminal included, is one-hot.
+    column. As in VBE, the observation after the bottom row is the reset cell 0;
+    termination is read from the current cell being on the bottom row.
     """
 
     discrete_obs = True
@@ -50,9 +50,9 @@ class DeepSeaOneHot(environment.Environment):
         cell = jnp.where(
             state.row < self.size,
             self.cell_map[jnp.minimum(state.row, self.size - 1), state.column],
-            self.num_cells,
+            0,
         )
-        return jax.nn.one_hot(cell, self.num_cells + 1)
+        return jax.nn.one_hot(cell, self.num_cells)
 
     def step_env(self, key, state, action, params):
         _, state, reward, done, info = self._env.step_env(key, state, action, params)
@@ -67,12 +67,12 @@ class DeepSeaOneHot(environment.Environment):
         a = jnp.reshape(action, ()).astype(jnp.float32)
         right_action = self.action_map(params)[self.cell_rows, self.cell_cols]
         right = a * right_action + (1 - a) * (1 - right_action)
-        p_right = (obs[:-1] * right).sum()
+        p_right = (obs * right).sum()
         reward = p_right * (obs[self.goal] - 0.01 / self.size)
-        return reward.astype(jnp.float32), next_obs[-1] > 0.5
+        return reward.astype(jnp.float32), obs[self.num_cells - self.size :].sum() > 0.5
 
     def observation_space(self, params):
-        return spaces.Box(0.0, 1.0, (self.num_cells + 1,), jnp.float32)
+        return spaces.Box(0.0, 1.0, (self.num_cells,), jnp.float32)
 
     def action_space(self, params=None):
         return spaces.Discrete(2)
