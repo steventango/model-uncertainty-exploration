@@ -162,11 +162,9 @@ class SACOptimizer(nnx.Module):
 def q_values(q, obs, action, discrete):
     if discrete:
         q1, q2 = q(obs)
-        index = action[..., None].astype(jnp.int32)
-        q1 = jnp.take_along_axis(q1, index, axis=-1)
-        q2 = jnp.take_along_axis(q2, index, axis=-1)
-    else:
-        q1, q2 = q(jnp.concatenate([obs, action], axis=-1))
+        mask = jax.nn.one_hot(action, q1.shape[-1])
+        return (q1 * mask).sum(-1), (q2 * mask).sum(-1)
+    q1, q2 = q(jnp.concatenate([obs, action], axis=-1))
     return q1[..., 0], q2[..., 0]
 
 
@@ -256,7 +254,7 @@ def make_update(config, entropy_target):
 
 def make_train(env, config):
     num_envs = config["NUM_ENVS"]
-    buffer_size = config["BUFFER_SIZE"]
+    buffer_size = min(config["BUFFER_SIZE"] // num_envs, config["NUM_ITERS"]) * num_envs
     warmup_iters = min(config["LEARNING_STARTS"] // num_envs, config["NUM_ITERS"])
     learn_iters = config["NUM_ITERS"] - warmup_iters
 
@@ -279,14 +277,6 @@ def make_train(env, config):
             next_obs=jnp.zeros((buffer_size,) + obsv.shape[1:], obsv.dtype),
         )
 
-        def _gradient_step(carry, key):
-            sac, optimizer, buffer, count = carry
-            key_sample, key_update = jax.random.split(key)
-            index = jax.random.randint(key_sample, (config["BATCH_SIZE"],), 0, count)
-            batch = jax.tree.map(lambda x: x[index], buffer)
-            losses = _update(sac, optimizer, batch, key_update)
-            return (sac, optimizer, buffer, count), losses
-
         def make_iter(learn):
             def _iter(carry, unused):
                 sac, optimizer, env_state, obs, buffer, ptr, count, rng = carry
@@ -295,7 +285,6 @@ def make_train(env, config):
                 obsv, env_state, reward, terminated, _, info = env.step(
                     jax.random.split(key_step, num_envs), env_state, action, env_params
                 )
-                index = (ptr + jnp.arange(num_envs)) % buffer_size
                 transition = Batch(
                     obs,
                     action,
@@ -304,16 +293,29 @@ def make_train(env, config):
                     info["next_obs"],
                 )
                 buffer = jax.tree.map(
-                    lambda b, x: b.at[index].set(x.astype(b.dtype)), buffer, transition
+                    lambda b, x: jax.lax.dynamic_update_slice_in_dim(
+                        b, x.astype(b.dtype), ptr, axis=0
+                    ),
+                    buffer,
+                    transition,
                 )
                 ptr = (ptr + num_envs) % buffer_size
                 count = jnp.minimum(count + num_envs, buffer_size)
+
+                def _gradient_step(carry, key):
+                    sac, optimizer = carry
+                    key_sample, key_update = jax.random.split(key)
+                    index = jax.random.randint(
+                        key_sample, (config["BATCH_SIZE"],), 0, count
+                    )
+                    batch = jax.tree.map(lambda x: x[index], buffer)
+                    losses = _update(sac, optimizer, batch, key_update)
+                    return (sac, optimizer), losses
+
                 losses = None
                 if learn:
                     keys = jax.random.split(key_update, config["UPDATES_PER_ITER"])
-                    _, losses = nnx.scan(_gradient_step)(
-                        (sac, optimizer, buffer, count), keys
-                    )
+                    _, losses = nnx.scan(_gradient_step)((sac, optimizer), keys)
                     losses = jax.tree.map(jnp.mean, losses)
                 metric = {
                     "returned_episode_returns": info["returned_episode_returns"],
