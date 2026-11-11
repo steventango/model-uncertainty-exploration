@@ -28,7 +28,9 @@ from ppo import (
     select_config_train_state,
     unstack_train_state,
 )
+from networks import TabularPolicy
 from rnd import RND, make_rnd, make_train_rnd
+from agents.tabular_vi import make_batched_solve_vi
 
 # obs, act, true delta obs, true reward, true terminated
 ValData = tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]
@@ -107,6 +109,14 @@ class ModelBasedAgent:
         if rnd_config is not None:
             self._train_rnd = nnx.jit(
                 nnx.vmap(make_train_rnd(rnd_config), in_axes=(0, 0, 0, None, 0))
+            )
+        if solver == "vi":
+            self._solve_vi = make_batched_solve_vi(
+                model_env,
+                model_dims[1],
+                model_dims[3],
+                env_params.max_steps_in_episode,
+                ppo_config["GAMMA"],
             )
         self._train_ppo = nnx.jit(
             make_batched_train(model_env, model_env.default_params, ppo_config)
@@ -228,6 +238,19 @@ class ModelBasedAgent:
             )
             for b, logger in enumerate(self.loggers):
                 logger.log_scalar("rnd/loss", float(rnd_losses[b, -1]), step)
+
+        if self.solver == "vi":
+            q_explore, q_eval = self._solve_vi(
+                agent_state.models,
+                self.model_env.seed_env_params,
+                train_seed,
+                self.alphas[self.EXPLORE],
+                self.betas[self.EXPLORE],
+            )
+            return agent_state._replace(
+                explore=(TabularPolicy(q_explore), *agent_state.explore[1:]),
+                eval=(TabularPolicy(q_eval), *agent_state.eval[1:]),
+            )
 
         num_configs = self.alphas.shape[0]
         if self.warm_start_policy and agent_state.ppo_states is not None:

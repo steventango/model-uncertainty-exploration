@@ -104,7 +104,7 @@ class Args:
     num_seeds: int = 1
     alpha: float = 0.0
     beta: float = 1.0
-    solver: Literal["ppo"] = "ppo"
+    solver: Literal["ppo", "vi"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
