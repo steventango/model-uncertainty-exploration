@@ -313,3 +313,13 @@ class ENN(nnx.Module):
         y, features = self.base(x, rngs=rngs)
         phi = jnp.concatenate([x, features], axis=-1)
         return y, y + self.epinet(jax.lax.stop_gradient(phi), x, z, rngs=rngs)
+
+
+class TabularPolicy(nnx.Module):
+    def __init__(self, q):
+        self.q = nnx.Variable(q)
+
+    def __call__(self, x):
+        q = self.q[...]
+        greedy = jax.nn.one_hot(q.argmax(-1), q.shape[-1])
+        return distrax.Categorical(logits=1e3 * (x @ greedy)), x @ q.max(-1)

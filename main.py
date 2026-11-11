@@ -291,6 +291,8 @@ def main(args: Args):
         head = getattr(args.model, "head", "deterministic")
         if head == "categorical" and not getattr(base_env, "discrete_obs", False):
             raise ValueError("--model.head categorical needs one-hot discrete obs")
+        if args.solver == "vi" and head != "categorical":
+            raise ValueError("--solver vi needs --model.head categorical")
         out_features = head_out_features(head, obs_dim, predict_reward_terminated)
 
         # Real-env steps between re-plans: one episode by default, 1 to re-plan

@@ -16,12 +16,14 @@ from agents.base import (
     make_batched_policy,
     save_checkpoint,
 )
+from agents.tabular_vi import make_batched_solve_vi
 from batching import seed_slice, vsplit
 from config import RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
 from model_env import ModelEnvironment, ResetSource, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from models.base import WorldModel
+from networks import TabularPolicy
 from ppo import (
     make_batched_train,
     make_batched_train_state,
@@ -102,6 +104,14 @@ class ModelBasedAgent:
         if rnd_config is not None:
             self._train_rnd = nnx.jit(
                 nnx.vmap(make_train_rnd(rnd_config), in_axes=(0, 0, 0, None, 0))
+            )
+        if solver == "vi":
+            self._solve_vi = make_batched_solve_vi(
+                model_env,
+                model_dims[1],
+                model_dims[3],
+                env_params.max_steps_in_episode,
+                ppo_config["GAMMA"],
             )
         self._train_ppo = nnx.jit(
             make_batched_train(model_env, model_env.default_params, ppo_config)
@@ -223,6 +233,19 @@ class ModelBasedAgent:
             )
             for b, logger in enumerate(self.loggers):
                 logger.log_scalar("rnd/loss", float(rnd_losses[b, -1]), step)
+
+        if self.solver == "vi":
+            q_explore, q_eval = self._solve_vi(
+                agent_state.models,
+                self.model_env.seed_env_params,
+                train_seed,
+                self.alphas[self.EXPLORE],
+                self.betas[self.EXPLORE],
+            )
+            return agent_state._replace(
+                explore=(TabularPolicy(q_explore), *agent_state.explore[1:]),
+                eval=(TabularPolicy(q_eval), *agent_state.eval[1:]),
+            )
 
         num_configs = self.alphas.shape[0]
         train_states = make_batched_train_state(
