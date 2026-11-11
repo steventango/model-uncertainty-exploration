@@ -19,7 +19,7 @@ from agents.base import (
 from batching import seed_slice, vsplit
 from config import RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
-from model_env import ModelEnvironment, ResetSource, reset_weights
+from model_env import ModelEnvironment, ResetSource, data_range, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from models.base import WorldModel
 from ppo import (
@@ -69,6 +69,7 @@ class ModelBasedAgent:
         env_params: environment.EnvParams,
         model_env: ModelEnvironment,
         reset_source: ResetSource,
+        clip_to_data: bool = False,
         alpha: float,
         beta: float,
         samples: tuple[bool, bool],
@@ -87,6 +88,7 @@ class ModelBasedAgent:
         self.env_params = env_params
         self.model_env = model_env
         self.reset_source = reset_source
+        self.clip_to_data = clip_to_data
         self.alphas = jnp.array([alpha, 1.0])
         self.betas = jnp.array([beta, 0.0])
         self.samples = jnp.array(samples)
@@ -247,6 +249,13 @@ class ModelBasedAgent:
             params = params.replace(
                 init_obs=experience.buffer.obs, init_weights=weights
             )
+        if self.clip_to_data:
+            low, high = data_range(
+                experience.buffer.obs,
+                experience.buffer.info["next_obs"],
+                experience.size,
+            )
+            params = params.replace(obs_low=low, obs_high=high)
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
         jax.block_until_ready(out)

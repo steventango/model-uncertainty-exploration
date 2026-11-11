@@ -594,13 +594,15 @@ mujoco_h160 = Experiment(
             label="epinet",
             steps_per_rollout=100,
             max_steps=5000,
+            clip_to_data=True,
             **PPO_H160,
             **H160_ARMS["silu_z"],
         )
     ),
     description=(
         "mbpo_net_h160 silu_z (MBPO net, 2-layer SiLU epinet with z) on brax: "
-        "plan every 100 steps of the 1000-step episode, 5 episodes"
+        "plan every 100 steps of the 1000-step episode, 5 episodes; model states "
+        "clipped to the observed range (unbounded brax obs diverge to NaN otherwise)"
     ),
     time_limit="3:00:00",
 )

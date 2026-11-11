@@ -370,6 +370,7 @@ def main(args: Args):
             env_params=env_params,
             model_env=_wrap_env(model_env, discrete),
             reset_source=reset_source,
+            clip_to_data=args.clip_to_data,
             alpha=args.alpha,
             beta=args.beta,
             samples=(
