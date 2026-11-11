@@ -36,6 +36,7 @@ class ENNModel(WorldModel):
         bootstrap_noise: float = 1.0,
         l2: float = 0.0,
         weight_decay: float | None = None,
+        label_smoothing: float = 0.0,
         *,
         rngs: nnx.Rngs,
     ):
@@ -54,6 +55,7 @@ class ENNModel(WorldModel):
         self.bootstrap_noise = bootstrap_noise
         self.l2 = l2
         self.weight_decay = weight_decay
+        self.label_smoothing = label_smoothing
         self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
@@ -188,7 +190,8 @@ def _distribution_loss(model: ENNModel, batch, rngs: nnx.Rngs):
         loc, scale = model._loc_scale(y)
         target = target + jax.lax.stop_gradient(scale) * proj[:, None]
         return -distrax.MultivariateNormalDiag(loc, scale).log_prob(target).mean()
-    nll = -distrax.Categorical(logits=y).log_prob(target)
+    soft = optax.smooth_labels(jax.nn.one_hot(target, y.shape[-1]), model.label_smoothing)
+    nll = -(soft * jax.nn.log_softmax(y)).sum(-1)
     if model.bootstrap != "bernoulli":
         return nll.mean()
     mask = (proj > norm.ppf(0.5)).astype(jnp.float32)
@@ -379,6 +382,7 @@ def _make_batched_model(
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
             l2=model_config["L2"],
             weight_decay=model_config.get("WEIGHT_DECAY"),
+            label_smoothing=model_config.get("LABEL_SMOOTHING", 0.0),
             rngs=rngs,
         )
         tx = optax.inject_hyperparams(
