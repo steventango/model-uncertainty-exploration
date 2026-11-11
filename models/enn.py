@@ -35,6 +35,7 @@ class ENNModel(WorldModel):
         bootstrap: Literal["none", "bernoulli", "gaussian"] = "none",
         bootstrap_noise: float = 1.0,
         l2: float = 0.0,
+        weight_decay: float | None = None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -52,6 +53,7 @@ class ENNModel(WorldModel):
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
         self.l2 = l2
+        self.weight_decay = weight_decay
         self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
@@ -296,7 +298,8 @@ def _train_model(
     rngs: nnx.Rngs,
 ):
     model.update_stats(dataset, pointer)
-    optimizer.opt_state.hyperparams["l2"][...] = model.l2 / pointer
+    decay = model.l2 / pointer if model.weight_decay is None else model.weight_decay
+    optimizer.opt_state.hyperparams["l2"][...] = decay
 
     def train_step_fn(train_state, _):
         model, optimizer, metrics, rngs = train_state
@@ -375,6 +378,7 @@ def _make_batched_model(
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
             l2=model_config["L2"],
+            weight_decay=model_config.get("WEIGHT_DECAY"),
             rngs=rngs,
         )
         tx = optax.inject_hyperparams(
