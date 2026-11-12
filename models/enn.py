@@ -8,7 +8,7 @@ from flax import nnx
 from jax.scipy.stats import norm
 
 from models.base import WorldModel, head_out_features, register_model
-from networks import ENN
+from networks import ENN, onehot_rows_init
 
 
 class ENNModel(WorldModel):
@@ -36,6 +36,8 @@ class ENNModel(WorldModel):
         bootstrap: Literal["none", "bernoulli", "gaussian"] = "none",
         bootstrap_noise: float = 1.0,
         l2: float = 0.0,
+        weight_decay: float | None = None,
+        label_smoothing: float = 0.0,
         *,
         rngs: nnx.Rngs,
     ):
@@ -54,6 +56,8 @@ class ENNModel(WorldModel):
         self.bootstrap = bootstrap
         self.bootstrap_noise = bootstrap_noise
         self.l2 = l2
+        self.weight_decay = weight_decay
+        self.label_smoothing = label_smoothing
         self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
@@ -194,7 +198,10 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
 
     if model.head == "categorical":
         target = model._targets(batch.obs, batch.info["next_obs"])
-        nll = masked_mean(-distrax.Categorical(logits=logits).log_prob(target))
+        soft = optax.smooth_labels(
+            jax.nn.one_hot(target, model.obs_dim), model.label_smoothing
+        )
+        nll = masked_mean(-(soft * jax.nn.log_softmax(logits)).sum(-1))
         return nll, (nll, jnp.zeros(()), jnp.zeros(()))
 
     delta_next_state = batch.info["next_obs"] - batch.obs
@@ -292,7 +299,8 @@ def _train_model(
     rngs: nnx.Rngs,
 ):
     model.update_stats(dataset, pointer)
-    optimizer.opt_state.hyperparams["l2"][...] = model.l2 / pointer
+    decay = model.l2 / pointer if model.weight_decay is None else model.weight_decay
+    optimizer.opt_state.hyperparams["l2"][...] = decay
 
     def train_step_fn(train_state, _):
         model, optimizer, metrics, rngs = train_state
@@ -332,6 +340,10 @@ def _make_batched_model(
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
             num_layers=model_config["NUM_LAYERS"],
             activation=model_config["ACTIVATION"],
+            prior_scale=model_config["PRIOR_SCALE"],
+            first_kernel_init=onehot_rows_init(in_features, 2)
+            if model_config["ONEHOT_INIT"]
+            else None,
             rngs=rngs,
         )
         model = ENNModel(
@@ -346,14 +358,21 @@ def _make_batched_model(
             bootstrap=model_config["BOOTSTRAP"],
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
             l2=model_config["L2"],
+            weight_decay=model_config["WEIGHT_DECAY"],
+            label_smoothing=model_config["LABEL_SMOOTHING"],
             rngs=rngs,
         )
-        tx = optax.inject_hyperparams(
-            lambda l2: optax.chain(
-                optax.add_decayed_weights(l2),
-                optax.adamw(model_config["LR"], weight_decay=1e-4),
-            )
-        )(l2=0.0)
+        if model_config["WEIGHT_DECAY"] is None:
+            tx = optax.inject_hyperparams(
+                lambda l2: optax.chain(
+                    optax.add_decayed_weights(l2),
+                    optax.adamw(model_config["LR"], weight_decay=1e-4),
+                )
+            )(l2=0.0)
+        else:
+            tx = optax.inject_hyperparams(
+                lambda l2: optax.adamw(model_config["LR"], weight_decay=l2)
+            )(l2=0.0)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
         optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
         metrics = nnx.MultiMetric(

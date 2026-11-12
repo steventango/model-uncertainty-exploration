@@ -19,9 +19,13 @@ class ENNConfig:
     activation: str = "silu"
     num_layers: int | tuple[int, ...] = 4
     l2: float | tuple[float, ...] = 0.1
+    weight_decay: float | None = None
+    label_smoothing: float = 0.0
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
+    prior_scale: float = 1.0
+    onehot_init: bool = False
     min_scale: float = 1e-3
     beta_nll: float = 0.5
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
