@@ -3,10 +3,17 @@ from flax import nnx
 
 
 class NormalizeVecObs(nnx.Module):
-    def __init__(self, x, use_running_average: bool = False, eps: float = 1e-8):
+    def __init__(
+        self,
+        x,
+        use_running_average: bool = False,
+        eps: float = 1e-8,
+        clip: float | None = None,
+    ):
         super().__init__()
         self.use_running_average = use_running_average
         self.eps = eps
+        self.clip = clip
         self.mean = nnx.Variable(jnp.zeros_like(x))
         self.var = nnx.Variable(jnp.ones_like(x))
         self.count = nnx.Variable(jnp.array(1e-4))
@@ -31,7 +38,8 @@ class NormalizeVecObs(nnx.Module):
         return self.normalize(x)
 
     def normalize(self, x):
-        return (x - self.mean) / jnp.sqrt(self.var + self.eps)
+        x = (x - self.mean) / jnp.sqrt(self.var + self.eps)
+        return x if self.clip is None else jnp.clip(x, -self.clip, self.clip)
 
     def denormalize(self, x):
         return x * jnp.sqrt(self.var + self.eps) + self.mean
@@ -39,11 +47,17 @@ class NormalizeVecObs(nnx.Module):
 
 class NormalizeVecReward(nnx.Module):
     def __init__(
-        self, reward, gamma, use_running_average: bool = False, eps: float = 1e-8
+        self,
+        reward,
+        gamma,
+        use_running_average: bool = False,
+        eps: float = 1e-8,
+        clip: float | None = None,
     ):
         super().__init__()
         self.use_running_average = use_running_average
         self.eps = eps
+        self.clip = clip
         self.gamma = gamma
         batch_count = reward.shape[0]
         self.mean = nnx.Variable(jnp.zeros(1))
@@ -75,7 +89,8 @@ class NormalizeVecReward(nnx.Module):
         return self.normalize(reward)
 
     def normalize(self, reward):
-        return reward / jnp.sqrt(self.var + self.eps)
+        reward = reward / jnp.sqrt(self.var + self.eps)
+        return reward if self.clip is None else jnp.clip(reward, -self.clip, self.clip)
 
     def denormalize(self, reward):
         return reward * jnp.sqrt(self.var + self.eps)
