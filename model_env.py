@@ -60,6 +60,8 @@ class ModelEnvParams:
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
+    real: tuple | None = None  # per-seed real (obs, action, next_obs, terminated)
+    real_count: jnp.ndarray | None = None  # per-seed number of valid real rows
     per_seed_env_params: bool = struct.field(pytree_node=False, default=False)
 
     def seed_vmap_axes(self) -> "ModelEnvParams":
@@ -74,6 +76,8 @@ class ModelEnvParams:
             beta=None,
             init_obs=0,
             init_weights=0,
+            real=0,
+            real_count=0,
         )
 
     def config_vmap_axes(self) -> "ModelEnvParams":
@@ -87,6 +91,8 @@ class ModelEnvParams:
             beta=0,
             init_obs=None,
             init_weights=None,
+            real=None,
+            real_count=None,
         )
 
 
@@ -246,6 +252,17 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             last_action=jnp.asarray(action),
         )
         return obs, state, r, terminated, {"uncertainty": r_intrinsic}
+
+    def reward(self, z, obs, action, next_obs, params: ModelEnvParams) -> jax.Array:
+        x = params.model.single_input(obs, action)
+        if self.explore_bonus == "rnd":
+            r_intrinsic = params.rnd(next_obs)
+        else:
+            r_intrinsic = params.model.uncertainty(x, z, self.explore_bonus)
+        r_exploit, _ = self._real_env.obs_to_reward_terminated(
+            obs, action, next_obs, params.env_params
+        )
+        return params.alpha * r_exploit + params.beta * r_intrinsic
 
     def reset_env(
         self, key: jax.Array, params: ModelEnvParams

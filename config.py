@@ -74,6 +74,27 @@ class PPOConfig:
 
 
 @dataclass(frozen=True)
+class SACConfig:
+    """SAC hyperparameters."""
+
+    lr: float = 3e-4
+    num_envs: int = 16
+    total_timesteps: float = 1e5
+    updates_per_iter: int = 16
+    batch_size: int = 256
+    buffer_size: int = 100_000
+    learning_starts: int = 1000
+    gamma: float = 0.99
+    tau: float = 0.005
+    init_temperature: float = 1.0
+    target_entropy_scale: float = 0.98
+    real_ratio: float = 0.0
+    num_layers: int = 2
+    hidden_dim: int = 256
+    activation: str = "relu"
+
+
+@dataclass(frozen=True)
 class RNDConfig:
     """Random Network Distillation bonus (--explore-bonus rnd)."""
 
@@ -97,7 +118,7 @@ class Args:
     num_seeds: int = 1
     alpha: float = 0.0
     beta: float = 1.0
-    solver: Literal["ppo"] = "ppo"
+    solver: Literal["ppo", "sac"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
@@ -114,6 +135,7 @@ class Args:
     log_dir: str | None = None
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
+    sac: SACConfig = field(default_factory=SACConfig)
     rnd: RNDConfig = field(default_factory=RNDConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
 
@@ -122,6 +144,8 @@ class Args:
             raise ValueError("--model-free needs an online env")
         if self.model_free and self.explore_bonus == "rnd":
             raise ValueError("--explore-bonus rnd is a model-env bonus")
+        if self.model_free and self.solver == "sac":
+            raise ValueError("--solver sac trains in the model env")
 
 
 def candidate_configs(m):
@@ -185,4 +209,22 @@ def ppo_config_dict(
     d["SEED"] = seed
     d["NUM_UPDATES"] = int(d["TOTAL_TIMESTEPS"]) // d["NUM_STEPS"] // d["NUM_ENVS"]
     d["MINIBATCH_SIZE"] = d["NUM_ENVS"] * d["NUM_STEPS"] // d["NUM_MINIBATCHES"]
+    return d
+
+
+def sac_config_dict(
+    s: SACConfig,
+    *,
+    env_name: str,
+    seed: int,
+    offline: bool,
+) -> dict:
+    d: dict = {k.upper(): v for k, v in dataclasses.asdict(s).items()}
+    if not offline:
+        d["ENV_NAME"] = env_name
+    d["SEED"] = seed
+    d["NUM_ITERS"] = int(d["TOTAL_TIMESTEPS"]) // d["NUM_ENVS"]
+    d["NUM_STEPS"] = 1
+    d["NORMALIZE_OBS"] = False
+    d["NORMALIZE_REWARD"] = False
     return d

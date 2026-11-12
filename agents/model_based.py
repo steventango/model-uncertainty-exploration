@@ -7,6 +7,8 @@ from flax import nnx
 from gymnax.environments import environment
 
 import plotting
+import ppo
+import sac
 import validation
 from agents.base import (
     Config,
@@ -23,8 +25,6 @@ from model_env import ModelEnvironment, ResetSource, reset_weights
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from models.base import WorldModel
 from ppo import (
-    make_batched_train,
-    make_batched_train_state,
     select_config_train_state,
     unstack_train_state,
 )
@@ -101,14 +101,21 @@ class ModelBasedAgent:
             self._train_rnd = nnx.jit(
                 nnx.vmap(make_train_rnd(rnd_config), in_axes=(0, 0, 0, None, 0))
             )
+        self.solver_module = {"ppo": ppo, "sac": sac}[solver]
         self._train_ppo = nnx.jit(
-            make_batched_train(model_env, model_env.default_params, ppo_config)
+            self.solver_module.make_batched_train(
+                model_env, model_env.default_params, ppo_config
+            )
         )
 
     def init(self, key: jax.Array) -> ModelBasedState:
         policy_key, model_key, rngs_key, val_key, rnd_key = vsplit(key, 5)
         policy = make_batched_policy(
-            self.ppo_config, self.env, self.env_params, policy_key
+            self.solver_module.make_train_state,
+            self.ppo_config,
+            self.env,
+            self.env_params,
+            policy_key,
         )
         models, model_train_state = make_batched_model(
             self.model_name,
@@ -221,7 +228,7 @@ class ModelBasedAgent:
                 logger.log_scalar("rnd/loss", float(rnd_losses[b, -1]), step)
 
         num_configs = self.alphas.shape[0]
-        train_states = make_batched_train_state(
+        train_states = self.solver_module.make_batched_train_state(
             self.ppo_config,
             self.model_env,
             self.model_env.default_params,
@@ -247,6 +254,16 @@ class ModelBasedAgent:
             params = params.replace(
                 init_obs=experience.buffer.obs, init_weights=weights
             )
+        if self.solver == "sac" and self.ppo_config["REAL_RATIO"] > 0:
+            buffer = experience.buffer
+            real = (
+                buffer.obs,
+                buffer.action,
+                buffer.info["next_obs"],
+                buffer.terminated,
+            )
+            count = jnp.full(buffer.obs.shape[0], experience.size)
+            params = params.replace(real=real, real_count=count)
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
         jax.block_until_ready(out)
@@ -265,6 +282,12 @@ class ModelBasedAgent:
                     self.ppo_config["NUM_STEPS"],
                     int(self.ppo_config["TOTAL_TIMESTEPS"]),
                 )
+        for name, values in out.get("losses", {}).items():
+            for b, logger in enumerate(self.loggers):
+                for tag, index in (("explore", self.EXPLORE), ("eval", self.EVAL)):
+                    logger.log_scalar(
+                        f"{self.solver}/{tag}_{name}", float(values[b, index, -1]), step
+                    )
         trained = out["runner_state"][0]
         return agent_state._replace(
             explore=select_config_train_state(trained, self.EXPLORE),
