@@ -22,7 +22,23 @@ class OneHot(spaces.Space):
 
 @struct.dataclass
 class DeepSeaParams(EnvParams):
-    seed: int = 0
+    action_mapping_key: jax.Array = struct.field(
+        default_factory=lambda: jax.random.key(0)
+    )
+
+
+class KeyedDeepSea(DeepSea):
+    """gymnax DeepSea with the action map drawn from ``params.action_mapping_key``
+    (upstream draws it once in ``__init__``, so it cannot be vmapped over seeds)."""
+
+    def action_map(self, params: DeepSeaParams) -> jax.Array:
+        return jax.random.bernoulli(
+            params.action_mapping_key, 0.5, (self.size, self.size)
+        ).astype(jnp.int32)
+
+    def reset_env(self, key, params):
+        obs, state = super().reset_env(key, params)
+        return obs, state.replace(action_mapping=self.action_map(params))
 
 
 class DeepSeaOneHot(environment.Environment):
@@ -40,7 +56,7 @@ class DeepSeaOneHot(environment.Environment):
     def __init__(self, size: int):
         super().__init__()
         self.size = size
-        self._env = DeepSea(size)
+        self._env = KeyedDeepSea(size)
         rows, cols = jnp.tril_indices(size)
         self.cell_rows, self.cell_cols = rows, cols
         self.cell_map = (
@@ -50,12 +66,9 @@ class DeepSeaOneHot(environment.Environment):
         self.goal = self.num_cells - 1
 
     def params_for_seed(self, seed) -> DeepSeaParams:
-        return DeepSeaParams(max_steps_in_episode=self.size, seed=seed)
-
-    def action_map(self, params):
-        return jax.random.bernoulli(
-            jax.random.key(params.seed), 0.5, (self.size, self.size)
-        ).astype(jnp.float32)
+        return DeepSeaParams(
+            max_steps_in_episode=self.size, action_mapping_key=jax.random.key(seed)
+        )
 
     @property
     def default_params(self) -> DeepSeaParams:
@@ -75,12 +88,12 @@ class DeepSeaOneHot(environment.Environment):
 
     def reset_env(self, key, params):
         _, state = self._env.reset_env(key, params)
-        state = state.replace(action_mapping=self.action_map(params))
         return self._obs(state), state
 
     def obs_to_reward_terminated(self, obs, action, next_obs, params):
         a = jnp.reshape(action, ()).astype(jnp.float32)
-        right_action = self.action_map(params)[self.cell_rows, self.cell_cols]
+        right_action = self._env.action_map(params)[self.cell_rows, self.cell_cols]
+        right_action = right_action.astype(jnp.float32)
         right = a * right_action + (1 - a) * (1 - right_action)
         p_right = (obs * right).sum()
         reward = p_right * (obs[self.goal] - 0.01 / self.size)
