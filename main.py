@@ -45,6 +45,8 @@ def run_online(
     num_rollouts,
     max_steps,
     eval_every,
+    checkpoint_every=None,
+    seed_dirs=(),
 ):
     """Each iteration: act in the real env, add to the buffer, update the agent."""
     key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
@@ -126,6 +128,13 @@ def run_online(
             agent_state, Experience(buffer, size, traj_batch, rollout), update_key
         )
         eval_policy = agent.eval_policy(agent_state)
+
+        if (
+            checkpoint_every
+            and size // checkpoint_every > prev_size // checkpoint_every
+        ):
+            for b, seed_dir in enumerate(seed_dirs):
+                agent.save(agent_state, os.path.join(seed_dir, f"step_{size}"), b)
 
         if size % eval_every == 0 or rollout == num_rollouts - 1:
             key, eval_keys = vsplit(key)
@@ -395,6 +404,8 @@ def main(args: Args):
             num_rollouts,
             max_steps,
             eval_every,
+            args.checkpoint_every,
+            seed_dirs,
         )
 
     if args.offline or num_rollouts > 0:
