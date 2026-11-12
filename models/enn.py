@@ -37,6 +37,7 @@ class ENNModel(WorldModel):
         bootstrap_noise: float = 1.0,
         l2: float = 0.0,
         weight_decay: float | None = None,
+        label_smoothing: float = 0.0,
         *,
         rngs: nnx.Rngs,
     ):
@@ -56,6 +57,7 @@ class ENNModel(WorldModel):
         self.bootstrap_noise = bootstrap_noise
         self.l2 = l2
         self.weight_decay = weight_decay
+        self.label_smoothing = label_smoothing
         self.bootstrap_key = nnx.Variable(rngs.bootstrap())
 
     @property
@@ -196,7 +198,10 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
 
     if model.head == "categorical":
         target = model._targets(batch.obs, batch.info["next_obs"])
-        nll = masked_mean(-distrax.Categorical(logits=logits).log_prob(target))
+        soft = optax.smooth_labels(
+            jax.nn.one_hot(target, model.obs_dim), model.label_smoothing
+        )
+        nll = masked_mean(-(soft * jax.nn.log_softmax(logits)).sum(-1))
         return nll, (nll, jnp.zeros(()), jnp.zeros(()))
 
     delta_next_state = batch.info["next_obs"] - batch.obs
@@ -354,6 +359,7 @@ def _make_batched_model(
             bootstrap_noise=model_config["BOOTSTRAP_NOISE"],
             l2=model_config["L2"],
             weight_decay=model_config["WEIGHT_DECAY"],
+            label_smoothing=model_config["LABEL_SMOOTHING"],
             rngs=rngs,
         )
         if model_config["WEIGHT_DECAY"] is None:

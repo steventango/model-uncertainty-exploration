@@ -20,6 +20,7 @@ class ENNConfig:
     num_layers: int | tuple[int, ...] = 4
     l2: float | tuple[float, ...] = 0.1
     weight_decay: float | None = None
+    label_smoothing: float = 0.0
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
