@@ -8,7 +8,7 @@ from gymnax.environments import environment, spaces
 from models import WorldModel
 from rnd import RND
 
-ResetSource = Literal["env", "buffer", "unique", "init"]
+ResetSource = Literal["env", "buffer", "unique", "init", "random"]
 
 
 def reset_weights(
@@ -127,10 +127,12 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             raise ValueError(
                 f"explore_bonus must be 'std', 'eig' or 'rnd', got {explore_bonus!r}"
             )
-        if reset_source not in ("env", "buffer", "unique", "init"):
+        if reset_source not in ("env", "buffer", "unique", "init", "random"):
             raise ValueError(
-                f"reset_source must be 'env', 'buffer', 'unique' or 'init', got {reset_source!r}"
+                f"reset_source must be 'env', 'buffer', 'unique', 'init' or 'random', got {reset_source!r}"
             )
+        if reset_source == "random" and not getattr(env, "discrete_obs", False):
+            raise ValueError("reset_source 'random' needs one-hot observations")
         self._real_env = env
         self._real_env_params = env_params
         self.samples = samples
@@ -282,6 +284,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         key, key_reset, key_z, key_idx = jax.random.split(key, 4)
         if self.reset_source == "env":
             obs, _ = self._real_env.reset_env(key_reset, params.env_params)
+        elif self.reset_source == "random":
+            num_obs = self._real_env.observation_space(params.env_params).shape[0]
+            obs = jax.nn.one_hot(jax.random.randint(key_idx, (), 0, num_obs), num_obs)
         else:
             # "buffer" or "init": sample a buffer row by the supplied weights.
             idx = jax.random.choice(

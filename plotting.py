@@ -1139,9 +1139,9 @@ def plot_offline_visualization(
         alpha=jnp.float32(1.0),
         beta=jnp.float32(0.0),
     )
-    if model_env.reset_source != "env":
+    if model_env.reset_source not in ("env", "random"):
         weights = reset_weights(
-            dataset.terminated, dataset.truncated, N, model_env.reset_source
+            dataset.terminated, dataset.truncated, N, model_env.reset_source, dataset.obs
         )
         model0_env_params = model0_env_params.replace(
             init_obs=dataset.obs, init_weights=weights
