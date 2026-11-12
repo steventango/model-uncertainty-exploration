@@ -179,8 +179,6 @@ def run_offline(agent, buffer, loggers, seed_keys, env, env_params, seed_dir, ar
 
 
 def main(args: Args):
-    if args.cpu:
-        jax.config.update("jax_platforms", "cpu")
     os.environ["XLA_FLAGS"] = (
         f"{os.environ.get('XLA_FLAGS', '')}"
         " --xla_gpu_deterministic_ops=true"
