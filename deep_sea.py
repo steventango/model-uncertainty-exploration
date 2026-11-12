@@ -5,6 +5,21 @@ from gymnax.environments import environment, spaces
 from gymnax.environments.bsuite.deep_sea import DeepSea, EnvParams
 
 
+class OneHot(spaces.Space):
+    def __init__(self, n: int):
+        self.n = n
+        self.shape = (n,)
+        self.dtype = jnp.float32
+        self.low = jnp.zeros(n, jnp.float32)
+        self.high = jnp.ones(n, jnp.float32)
+
+    def sample(self, key: jax.Array) -> jax.Array:
+        return jax.nn.one_hot(jax.random.randint(key, (), 0, self.n), self.n)
+
+    def contains(self, x: jax.Array) -> jax.Array:
+        return (x.shape == self.shape) & (x.sum() == 1) & jnp.all((x == 0) | (x == 1))
+
+
 @struct.dataclass
 class DeepSeaParams(EnvParams):
     seed: int = 0
@@ -72,7 +87,7 @@ class DeepSeaOneHot(environment.Environment):
         return reward.astype(jnp.float32), obs[self.num_cells - self.size :].sum() > 0.5
 
     def observation_space(self, params):
-        return spaces.Box(0.0, 1.0, (self.num_cells,), jnp.float32)
+        return OneHot(self.num_cells)
 
     def action_space(self, params=None):
         return spaces.Discrete(2)
