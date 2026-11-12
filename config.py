@@ -57,6 +57,7 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     hidden_dim: int = 64
+    num_layers: int = 2
     activation: str = "tanh"
     use_layer_norm: bool = False
     anneal_lr: bool = False
