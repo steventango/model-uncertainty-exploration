@@ -60,13 +60,14 @@ class ModelEnvParams:
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
+    per_seed_env_params: bool = struct.field(pytree_node=False, default=False)
 
     def seed_vmap_axes(self) -> "ModelEnvParams":
         """vmap ``in_axes`` prefix that maps the per-seed ``model`` subtree and
         ``init_obs``/``init_weights`` buffers on axis 0; every other dynamic field
         is broadcast (None)."""
         return self.replace(
-            env_params=None,
+            env_params=0 if self.per_seed_env_params else None,
             model=0,
             rnd=0,
             alpha=None,
@@ -101,6 +102,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         reset_source: ResetSource = "env",
         max_steps_in_episode: int | None = None,
         uncertainty_threshold: float | None = None,
+        seed_env_params: environment.EnvParams | None = None,
     ):
         if prediction_mode not in ("mean", "sample"):
             raise ValueError(
@@ -123,6 +125,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self.reset_source = reset_source
         self._max_steps_override = max_steps_in_episode
         self.uncertainty_threshold = uncertainty_threshold
+        self.seed_env_params = seed_env_params
         self._zero_action = jnp.zeros_like(
             env.action_space(env_params).sample(jax.random.key(0))
         )
@@ -136,6 +139,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
                 if self._max_steps_override is not None
                 else self._real_env_params.max_steps_in_episode
             ),
+            per_seed_env_params=self.seed_env_params is not None,
         )
 
     def step(
@@ -226,7 +230,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         if self.oracle_reward_terminated:
             if hasattr(self._real_env, "obs_to_reward_terminated"):
                 r_exploit, terminated = self._real_env.obs_to_reward_terminated(
-                    state.obs, action, obs
+                    state.obs, action, obs, params.env_params
                 )
             else:
                 reconstructed = self._real_env.get_state(

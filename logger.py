@@ -21,10 +21,12 @@ def _coerce_hparam(value):
 
 
 class ExperimentLogger:
-    def __init__(self, log_dir: str):
+    def __init__(self, log_dir: str, discrete_obs: bool = False):
         self._writer = SummaryWriter(log_dir=log_dir)
         self._hparams: dict[str, bool | str | float | int] = {}
         self._summary_metrics: dict[str, float] = {}
+        self._discrete_obs = discrete_obs
+        self._visited: set[int] = set()
         print(f"TensorBoard logging to {log_dir}")
 
     def log_hparams(self, **sections):
@@ -44,8 +46,16 @@ class ExperimentLogger:
         actions = np.asarray(batch.action)
         rewards = np.asarray(batch.reward)
 
-        for i in range(obs.shape[1]):
-            self._log_time_series(f"dataset/obs_{i}", obs[:, i], start_step)
+        if self._discrete_obs:
+            states = obs.argmax(axis=1)
+            self._log_time_series("dataset/state", states, start_step)
+            self._visited.update(states.tolist())
+            self._writer.add_scalar(
+                "coverage/unique_states", len(self._visited), start_step + len(states)
+            )
+        else:
+            for i in range(obs.shape[1]):
+                self._log_time_series(f"dataset/obs_{i}", obs[:, i], start_step)
         for i in range(actions.shape[1]):
             self._log_time_series(f"dataset/action_{i}", actions[:, i], start_step)
         self._log_time_series("dataset/reward", rewards, start_step)
