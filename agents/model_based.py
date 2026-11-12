@@ -3,6 +3,7 @@ from typing import Any, ClassVar, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 from gymnax.environments import environment
 
@@ -265,6 +266,18 @@ class ModelBasedAgent:
                     self.ppo_config["NUM_STEPS"],
                     int(self.ppo_config["TOTAL_TIMESTEPS"]),
                 )
+        if "losses" in out["metrics"]:
+            # PPO update diagnostics, averaged over the plan's updates
+            # (approx_kl_max is the plan's worst update).
+            for b, logger in enumerate(self.loggers):
+                for kind, index in (("explore", self.EXPLORE), ("eval", self.EVAL)):
+                    losses = seed_slice(out["metrics"]["losses"], (b, index))
+                    for name, values in losses.items():
+                        values = np.asarray(values)
+                        value = (
+                            values.max() if name == "approx_kl_max" else values.mean()
+                        )
+                        logger.log_scalar(f"{self.solver}/{kind}_{name}", value, step)
         trained = out["runner_state"][0]
         return agent_state._replace(
             explore=select_config_train_state(trained, self.EXPLORE),

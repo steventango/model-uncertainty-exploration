@@ -58,16 +58,10 @@ class ModelFreeAgent:
         )
 
         def train(train_state, traj_batch, rng):
-            _, (total, (value, actor, entropy)) = ppo_update(
-                train_state, traj_batch, rng
-            )
-            losses = {
-                "total": total,
-                "value": value,
-                "actor": actor,
-                "entropy": entropy,
-            }
-            return jax.tree_util.tree_map(jnp.mean, losses)
+            _, (total, aux) = ppo_update(train_state, traj_batch, rng)
+            losses = {**jax.tree_util.tree_map(jnp.mean, aux), "total": total.mean()}
+            losses["approx_kl_max"] = aux["approx_kl"].max()
+            return losses
 
         self._train = nnx.jit(nnx.vmap(train))
 
