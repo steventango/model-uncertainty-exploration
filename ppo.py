@@ -278,7 +278,9 @@ def make_train(env, config):
 @functools.lru_cache
 def _make_tx(lr, max_grad_norm, anneal_lr, steps_per_update, num_updates):
     def linear_schedule(count):
-        frac = 1.0 - (count // steps_per_update) / num_updates
+        # Restart every num_updates so a reused optimizer state (warm-started
+        # policy) anneals each training run from lr instead of going negative.
+        frac = 1.0 - (count // steps_per_update % num_updates) / num_updates
         return lr * frac
 
     return optax.chain(
