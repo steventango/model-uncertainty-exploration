@@ -16,7 +16,6 @@ from env_config import (
     obs_from_coords,
     visited_coords_from_obs,
 )
-from model_env import reset_weights
 from ppo import make_rollout, unstack_train_state
 
 
@@ -1139,13 +1138,13 @@ def plot_offline_visualization(
         alpha=jnp.float32(1.0),
         beta=jnp.float32(0.0),
     )
-    if model_env.reset_source not in ("env", "random"):
-        weights = reset_weights(
-            dataset.terminated, dataset.truncated, N, model_env.reset_source
-        )
-        model0_env_params = model0_env_params.replace(
-            init_obs=dataset.obs, init_weights=weights
-        )
+    model0_env_params = model_env.with_reset_buffers(
+        model0_env_params,
+        dataset.obs,
+        dataset.terminated,
+        dataset.truncated,
+        N,
+    )
     rollout_cfg = {
         **config,
         "NUM_ENVS": 64,

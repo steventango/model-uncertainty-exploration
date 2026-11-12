@@ -61,6 +61,8 @@ class ModelEnvParams:
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
+    init_low: jnp.ndarray | None = None
+    init_high: jnp.ndarray | None = None
 
     def unbatched(self) -> "ModelEnvParams":
         return self.replace(env_params=seed_slice(self.env_params, 0))
@@ -77,6 +79,8 @@ class ModelEnvParams:
             beta=None,
             init_obs=0,
             init_weights=0,
+            init_low=0,
+            init_high=0,
         )
 
     def config_vmap_axes(self) -> "ModelEnvParams":
@@ -90,6 +94,8 @@ class ModelEnvParams:
             beta=0,
             init_obs=None,
             init_weights=None,
+            init_low=None,
+            init_high=None,
         )
 
 
@@ -131,6 +137,33 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self.uncertainty_threshold = uncertainty_threshold
         self._zero_action = jnp.zeros_like(
             env.action_space(single_env_params).sample(jax.random.key(0))
+        )
+
+    def with_reset_buffers(
+        self,
+        params: ModelEnvParams,
+        obs: jnp.ndarray,
+        terminated: jnp.ndarray,
+        truncated: jnp.ndarray,
+        count: jnp.ndarray | int,
+    ) -> ModelEnvParams:
+        if self.reset_source == "env":
+            return params
+        if self.reset_source != "random":
+            weights = reset_weights(terminated, truncated, count, self.reset_source)
+            return params.replace(init_obs=obs, init_weights=weights)
+        space = self._real_env.observation_space(seed_slice(self.env_params, 0))
+        if not isinstance(space, spaces.Box):
+            return params
+        low = jnp.broadcast_to(space.low, space.shape).astype(jnp.float32)
+        high = jnp.broadcast_to(space.high, space.shape).astype(jnp.float32)
+        valid = (jnp.arange(obs.shape[-2]) < jnp.asarray(count)[..., None])[..., None]
+        data_low = jnp.where(valid, obs, jnp.inf).min(axis=-2)
+        data_high = jnp.where(valid, obs, -jnp.inf).max(axis=-2)
+        usable = jnp.isfinite(high - low)
+        return params.replace(
+            init_low=jnp.where(usable, low, data_low),
+            init_high=jnp.where(usable, high, data_high),
         )
 
     @property
@@ -261,7 +294,16 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         if self.reset_source == "env":
             obs, _ = self._real_env.reset_env(key_reset, params.env_params)
         elif self.reset_source == "random":
-            obs = self._real_env.observation_space(params.env_params).sample(key_idx)
+            space = self._real_env.observation_space(params.env_params)
+            if isinstance(space, spaces.Box):
+                obs = jax.random.uniform(
+                    key_idx,
+                    space.shape,
+                    minval=params.init_low,
+                    maxval=params.init_high,
+                )
+            else:
+                obs = space.sample(key_idx)
         else:
             # "buffer" or "init": sample a buffer row by the supplied weights.
             idx = jax.random.choice(
