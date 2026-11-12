@@ -78,6 +78,7 @@ class PPOConfig:
     use_layer_norm: bool = False
     anneal_lr: bool = False
     normalize_env: bool = True
+    onehot_init: bool = False
     debug: bool = False
 
 
@@ -98,6 +99,7 @@ class SACConfig:
     init_temperature: float = 1.0
     autotune: bool = True
     target_entropy_scale: float = 0.98
+    onehot_init: bool = False
     hidden_dim: int = 256
     activation: str = "relu"
 

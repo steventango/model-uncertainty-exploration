@@ -8,7 +8,7 @@ import optax
 from flax import nnx
 from gymnax.environments import spaces
 
-from networks import MLP
+from networks import MLP, onehot_rows_init
 from normalization import NormalizeVecObs
 
 LOG_STD_MIN = -20.0
@@ -49,6 +49,7 @@ class Actor(nnx.Module):
         discrete: bool,
         low: tuple[float, ...],
         high: tuple[float, ...],
+        first_kernel_init=None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -63,6 +64,7 @@ class Actor(nnx.Module):
             rngs=rngs,
             num_layers=2,
             activation=activation,
+            first_kernel_init=first_kernel_init,
         )
 
     def __call__(self, obs):
@@ -93,6 +95,7 @@ class TwinQ(nnx.Module):
         out_features: int,
         hidden_dim: int,
         activation: str,
+        first_kernel_init=None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -103,6 +106,7 @@ class TwinQ(nnx.Module):
             rngs=rngs,
             num_layers=2,
             activation=activation,
+            first_kernel_init=first_kernel_init,
         )
         self.q2 = MLP(
             in_features,
@@ -111,6 +115,7 @@ class TwinQ(nnx.Module):
             rngs=rngs,
             num_layers=2,
             activation=activation,
+            first_kernel_init=first_kernel_init,
         )
 
     def __call__(self, x):
@@ -138,6 +143,7 @@ class SAC(nnx.Module):
         low: tuple[float, ...],
         high: tuple[float, ...],
         init_temperature: float,
+        first_kernel_init=None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -150,10 +156,11 @@ class SAC(nnx.Module):
             discrete,
             low,
             high,
+            first_kernel_init,
             rngs=rngs,
         )
         q_in, q_out = (obs_dim, action_dim) if discrete else (obs_dim + action_dim, 1)
-        self.q = TwinQ(q_in, q_out, hidden_dim, activation, rngs=rngs)
+        self.q = TwinQ(q_in, q_out, hidden_dim, activation, first_kernel_init, rngs=rngs)
         self.target_q = nnx.clone(self.q)
         self.temperature = Temperature(init_temperature)
 
@@ -395,6 +402,7 @@ def make_train_state(config, env, env_params, rngs):
         low,
         high,
         config["INIT_TEMPERATURE"],
+        onehot_rows_init(obs_shape[0], 1) if config["ONEHOT_INIT"] else None,
         rngs=rngs,
     )
     optimizer = SACOptimizer(sac, config["LR"])

@@ -84,6 +84,7 @@ class Actor(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        first_kernel_init=None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -98,6 +99,7 @@ class Actor(nnx.Module):
             use_layer_norm=use_layer_norm,
             kernel_init=orthogonal(np.sqrt(2)),
             out_kernel_init=orthogonal(0.01),
+            first_kernel_init=first_kernel_init,
         )
         if not discrete:
             self.log_std = nnx.Param(jnp.zeros(action_dim))
@@ -118,6 +120,7 @@ class Critic(nnx.Module):
         hidden_dim: int,
         activation: str = "tanh",
         use_layer_norm: bool = False,
+        first_kernel_init=None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -131,6 +134,7 @@ class Critic(nnx.Module):
             use_layer_norm=use_layer_norm,
             kernel_init=orthogonal(np.sqrt(2)),
             out_kernel_init=orthogonal(1.0),
+            first_kernel_init=first_kernel_init,
         )
 
     def __call__(self, x: jax.Array):
@@ -147,6 +151,7 @@ class ActorCritic(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        first_kernel_init=None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -157,10 +162,16 @@ class ActorCritic(nnx.Module):
             activation,
             discrete,
             use_layer_norm,
+            first_kernel_init,
             rngs=rngs,
         )
         self.critic = Critic(
-            state_dim, hidden_dim, activation, use_layer_norm, rngs=rngs
+            state_dim,
+            hidden_dim,
+            activation,
+            use_layer_norm,
+            first_kernel_init,
+            rngs=rngs,
         )
 
     def __call__(self, x):

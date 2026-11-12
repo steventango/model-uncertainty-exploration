@@ -7,7 +7,7 @@ import optax
 from flax import nnx
 from gymnax.environments import spaces
 
-from networks import ActorCritic
+from networks import ActorCritic, onehot_rows_init
 from normalization import NormalizeVecObs, NormalizeVecReward
 
 
@@ -291,13 +291,15 @@ def make_train_state(config, env, env_params, rngs):
     action_space = env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
+    obs_dim = env.observation_space(env_params).shape[0]
     network = ActorCritic(
-        env.observation_space(env_params).shape[0],
+        obs_dim,
         action_dim,
         config["HIDDEN_DIM"],
         activation=config["ACTIVATION"],
         discrete=discrete,
         use_layer_norm=config["USE_LAYER_NORM"],
+        first_kernel_init=onehot_rows_init(obs_dim, 1) if config["ONEHOT_INIT"] else None,
         rngs=rngs,
     )
 
