@@ -237,7 +237,7 @@ class ModelBasedAgent:
             alpha=self.alphas,
             beta=self.betas,
         )
-        if self.reset_source != "env":
+        if self.reset_source not in ("env", "random"):
             weights = reset_weights(
                 experience.buffer.terminated,
                 experience.buffer.truncated,
