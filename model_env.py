@@ -8,7 +8,7 @@ from gymnax.environments import environment, spaces
 from models import WorldModel
 from rnd import RND
 
-ResetSource = Literal["env", "buffer", "init"]
+ResetSource = Literal["env", "buffer", "init", "random"]
 
 
 def reset_weights(
@@ -60,6 +60,8 @@ class ModelEnvParams:
     beta: float = 0.0
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
+    init_low: jnp.ndarray | None = None
+    init_high: jnp.ndarray | None = None
     per_seed_env_params: bool = struct.field(pytree_node=False, default=False)
 
     def seed_vmap_axes(self) -> "ModelEnvParams":
@@ -74,6 +76,8 @@ class ModelEnvParams:
             beta=None,
             init_obs=0,
             init_weights=0,
+            init_low=0,
+            init_high=0,
         )
 
     def config_vmap_axes(self) -> "ModelEnvParams":
@@ -87,6 +91,8 @@ class ModelEnvParams:
             beta=0,
             init_obs=None,
             init_weights=None,
+            init_low=None,
+            init_high=None,
         )
 
 
@@ -112,9 +118,10 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             raise ValueError(
                 f"explore_bonus must be 'std', 'eig' or 'rnd', got {explore_bonus!r}"
             )
-        if reset_source not in ("env", "buffer", "init"):
+        if reset_source not in ("env", "buffer", "init", "random"):
             raise ValueError(
-                f"reset_source must be 'env', 'buffer' or 'init', got {reset_source!r}"
+                "reset_source must be 'env', 'buffer', 'init' or 'random', "
+                f"got {reset_source!r}"
             )
         self._real_env = env
         self._real_env_params = env_params
@@ -128,6 +135,33 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         self.seed_env_params = seed_env_params
         self._zero_action = jnp.zeros_like(
             env.action_space(env_params).sample(jax.random.key(0))
+        )
+
+    def with_reset_buffers(
+        self,
+        params: ModelEnvParams,
+        obs: jnp.ndarray,
+        terminated: jnp.ndarray,
+        truncated: jnp.ndarray,
+        count: jnp.ndarray | int,
+    ) -> ModelEnvParams:
+        if self.reset_source == "env":
+            return params
+        if self.reset_source != "random":
+            weights = reset_weights(terminated, truncated, count, self.reset_source)
+            return params.replace(init_obs=obs, init_weights=weights)
+        space = self._real_env.observation_space(self._real_env_params)
+        if not isinstance(space, spaces.Box):
+            return params
+        low = jnp.broadcast_to(space.low, space.shape).astype(jnp.float32)
+        high = jnp.broadcast_to(space.high, space.shape).astype(jnp.float32)
+        valid = (jnp.arange(obs.shape[-2]) < jnp.asarray(count)[..., None])[..., None]
+        data_low = jnp.where(valid, obs, jnp.inf).min(axis=-2)
+        data_high = jnp.where(valid, obs, -jnp.inf).max(axis=-2)
+        usable = jnp.isfinite(high - low)
+        return params.replace(
+            init_low=jnp.where(usable, low, data_low),
+            init_high=jnp.where(usable, high, data_high),
         )
 
     @property
@@ -254,6 +288,17 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         key, key_reset, key_z, key_idx = jax.random.split(key, 4)
         if self.reset_source == "env":
             obs, _ = self._real_env.reset_env(key_reset, params.env_params)
+        elif self.reset_source == "random":
+            space = self._real_env.observation_space(params.env_params)
+            if isinstance(space, spaces.Box):
+                obs = jax.random.uniform(
+                    key_idx,
+                    space.shape,
+                    minval=params.init_low,
+                    maxval=params.init_high,
+                )
+            else:
+                obs = space.sample(key_idx)
         else:
             # "buffer" or "init": sample a buffer row by the supplied weights.
             idx = jax.random.choice(

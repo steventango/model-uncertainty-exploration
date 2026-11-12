@@ -93,7 +93,7 @@ class Args:
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
     predict_reward_terminated: bool = False
-    reset_source: Literal["env", "buffer", "init"] = "env"
+    reset_source: Literal["env", "buffer", "init", "random"] = "env"
     rollout_length: int | None = None
     steps_per_rollout: int | None = None
     eval_every: int | None = None
