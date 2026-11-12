@@ -59,7 +59,7 @@ def run_online(
     )
     agent_state = agent.init(init_key)
 
-    if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
+    if agent.on_policy and rollout_config["NORMALIZE_OBS"]:
 
         @nnx.jit
         @nnx.vmap

@@ -77,7 +77,8 @@ class PPOConfig:
     activation: str = "tanh"
     use_layer_norm: bool = False
     anneal_lr: bool = False
-    normalize_env: bool = True
+    normalize_obs: bool = True
+    normalize_reward: bool = True
     onehot_init: bool = False
     debug: bool = False
 
@@ -240,5 +241,6 @@ def sac_config_dict(
     d["SEED"] = seed
     d["NUM_ITERS"] = int(d["TOTAL_TIMESTEPS"]) // d["NUM_ENVS"]
     d["NUM_STEPS"] = 1
-    d["NORMALIZE_ENV"] = False
+    d["NORMALIZE_OBS"] = False
+    d["NORMALIZE_REWARD"] = False
     return d
