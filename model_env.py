@@ -205,18 +205,13 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
     ) -> tuple[jax.Array, ModelEnvState, jax.Array, jax.Array, dict[Any, Any]]:
         model = params.model
         x = model.single_input(state.obs, action)
-        if self.prediction_mode == "mean":
-            y = model.predict_mean(x)
-        else:
-            y = model.predict_sample(x, state.z[0])
+        y = self._predict(model, x, state.z)
         # NOTE: the "eig" and "std" bonuses are on different scales and are NOT
         # magnitude-matched. "std" is the posterior standard deviation (linear,
         # in normalized output units) while "eig" is ½ log(1 + σ²_ep) nats
         # (logarithmic in variance). Consequently --beta is not directly
         # comparable across the two bonus types and must be retuned when
         # switching between them.
-        if self.explore_bonus != "rnd":
-            r_intrinsic = model.uncertainty(x, state.z, self.explore_bonus)
 
         delta_obs = model.denormalize_delta_obs(y[..., : model.obs_dim])
         obs = state.obs + delta_obs
@@ -225,9 +220,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             self._real_env.observation_space(params.env_params).low,
             self._real_env.observation_space(params.env_params).high,
         )
-        if self.explore_bonus == "rnd":
-            # Novelty of the predicted next observation.
-            r_intrinsic = params.rnd(obs)
+        r_intrinsic = self._intrinsic(model, x, state.z, obs, params)
         if self.oracle_reward_terminated:
             if hasattr(self._real_env, "obs_to_reward_terminated"):
                 r_exploit, terminated = self._real_env.obs_to_reward_terminated(
@@ -253,15 +246,36 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         )
         return obs, state, r, terminated, {"uncertainty": r_intrinsic}
 
-    def reward(self, z, obs, action, next_obs, params: ModelEnvParams) -> jax.Array:
-        x = params.model.single_input(obs, action)
+    def _predict(self, model, x, z):
+        if self.prediction_mode == "mean":
+            return model.predict_mean(x)
+        return model.predict_sample(x, z[0])
+
+    def _intrinsic(self, model, x, z, next_obs, params: ModelEnvParams):
         if self.explore_bonus == "rnd":
-            r_intrinsic = params.rnd(next_obs)
+            # Novelty of the (predicted or real) next observation.
+            return params.rnd(next_obs)
+        return model.uncertainty(x, z, self.explore_bonus)
+
+    def reward(self, z, obs, action, next_obs, params: ModelEnvParams) -> jax.Array:
+        """Reward step_env would give (obs, action, next_obs) under indices z.
+
+        Used to relabel real or replayed transitions with the current model.
+        """
+        model = params.model
+        x = model.single_input(obs, action)
+        r_intrinsic = self._intrinsic(model, x, z, next_obs, params)
+        if not self.oracle_reward_terminated:
+            r_exploit = model.denormalize_reward(self._predict(model, x, z)[..., -2])
+        elif hasattr(self._real_env, "obs_to_reward_terminated"):
+            r_exploit, _ = self._real_env.obs_to_reward_terminated(
+                obs, action, next_obs, params.env_params
+            )
         else:
-            r_intrinsic = params.model.uncertainty(x, z, self.explore_bonus)
-        r_exploit, _ = self._real_env.obs_to_reward_terminated(
-            obs, action, next_obs, params.env_params
-        )
+            raise NotImplementedError(
+                f"relabelling transitions needs {type(self._real_env).__name__}"
+                ".obs_to_reward_terminated or --predict-reward-terminated"
+            )
         return params.alpha * r_exploit + params.beta * r_intrinsic
 
     def reset_env(
