@@ -221,7 +221,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         if self.oracle_reward_terminated:
             if hasattr(self._real_env, "obs_to_reward_terminated"):
                 r_exploit, terminated = self._real_env.obs_to_reward_terminated(
-                    state.obs, action, obs
+                    state.obs, action, obs, params.env_params
                 )
             else:
                 reconstructed = self._real_env.get_state(
