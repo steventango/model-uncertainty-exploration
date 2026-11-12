@@ -152,7 +152,8 @@ def make_update(config):
                     )
 
                     # CALCULATE ACTOR LOSS
-                    ratio = jnp.exp(log_prob - traj_batch.log_prob)
+                    log_ratio = log_prob - traj_batch.log_prob
+                    ratio = jnp.exp(log_ratio)
                     gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                     loss_actor1 = ratio * gae
                     loss_actor2 = (
@@ -172,7 +173,15 @@ def make_update(config):
                         + config["VF_COEF"] * value_loss
                         - config["ENT_COEF"] * entropy
                     )
-                    return total_loss, (value_loss, loss_actor, entropy)
+                    aux = {
+                        "value": value_loss,
+                        "actor": loss_actor,
+                        "entropy": entropy,
+                        # k3 estimator of KL(old || new) (unbiased, low variance).
+                        "approx_kl": ((ratio - 1.0) - log_ratio).mean(),
+                        "clipfrac": (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean(),
+                    }
+                    return total_loss, aux
 
                 grad_fn = nnx.value_and_grad(_loss_fn, has_aux=True)
                 total_loss, grads = grad_fn(network, traj_batch, advantages, targets)
@@ -209,7 +218,14 @@ def make_update(config):
         update_state, loss_info = nnx.scan(
             _update_epoch, length=config["UPDATE_EPOCHS"]
         )(update_state, None)
-        return update_state[-1], loss_info
+        total, aux = loss_info
+        explained_variance = 1.0 - jnp.var(targets - traj_batch.value) / (
+            jnp.var(targets) + 1e-8
+        )
+        return update_state[-1], (
+            total,
+            {**aux, "explained_variance": explained_variance},
+        )
 
     return update
 
@@ -241,10 +257,15 @@ def make_train(env, config):
             _rollout = make_rollout(config, env, env_params, training=True)
             runner_state, traj_batch = _rollout(runner_state)
             train_state, env_state, last_obs, rng = runner_state
-            rng, _ = _update(train_state, traj_batch, rng)
+            rng, (total, aux) = _update(train_state, traj_batch, rng)
             metric = {
                 "returned_episode_returns": traj_batch.info["returned_episode_returns"],
                 "returned_episode": traj_batch.info["returned_episode"],
+                "losses": {
+                    **{k: v.mean() for k, v in aux.items()},
+                    "total": total.mean(),
+                    "approx_kl_max": aux["approx_kl"].max(),
+                },
             }
             if config.get("DEBUG"):
 
