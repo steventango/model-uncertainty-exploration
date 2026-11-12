@@ -332,6 +332,7 @@ def _make_batched_model(
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
             num_layers=model_config["NUM_LAYERS"],
             activation=model_config["ACTIVATION"],
+            prior_scale=model_config["PRIOR_SCALE"],
             rngs=rngs,
         )
         model = ENNModel(

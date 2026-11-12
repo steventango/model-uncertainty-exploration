@@ -222,6 +222,7 @@ class EpiNet(nnx.Module):
         out_features: int,
         index_dim: int,
         *,
+        prior_scale: float = 1.0,
         rngs: nnx.Rngs,
     ):
         self.learnable = ProjectedMLP(
@@ -237,7 +238,7 @@ class EpiNet(nnx.Module):
             out_features=out_features,
             rngs=rngs,
         )
-        self.prior_scale = 1.0
+        self.prior_scale = prior_scale
 
     def __call__(self, phi, x, z, rngs: nnx.Rngs | None = None):
         return self.learnable(
@@ -258,6 +259,7 @@ class ENN(nnx.Module):
         use_layer_norm: bool = False,
         num_layers: int = 1,
         activation: str = "tanh",
+        prior_scale: float = 1.0,
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
@@ -276,6 +278,7 @@ class ENN(nnx.Module):
             base_features=hidden_features,
             out_features=out_features,
             index_dim=index_dim,
+            prior_scale=prior_scale,
             rngs=rngs,
         )
         self.index_dim = index_dim
