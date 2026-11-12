@@ -51,7 +51,7 @@ def make_rollout(config, env, env_params, training=True):
             obsv, env_state, reward, terminated, truncated, info = env.step(
                 rng_step, env_state, action, env_params
             )
-            next_obs = info["next_obs"]
+            next_obs = info["final_observation"]
             raw_reward = reward
 
             if config["NORMALIZE_ENV"]:

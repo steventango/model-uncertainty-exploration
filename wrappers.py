@@ -71,8 +71,60 @@ class FlattenObservationWrapper(GymnaxWrapper):
             key, state, action, params
         )
         obs = jnp.reshape(obs, (-1,))
-        info["next_obs"] = jnp.reshape(info["next_obs"], (-1,))
+        info["final_observation"] = jnp.reshape(info["final_observation"], (-1,))
         return obs, state, reward, terminated, truncated, info
+
+
+class OneHotObservationWrapper(GymnaxWrapper):
+    """One-hot encode a Discrete observation.
+
+    For tabular envs exposing ``reward_table(action, params)`` and
+    ``terminated_table()`` it also provides ``obs_to_reward_terminated`` on
+    (possibly soft) one-hot vectors, which the model env uses as its oracle.
+    """
+
+    discrete_obs = True
+
+    def _num_classes(self, params):
+        return self._env.observation_space(params).n
+
+    def observation_space(self, params) -> spaces.Box:
+        n = self._num_classes(params)
+        return spaces.Box(0.0, 1.0, (n,), jnp.float32)
+
+    def _encode(self, obs, params):
+        return jax.nn.one_hot(obs, self._num_classes(params))
+
+    @partial(jax.jit, static_argnums=(0,))
+    def reset(self, key, params=None):
+        obs, state = self._env.reset(key, params)
+        return self._encode(obs, params), state
+
+    @partial(jax.jit, static_argnums=(0,))
+    def step(self, key, state, action, params=None):
+        obs, state, reward, terminated, truncated, info = self._env.step(
+            key, state, action, params
+        )
+        info = {
+            **info,
+            "final_observation": self._encode(info["final_observation"], params),
+        }
+        return self._encode(obs, params), state, reward, terminated, truncated, info
+
+    def reset_env(self, key, params):
+        obs, state = self._env.reset_env(key, params)
+        return self._encode(obs, params), state
+
+    def step_env(self, key, state, action, params):
+        obs, state, reward, terminated, info = self._env.step_env(
+            key, state, action, params
+        )
+        return self._encode(obs, params), state, reward, terminated, info
+
+    def obs_to_reward_terminated(self, obs, action, next_obs, params):
+        reward = obs @ self._env.reward_table(action, params)
+        terminated = obs @ self._env.terminated_table() > 0.5
+        return reward.astype(jnp.float32), terminated
 
 
 @struct.dataclass
@@ -153,7 +205,7 @@ class BraxGymnaxWrapper:
         truncated = next_state.info["truncation"] > 0.5
         terminated = (next_state.done > 0.5) & ~truncated
         done = terminated | truncated
-        info = {"next_obs": next_state.obs}
+        info = {"final_observation": next_state.obs}
         reset_state = self._env.reset(key_reset)
         state_out = jax.tree_util.tree_map(
             lambda r, s: jax.lax.select(done, r, s), reset_state, next_state
@@ -210,7 +262,7 @@ class TransformObservation(GymnaxWrapper):
         obs, state, reward, terminated, truncated, info = self._env.step(
             key, state, action, params
         )
-        info["next_obs"] = self.transform_obs(info["next_obs"])
+        info["final_observation"] = self.transform_obs(info["final_observation"])
         return self.transform_obs(obs), state, reward, terminated, truncated, info
 
 
@@ -301,7 +353,9 @@ class NormalizeVecObservation(GymnaxWrapper):
             count=new_count,
             env_state=env_state,
         )
-        info["next_obs"] = (info["next_obs"] - state.mean) / jnp.sqrt(state.var + 1e-8)
+        info["final_observation"] = (info["final_observation"] - state.mean) / jnp.sqrt(
+            state.var + 1e-8
+        )
         return (
             (obs - state.mean) / jnp.sqrt(state.var + 1e-8),
             state,

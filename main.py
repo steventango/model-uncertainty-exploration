@@ -18,13 +18,20 @@ from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
+from deep_sea import KeyedDeepSea
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
 from ppo import make_rollout
-from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
+from wrappers import (
+    BraxGymnaxWrapper,
+    ClipAction,
+    LogWrapper,
+    OneHotObservationWrapper,
+    VecEnv,
+)
 
 
 def _wrap_env(env, discrete):
@@ -38,6 +45,7 @@ def run_online(
     agent,
     env,
     env_params,
+    env_params_axis,
     rollout_config,
     eval_config,
     loggers,
@@ -49,7 +57,9 @@ def run_online(
     """Each iteration: act in the real env, add to the buffer, update the agent."""
     key, init_key, reset_key, runner_key = vsplit(seed_keys, 4)
     reset_rng = vsplit(reset_key, rollout_config["NUM_ENVS"]).T  # (B, NUM_ENVS)
-    obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+    obsv, env_state = jax.vmap(env.reset, in_axes=(0, env_params_axis))(
+        reset_rng, env_params
+    )
     agent_state = agent.init(init_key)
 
     if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
@@ -64,15 +74,19 @@ def run_online(
 
         _init_obs_stats(agent.explore_policy(agent_state), obsv)
 
-    _rollout = nnx.jit(
-        nnx.vmap(
-            make_rollout(rollout_config, env, env_params, training=agent.on_policy)
+    def rollout(runner_state, params):
+        params = env_params if env_params_axis is None else params
+        return make_rollout(rollout_config, env, params, training=agent.on_policy)(
+            runner_state
         )
-    )
+
+    _rollout = nnx.jit(nnx.vmap(rollout, in_axes=(0, env_params_axis)))
     runner_state = (env_state, obsv, runner_key)
 
     sample = nnx.eval_shape(
-        lambda policy: jax.vmap(collate_rollout)(_rollout((policy, *runner_state))[1]),
+        lambda policy: jax.vmap(collate_rollout)(
+            _rollout((policy, *runner_state), env_params)[1]
+        ),
         agent.explore_policy(agent_state),
     )
     buffer = jax.tree_util.tree_map(
@@ -91,10 +105,7 @@ def run_online(
         return jax.tree_util.tree_map(jax.vmap(append_one), buffer, batch)
 
     batched_eval = evaluation.make_batched_evaluate_policy(
-        eval_config,
-        env,
-        env_params,
-        make_rollout(eval_config, env, env_params, training=False),
+        eval_config, env, env_params, env_params_axis
     )
     key, eval_keys = vsplit(key)
     log_eval(loggers, batched_eval, agent.eval_policy(agent_state), eval_keys, 0)
@@ -103,7 +114,7 @@ def run_online(
     for rollout in range(num_rollouts):
         t0 = time.perf_counter()
         (_, *runner_state), traj_batch = _rollout(
-            (agent.explore_policy(agent_state), *runner_state)
+            (agent.explore_policy(agent_state), *runner_state), env_params
         )
         jax.block_until_ready(traj_batch)
         rollout_s = time.perf_counter() - t0
@@ -174,8 +185,6 @@ def run_offline(agent, buffer, loggers, seed_keys, env, env_params, seed_dir, ar
 
 
 def main(args: Args):
-    if args.cpu:
-        jax.config.update("jax_platforms", "cpu")
     os.environ["XLA_FLAGS"] = (
         f"{os.environ.get('XLA_FLAGS', '')}"
         " --xla_gpu_deterministic_ops=true"
@@ -226,12 +235,19 @@ def main(args: Args):
         hparams_run = {"num_rollouts": 1, "N_train": N, "action_dim": action_dim}
         val_data = None
         debug = False
+        discrete_obs = False
+        seed_env_params, env_params_axis = env_params, None
 
     else:
         is_brax = args.env in BRAX_ENVS
         if is_brax:
             backend = BRAX_BACKENDS.get(args.env, "positional")
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
+            env_params = base_env.default_params
+        elif args.env.startswith("DeepSea-"):
+            base_env = OneHotObservationWrapper(
+                KeyedDeepSea(int(args.env.split("-")[1]))
+            )
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)
@@ -247,16 +263,26 @@ def main(args: Args):
         # oracle for reward/termination (ModelEnvironment.get_state is its sole caller,
         # gated on oracle_reward_terminated). Skip it when --predict_reward_terminated is
         # set so envs without a registered wrapper don't hit the wrapper's ValueError.
-        if not predict_reward_terminated:
+        if not predict_reward_terminated and not hasattr(
+            base_env, "obs_to_reward_terminated"
+        ):
             base_env = make_state_reconstruction_wrapper(base_env, args.env)
         action_space = base_env.action_space(env_params)
         discrete = isinstance(action_space, spaces.Discrete)
         action_dim = action_space.n if discrete else action_space.shape[0]
         act_dim = action_space.n if discrete else None
+        discrete_obs = getattr(base_env, "discrete_obs", False)
+        if args.env.startswith("DeepSea-"):
+            seed_env_params = jax.vmap(base_env.params_for_seed)(seeds)
+            env_params_axis = 0
+        else:
+            seed_env_params, env_params_axis = env_params, None
         env = _wrap_env(base_env, discrete)
 
         if is_brax:
             val_data = validation.generate_brax_validation_data(base_env, env_params)
+        elif args.env.startswith("DeepSea-"):
+            val_data = None
         else:
             val_data = validation.generate_validation_data(
                 base_env, env_params, args.env
@@ -325,7 +351,7 @@ def main(args: Args):
     seed_dirs, loggers = [], []
     for b in range(B):
         seed_dir = f"{log_dir}/seed_{int(seeds[b])}"
-        logger = ExperimentLogger(seed_dir)
+        logger = ExperimentLogger(seed_dir, discrete_obs=discrete_obs)
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
@@ -361,6 +387,7 @@ def main(args: Args):
             reset_source=reset_source,
             max_steps_in_episode=args.rollout_length,
             uncertainty_threshold=args.uncertainty_threshold,
+            seed_env_params=seed_env_params if env_params_axis == 0 else None,
         )
         agent = ModelBasedAgent(
             model_name=args.model.name,
@@ -389,7 +416,8 @@ def main(args: Args):
         agent_state, size = run_online(
             agent,
             env,
-            env_params,
+            seed_env_params,
+            env_params_axis,
             rollout_config,
             eval_config,
             loggers,

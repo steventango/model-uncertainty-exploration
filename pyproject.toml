@@ -10,7 +10,7 @@ dependencies = [
     "flax>=0.12.7",
     "gpjax",
     "gymnasium[classic-control]>=1.2.3",
-    "gymnax",
+    "gymnax>=1.0.1",
     "jax[cuda12]>=0.10.0",
     "h5py>=3.0",
     "minari>=0.5.3",
@@ -28,7 +28,6 @@ dependencies = [
 
 [tool.uv.sources]
 gpjax = { git = "https://github.com/thomaspinder/GPJax.git" }
-gymnax = { git = "https://github.com/steventango/gymnax" }
 
 [dependency-groups]
 dev = [
