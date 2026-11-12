@@ -21,6 +21,9 @@ class ENNConfig:
     l2: float | tuple[float, ...] = 0.1
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
+    head: Literal["deterministic", "gaussian"] = "deterministic"
+    min_scale: float = 1e-3
+    beta_nll: float = 0.5
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
     bootstrap_noise: float = 1.0
 

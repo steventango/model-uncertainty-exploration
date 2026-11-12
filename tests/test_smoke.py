@@ -66,6 +66,13 @@ CASES = {
         ppo=TINY_PPO,
         model=TINY_ENN,
     ),
+    "enn-gaussian-pendulum": Args(
+        cpu=True,
+        env="Pendulum-v1",
+        max_steps=400,
+        ppo=TINY_PPO,
+        model=ENNConfig(update_steps=10, hidden_dim=16, head="gaussian"),
+    ),
     "enn-bernoulli-bootstrap": Args(
         cpu=True,
         env="Pendulum-v1",

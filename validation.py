@@ -75,6 +75,10 @@ def validation_metrics(
     pred_delta_obs_val = model.denormalize_delta_obs(mean_y_val[..., : model.obs_dim])
 
     dyn_mae = jnp.mean(jnp.abs(val_true_delta_obs - pred_delta_obs_val))
+    # Calibration of the predictive distribution (0 for point-estimate models).
+    dyn_nll = jax.vmap(model.nll)(
+        val_x_norm, val_obs, val_obs + val_true_delta_obs
+    ).mean()
 
     if model.predict_reward_terminated:
         pred_reward_val = model.denormalize_reward(mean_y_val[..., -2])
@@ -101,7 +105,7 @@ def validation_metrics(
         val_x_norm, idx, reduce_output=True
     ).mean()
 
-    return dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty
+    return dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty, dyn_nll
 
 
 def make_batched_validation_metrics():
@@ -228,7 +232,7 @@ def evaluate_validation(
 
     # Evaluate MAE on validation set (mean model)
     rng, val_key = jax.random.split(rng)
-    dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty = validation_metrics(
+    dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty, _ = validation_metrics(
         model,
         val_obs,
         val_act,

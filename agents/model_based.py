@@ -64,6 +64,7 @@ class ModelBasedAgent:
         model_config: Config,
         model_dims: tuple[int, int, int, int],  # in_features, obs, out_features, act
         predict_reward_terminated: bool,
+        head: str,
         ppo_config: Config,
         env: Env,
         env_params: environment.EnvParams,
@@ -81,6 +82,7 @@ class ModelBasedAgent:
         self.model_config = model_config
         self.model_dims = model_dims
         self.predict_reward_terminated = predict_reward_terminated
+        self.head = head
         self.ppo_config = ppo_config
         self.env = env
         self.env_params = env_params
@@ -116,6 +118,8 @@ class ModelBasedAgent:
             *self.model_dims,
             model_key,
             predict_reward_terminated=self.predict_reward_terminated,
+            # Only ENN implements distributional heads; others keep their signature.
+            **({"head": self.head} if self.head != "deterministic" else {}),
         )
         if self.val_data is not None:
             log_validation(
