@@ -102,7 +102,6 @@ class Args:
     offline: bool = False
     dataset: str = "plant-data/visu-v27"
     debug: bool = False
-    cpu: bool = False
     log_dir: str | None = None
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
