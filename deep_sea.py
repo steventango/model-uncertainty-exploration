@@ -1,23 +1,8 @@
 import jax
 import jax.numpy as jnp
 from flax import struct
-from gymnax.environments import environment, spaces
+from gymnax.environments import spaces
 from gymnax.environments.bsuite.deep_sea import DeepSea, EnvParams
-
-
-class OneHot(spaces.Space):
-    def __init__(self, n: int):
-        self.n = n
-        self.shape = (n,)
-        self.dtype = jnp.float32
-        self.low = jnp.zeros(n, jnp.float32)
-        self.high = jnp.ones(n, jnp.float32)
-
-    def sample(self, key: jax.Array) -> jax.Array:
-        return jax.nn.one_hot(jax.random.randint(key, (), 0, self.n), self.n)
-
-    def contains(self, x: jax.Array) -> jax.Array:
-        return (x.shape == self.shape) & (x.sum() == 1) & jnp.all((x == 0) | (x == 1))
 
 
 @struct.dataclass
@@ -28,35 +13,19 @@ class DeepSeaParams(EnvParams):
 
 
 class KeyedDeepSea(DeepSea):
-    """gymnax DeepSea with the action map drawn from ``params.action_mapping_key``
-    (upstream draws it once in ``__init__``, so it cannot be vmapped over seeds)."""
+    """gymnax DeepSea as in the VBE paper: deterministic transitions, a random
+    per-cell action map (which action means "right") fixed per seed, and a
+    tabular observation.
 
-    def action_map(self, params: DeepSeaParams) -> jax.Array:
-        return jax.random.bernoulli(
-            params.action_mapping_key, 0.5, (self.size, self.size)
-        ).astype(jnp.int32)
-
-    def reset_env(self, key, params):
-        obs, state = super().reset_env(key, params)
-        return obs, state.replace(action_mapping=self.action_map(params))
-
-
-class DeepSeaOneHot(environment.Environment):
-    """DeepSea as in the VBE paper: deterministic transitions, a random
-    per-cell action map (which action means "right") fixed per seed, tabular
-    one-hot obs.
-
-    Reachable cell (row, column), column <= row, is class row * (row + 1) / 2 +
-    column. As in VBE, the observation after the bottom row is the reset cell 0;
-    termination is read from the current cell being on the bottom row.
+    Upstream draws the action map once in ``__init__``, so it cannot be vmapped
+    over seeds; here it is drawn from ``params.action_mapping_key``. Upstream's
+    observation is a (size, size) grid; here it is the integer index of the
+    reachable cell (row, column), column <= row: ``row * (row + 1) / 2 + column``.
+    As in VBE, the observation after the bottom row is the reset cell 0.
     """
 
-    discrete_obs = True
-
     def __init__(self, size: int):
-        super().__init__()
-        self.size = size
-        self._env = KeyedDeepSea(size)
+        super().__init__(size)
         rows, cols = jnp.tril_indices(size)
         self.cell_rows, self.cell_cols = rows, cols
         self.cell_map = (
@@ -74,41 +43,32 @@ class DeepSeaOneHot(environment.Environment):
     def default_params(self) -> DeepSeaParams:
         return self.params_for_seed(0)
 
-    def _obs(self, state):
-        cell = jnp.where(
-            state.row < self.size,
-            self.cell_map[jnp.minimum(state.row, self.size - 1), state.column],
-            0,
-        )
-        return jax.nn.one_hot(cell, self.num_cells)
-
-    def step_env(self, key, state, action, params):
-        _, state, reward, done, info = self._env.step_env(key, state, action, params)
-        return self._obs(state), state, reward, done, info
+    def action_map(self, params: DeepSeaParams) -> jax.Array:
+        return jax.random.bernoulli(
+            params.action_mapping_key, 0.5, (self.size, self.size)
+        ).astype(jnp.int32)
 
     def reset_env(self, key, params):
-        _, state = self._env.reset_env(key, params)
-        return self._obs(state), state
+        obs, state = super().reset_env(key, params)
+        return obs, state.replace(action_mapping=self.action_map(params))
 
-    def obs_to_reward_terminated(self, obs, action, next_obs, params):
-        a = jnp.reshape(action, ()).astype(jnp.float32)
-        right_action = self._env.action_map(params)[self.cell_rows, self.cell_cols]
-        right_action = right_action.astype(jnp.float32)
-        right = a * right_action + (1 - a) * (1 - right_action)
-        p_right = (obs * right).sum()
-        reward = p_right * (obs[self.goal] - 0.01 / self.size)
-        return reward.astype(jnp.float32), obs[self.num_cells - self.size :].sum() > 0.5
+    def get_obs(self, state, params=None, key=None):
+        on_grid = state.row < self.size
+        cell = self.cell_map[jnp.minimum(state.row, self.size - 1), state.column]
+        return jnp.where(on_grid, cell, 0).astype(jnp.int32)
 
-    def observation_space(self, params):
-        return OneHot(self.num_cells)
+    def observation_space(self, params) -> spaces.Discrete:
+        return spaces.Discrete(self.num_cells)
 
-    def action_space(self, params=None):
-        return spaces.Discrete(2)
+    # Per-cell reward and termination, for the model env's oracle (see
+    # OneHotObservationWrapper.obs_to_reward_terminated).
+    def reward_table(self, action, params) -> jax.Array:
+        """r(cell, action) for every cell, shape (num_cells,)."""
+        right_action = self.action_map(params)[self.cell_rows, self.cell_cols]
+        right = right_action == jnp.reshape(action, ()).astype(jnp.int32)
+        goal = jax.nn.one_hot(self.goal, self.num_cells)
+        return right * (goal - params.unscaled_move_cost / self.size)
 
-    @property
-    def num_actions(self) -> int:
-        return 2
-
-    @property
-    def name(self) -> str:
-        return f"DeepSea-{self.size}"
+    def terminated_table(self) -> jax.Array:
+        """Whether each cell is on the bottom row, shape (num_cells,)."""
+        return jnp.arange(self.num_cells) >= self.num_cells - self.size
