@@ -23,6 +23,7 @@ class ENNConfig:
     use_layer_norm: bool = False
     head: Literal["deterministic", "gaussian", "categorical"] = "deterministic"
     prior_scale: float = 1.0
+    onehot_init: bool = False
     min_scale: float = 1e-3
     beta_nll: float = 0.5
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
