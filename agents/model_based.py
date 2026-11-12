@@ -285,6 +285,7 @@ class ModelBasedAgent:
                 experience.buffer.truncated,
                 experience.size,
                 self.reset_source,
+                experience.buffer.obs,
             )
             params = params.replace(
                 init_obs=experience.buffer.obs, init_weights=weights

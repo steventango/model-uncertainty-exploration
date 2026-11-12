@@ -8,7 +8,7 @@ from gymnax.environments import environment, spaces
 from models import WorldModel
 from rnd import RND
 
-ResetSource = Literal["env", "buffer", "init"]
+ResetSource = Literal["env", "buffer", "unique", "init"]
 
 
 def reset_weights(
@@ -16,6 +16,7 @@ def reset_weights(
     truncated: jnp.ndarray,
     count: jnp.ndarray | int,
     source: ResetSource,
+    obs: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Sampling weights over replay-buffer rows for a dataset-driven reset.
 
@@ -24,6 +25,7 @@ def reset_weights(
     the same shape, normalized along the last axis:
 
     - ``"buffer"``: uniform over all valid rows (MBPO branching from any state).
+    - ``"unique"``: uniform over distinct one-hot observations among valid rows.
     - ``"init"``: uniform over episode-start rows — row 0 and any row whose
       predecessor was ``done`` — i.e. the dataset's initial-state distribution.
     """
@@ -31,13 +33,17 @@ def reset_weights(
     valid = jnp.arange(n) < count
     if source == "buffer":
         w = jnp.broadcast_to(valid, terminated.shape).astype(jnp.float32)
+    elif source == "unique":
+        valid = jnp.broadcast_to(valid, terminated.shape).astype(jnp.float32)
+        visits = (obs * valid[..., None]).sum(-2)
+        w = valid / jnp.maximum((obs * visits[..., None, :]).sum(-1), 1.0)
     elif source == "init":
         done = terminated | truncated
         first = jnp.ones_like(done[..., :1])
         prev_done = jnp.concatenate([first, done[..., :-1]], axis=-1)
         w = (prev_done & valid).astype(jnp.float32)
     else:
-        raise ValueError(f"source must be 'buffer' or 'init', got {source!r}")
+        raise ValueError(f"source must be 'buffer', 'unique' or 'init', got {source!r}")
     return w / w.sum(axis=-1, keepdims=True)
 
 
@@ -121,9 +127,9 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             raise ValueError(
                 f"explore_bonus must be 'std', 'eig' or 'rnd', got {explore_bonus!r}"
             )
-        if reset_source not in ("env", "buffer", "init"):
+        if reset_source not in ("env", "buffer", "unique", "init"):
             raise ValueError(
-                f"reset_source must be 'env', 'buffer' or 'init', got {reset_source!r}"
+                f"reset_source must be 'env', 'buffer', 'unique' or 'init', got {reset_source!r}"
             )
         self._real_env = env
         self._real_env_params = env_params
