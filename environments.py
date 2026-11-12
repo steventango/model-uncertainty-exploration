@@ -14,11 +14,10 @@ class PendulumWrapper(StateReconstructionWrapper):
             time=time,
         )
 
-    def reward(self, obs, action, next_obs, terminated):
+    def get_reward(self, state, action, next_state, terminated):
         from gymnax.environments.classic_control.pendulum import angle_normalize
 
         max_torque = self._env.default_params.max_torque
-        state = self.get_state(obs, action, 0)
         u = jnp.clip(jnp.reshape(action, ()), -max_torque, max_torque)
         return -(
             angle_normalize(state.theta) ** 2 + 0.1 * state.theta_dot**2 + 0.001 * u**2
@@ -31,7 +30,7 @@ class MountainCarWrapper(StateReconstructionWrapper):
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
-    def reward(self, obs, action, next_obs, terminated):
+    def get_reward(self, state, action, next_state, terminated):
         return jnp.array(-1.0)
 
 
@@ -41,7 +40,7 @@ class MountainCarContinuousWrapper(StateReconstructionWrapper):
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
-    def reward(self, obs, action, next_obs, terminated):
+    def get_reward(self, state, action, next_state, terminated):
         return -0.1 * jnp.reshape(action, ()) ** 2 + 100 * terminated
 
 
@@ -53,10 +52,8 @@ class CartPoleWrapper(StateReconstructionWrapper):
             x=obs[0], x_dot=obs[1], theta=obs[2], theta_dot=obs[3], time=time
         )
 
-    def reward(self, obs, action, next_obs, terminated):
-        # gymnax pays out on whether the *current* state was already terminal.
-        params = self._env.default_params
-        return 1.0 - self._env.is_terminal(self.get_state(obs, action, 0), params)
+    def get_reward(self, state, action, next_state, terminated):
+        return 1.0 - self._env.is_terminal(state, self._env.default_params)
 
 
 class AcrobotWrapper(StateReconstructionWrapper):
@@ -71,7 +68,7 @@ class AcrobotWrapper(StateReconstructionWrapper):
             time=time,
         )
 
-    def reward(self, obs, action, next_obs, terminated):
+    def get_reward(self, state, action, next_state, terminated):
         return -1.0 * (1 - terminated)
 
 
