@@ -120,6 +120,7 @@ class Args:
     rollout_length: int | None = None
     steps_per_rollout: int | None = None
     eval_every: int | None = None
+    eval_greedy: bool = False
     uncertainty_threshold: float | None = None
     max_steps: int | None = None
     offline: bool = False
