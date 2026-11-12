@@ -19,7 +19,7 @@ from agents.base import (
 from batching import seed_slice, vsplit
 from config import RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
-from model_env import ModelEnvironment, ResetSource, reset_weights
+from model_env import ModelEnvironment, ResetSource
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from models.base import WorldModel
 from ppo import (
@@ -237,16 +237,13 @@ class ModelBasedAgent:
             alpha=self.alphas,
             beta=self.betas,
         )
-        if self.reset_source not in ("env", "random"):
-            weights = reset_weights(
-                experience.buffer.terminated,
-                experience.buffer.truncated,
-                experience.size,
-                self.reset_source,
-            )
-            params = params.replace(
-                init_obs=experience.buffer.obs, init_weights=weights
-            )
+        params = self.model_env.with_reset_buffers(
+            params,
+            experience.buffer.obs,
+            experience.buffer.terminated,
+            experience.buffer.truncated,
+            experience.size,
+        )
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
         jax.block_until_ready(out)
