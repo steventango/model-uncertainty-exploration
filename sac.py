@@ -9,7 +9,7 @@ from flax import nnx
 from gymnax.environments import spaces
 
 from networks import MLP
-from normalization import NormalizeVecObs, NormalizeVecReward
+from normalization import NormalizeVecObs
 
 LOG_STD_MIN = -20.0
 LOG_STD_MAX = 2.0
@@ -21,6 +21,17 @@ class Batch(NamedTuple):
     reward: jnp.ndarray
     terminated: jnp.ndarray
     next_obs: jnp.ndarray
+
+
+class Replay(nnx.Module):
+    def __init__(self, size, obs_shape, action_shape, action_dtype):
+        self.obs = nnx.Variable(jnp.zeros((size,) + obs_shape))
+        self.action = nnx.Variable(jnp.zeros((size,) + action_shape, action_dtype))
+        self.reward = nnx.Variable(jnp.zeros(size))
+        self.terminated = nnx.Variable(jnp.zeros(size))
+        self.next_obs = nnx.Variable(jnp.zeros((size,) + obs_shape))
+        self.ptr = nnx.Variable(jnp.int32(0))
+        self.count = nnx.Variable(jnp.int32(0))
 
 
 class SquashedNormal(distrax.Transformed):
@@ -253,30 +264,43 @@ def make_update(config, entropy_target):
     return update
 
 
+def replay_size(config):
+    num_envs = config["NUM_ENVS"]
+    if config["KEEP_REPLAY"]:
+        return config["BUFFER_SIZE"] // num_envs * num_envs
+    return min(config["BUFFER_SIZE"] // num_envs, config["NUM_ITERS"]) * num_envs
+
+
 def make_train(env, config):
     num_envs = config["NUM_ENVS"]
-    buffer_size = min(config["BUFFER_SIZE"] // num_envs, config["NUM_ITERS"]) * num_envs
+    buffer_size = replay_size(config)
     warmup_iters = min(config["LEARNING_STARTS"] // num_envs, config["NUM_ITERS"])
     learn_iters = config["NUM_ITERS"] - warmup_iters
 
     def train(train_state, env_params, rng):
-        sac, optimizer, _, _ = train_state
+        sac, optimizer, _, replay = train_state
         action_space = env.action_space(env_params)
         _update = make_update(config, target_entropy(config, action_space))
 
-        rng, _rng = jax.random.split(rng)
+        rng, _rng, key_z = jax.random.split(rng, 3)
         obsv, env_state = env.reset(jax.random.split(_rng, num_envs), env_params)
-        action_shape = () if sac.discrete else action_space.shape
         buffer = Batch(
-            obs=jnp.zeros((buffer_size,) + obsv.shape[1:], obsv.dtype),
-            action=jnp.zeros(
-                (buffer_size,) + action_shape,
-                jnp.int32 if sac.discrete else jnp.float32,
-            ),
-            reward=jnp.zeros(buffer_size),
-            terminated=jnp.zeros(buffer_size),
-            next_obs=jnp.zeros((buffer_size,) + obsv.shape[1:], obsv.dtype),
+            replay.obs[...],
+            replay.action[...],
+            replay.reward[...],
+            replay.terminated[...],
+            replay.next_obs[...],
         )
+        ptr, count = jnp.int32(0), jnp.int32(0)
+        if config["KEEP_REPLAY"]:
+            ptr, count = replay.ptr[...], replay.count[...]
+            z = env_params.model.sample_index(key_z, env.samples)
+            reward = jax.lax.map(
+                lambda t: env.reward(z, *t, env_params),
+                (buffer.obs, buffer.action, buffer.next_obs),
+                batch_size=1024,
+            )
+            buffer = buffer._replace(reward=reward)
 
         def make_iter(learn):
             def _iter(carry, unused):
@@ -327,16 +351,7 @@ def make_train(env, config):
 
             return _iter
 
-        carry = (
-            sac,
-            optimizer,
-            env_state,
-            obsv,
-            buffer,
-            jnp.int32(0),
-            jnp.int32(0),
-            rng,
-        )
+        carry = (sac, optimizer, env_state, obsv, buffer, ptr, count, rng)
         carry, (warmup_metric, _) = nnx.scan(make_iter(False), length=warmup_iters)(
             carry, None
         )
@@ -346,7 +361,14 @@ def make_train(env, config):
         metric = jax.tree.map(
             lambda a, b: jnp.concatenate([a, b]), warmup_metric, learn_metric
         )
-        _, _, env_state, obsv, _, _, _, rng = carry
+        _, _, env_state, obsv, buffer, ptr, count, rng = carry
+        replay.obs[...] = buffer.obs
+        replay.action[...] = buffer.action
+        replay.reward[...] = buffer.reward
+        replay.terminated[...] = buffer.terminated
+        replay.next_obs[...] = buffer.next_obs
+        replay.ptr[...] = ptr
+        replay.count[...] = count
         runner_state = (train_state, env_state, obsv, rng)
         return {"runner_state": runner_state, "metrics": metric, "losses": losses}
 
@@ -377,10 +399,14 @@ def make_train_state(config, env, env_params, rngs):
     )
     optimizer = SACOptimizer(sac, config["LR"])
     normalize_vec_obs = NormalizeVecObs(jnp.zeros(obs_shape))
-    normalize_vec_reward = NormalizeVecReward(
-        jnp.zeros(config["NUM_ENVS"]), config["GAMMA"]
+    action_shape = () if discrete else action_space.shape
+    replay = Replay(
+        replay_size(config),
+        obs_shape,
+        action_shape,
+        jnp.int32 if discrete else jnp.float32,
     )
-    return (sac, optimizer, normalize_vec_obs, normalize_vec_reward)
+    return (sac, optimizer, normalize_vec_obs, replay)
 
 
 def make_batched_train(env, env_params, config):

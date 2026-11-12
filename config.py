@@ -91,6 +91,7 @@ class SACConfig:
     updates_per_iter: int = 16
     batch_size: int = 256
     buffer_size: int = 100_000
+    keep_replay: bool = False
     learning_starts: int = 1000
     gamma: float = 0.99
     tau: float = 0.005

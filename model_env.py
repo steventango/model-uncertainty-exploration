@@ -255,6 +255,14 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         )
         return obs, state, r, terminated, {"uncertainty": r_intrinsic}
 
+    def reward(self, z, obs, action, next_obs, params: ModelEnvParams) -> jax.Array:
+        x = params.model.single_input(obs, action)
+        r_intrinsic = params.model.uncertainty(x, z, self.explore_bonus)
+        r_exploit, _ = self._real_env.obs_to_reward_terminated(
+            obs, action, next_obs, params.env_params
+        )
+        return params.alpha * r_exploit + params.beta * r_intrinsic
+
     def reset_env(
         self, key: jax.Array, params: ModelEnvParams
     ) -> tuple[jax.Array, ModelEnvState]:

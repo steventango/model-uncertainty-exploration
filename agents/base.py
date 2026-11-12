@@ -13,7 +13,7 @@ from ppo import (
     Transition,
     unstack_train_state,
 )
-from sac import SAC, SACOptimizer
+from sac import SAC, Replay, SACOptimizer
 from wrappers import BraxGymnaxWrapper, GymnaxWrapper
 
 Env = environment.Environment | GymnaxWrapper | BraxGymnaxWrapper
@@ -22,7 +22,7 @@ PolicyState = tuple[
     ActorCritic | SAC,
     nnx.Optimizer | SACOptimizer,
     NormalizeVecObs,
-    NormalizeVecReward,
+    NormalizeVecReward | Replay,
 ]
 
 
