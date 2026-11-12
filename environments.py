@@ -1,6 +1,51 @@
+import jax
 import jax.numpy as jnp
+from gymnax.environments import spaces
 
-from wrappers import StateReconstructionWrapper
+from wrappers import GymnaxWrapper, StateReconstructionWrapper
+
+ANGLE_OBS = {"Pendulum-v1": ((0, 1),), "Acrobot-v1": ((0, 1), (2, 3))}
+
+
+class AngleBox(spaces.Space):
+    def __init__(self, low, high, shape, dtype, cos_sin_pairs):
+        self.low = low
+        self.high = high
+        self.shape = shape
+        self.dtype = dtype
+        self.cos_sin_pairs = cos_sin_pairs
+
+    def sample(self, key: jax.Array) -> jax.Array:
+        key_box, key_angle = jax.random.split(key)
+        x = jax.random.uniform(key_box, self.shape, minval=self.low, maxval=self.high)
+        angles = jax.random.uniform(
+            key_angle, (len(self.cos_sin_pairs),), minval=-jnp.pi, maxval=jnp.pi
+        )
+        for (cos_index, sin_index), angle in zip(
+            self.cos_sin_pairs, angles, strict=True
+        ):
+            x = x.at[cos_index].set(jnp.cos(angle)).at[sin_index].set(jnp.sin(angle))
+        return x.astype(self.dtype)
+
+    def contains(self, x: jax.Array) -> jax.Array:
+        on_circle = [
+            jnp.isclose(x[c] ** 2 + x[s] ** 2, 1.0, atol=1e-5)
+            for c, s in self.cos_sin_pairs
+        ]
+        in_box = (x >= self.low) & (x <= self.high)
+        return jnp.all(in_box) & jnp.all(jnp.array(on_circle))
+
+
+class AngleObsWrapper(GymnaxWrapper):
+    def __init__(self, env, cos_sin_pairs):
+        super().__init__(env)
+        self.cos_sin_pairs = cos_sin_pairs
+
+    def observation_space(self, params):
+        space = self._env.observation_space(params)
+        return AngleBox(
+            space.low, space.high, space.shape, space.dtype, self.cos_sin_pairs
+        )
 
 
 class PendulumWrapper(StateReconstructionWrapper):
