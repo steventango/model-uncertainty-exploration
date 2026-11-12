@@ -60,7 +60,8 @@ class PPOConfig:
     activation: str = "tanh"
     use_layer_norm: bool = False
     anneal_lr: bool = False
-    normalize_env: bool = True
+    normalize_obs: bool = True
+    normalize_reward: bool = True
     debug: bool = False
 
 
