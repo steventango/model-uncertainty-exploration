@@ -28,10 +28,24 @@ class GymnaxWrapper:
 
 
 class StateReconstructionWrapper(GymnaxWrapper):
-    """Base class for env-specific invert get_obs wrappers."""
+    """Base class for env-specific invert get_obs wrappers.
+
+    Subclasses define ``get_state`` (obs -> env state) and ``reward`` (the known
+    r(s, a, s')). Termination is shared: the env's own ``is_terminal`` evaluated
+    on the state reconstructed from the (predicted) next observation.
+    """
 
     def get_state(self, obs, last_action, time, next_obs=None):
         raise NotImplementedError
+
+    def reward(self, obs, action, next_obs, terminated):
+        raise NotImplementedError
+
+    def obs_to_reward_terminated(self, obs, action, next_obs):
+        terminated = self._env.is_terminal(
+            self.get_state(next_obs, action, 0), self._env.default_params
+        )
+        return self.reward(obs, action, next_obs, terminated), terminated
 
 
 class FlattenObservationWrapper(GymnaxWrapper):
