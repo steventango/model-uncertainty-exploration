@@ -81,6 +81,8 @@ class PPOConfig:
     normalize_obs: bool = True
     normalize_reward: bool = True
     onehot_init: bool = False
+    clip_obs: float | None = None
+    clip_reward: float | None = None
     debug: bool = False
 
 

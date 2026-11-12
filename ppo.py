@@ -313,10 +313,10 @@ def make_train_state(config, env, env_params, rngs):
     )
     optimizer = nnx.Optimizer(network, tx, wrt=nnx.Param)
     normalize_vec_obs = NormalizeVecObs(
-        jnp.zeros(env.observation_space(env_params).shape)
+        jnp.zeros(env.observation_space(env_params).shape), clip=config["CLIP_OBS"]
     )
     normalize_vec_reward = NormalizeVecReward(
-        jnp.zeros(config["NUM_ENVS"]), config["GAMMA"]
+        jnp.zeros(config["NUM_ENVS"]), config["GAMMA"], clip=config["CLIP_REWARD"]
     )
     train_state = (network, optimizer, normalize_vec_obs, normalize_vec_reward)
     return train_state
