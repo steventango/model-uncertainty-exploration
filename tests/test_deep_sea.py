@@ -1,4 +1,4 @@
-"""Tests for what deep_sea.py adds on top of gymnax's DeepSea: the action map
+"""Tests for what environments/bsuite/deep_sea.py adds on top of gymnax's DeepSea: the action map
 carried by params (one per seed), the one-hot observation over reachable cells,
 and the reward/termination oracle used by the model env."""
 
@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from deep_sea import KeyedDeepSea
+from environments.bsuite.deep_sea import KeyedDeepSea
 from wrappers import OneHotObservationWrapper
 
 SIZE = 5

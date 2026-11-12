@@ -18,8 +18,8 @@ from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from deep_sea import KeyedDeepSea
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
+from environments.bsuite.deep_sea import KeyedDeepSea
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions

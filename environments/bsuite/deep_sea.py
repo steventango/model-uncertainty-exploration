@@ -60,10 +60,12 @@ class KeyedDeepSea(DeepSea):
     def observation_space(self, params) -> spaces.Discrete:
         return spaces.Discrete(self.num_cells)
 
-    # Per-cell reward and termination, for the model env's oracle (see
-    # OneHotObservationWrapper.obs_to_reward_terminated).
     def reward_table(self, action, params) -> jax.Array:
-        """r(cell, action) for every cell, shape (num_cells,)."""
+        """r(cell, action) for every cell, shape (num_cells,).
+
+        With terminated_table, the model env's oracle (see
+        OneHotObservationWrapper.obs_to_reward_terminated).
+        """
         right_action = self.action_map(params)[self.cell_rows, self.cell_cols]
         right = right_action == jnp.reshape(action, ()).astype(jnp.int32)
         goal = jax.nn.one_hot(self.goal, self.num_cells)
