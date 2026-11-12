@@ -10,6 +10,7 @@ def head_out_features(head: str, obs_dim: int, predict_reward_terminated: bool) 
 
     deterministic: delta_obs (+ reward, terminated logits).
     gaussian: [loc | raw_scale] of the normalized delta_obs, per obs dim.
+    categorical: one logit per next state (one-hot obs of width obs_dim).
     """
     if head == "deterministic":
         return obs_dim + 2 if predict_reward_terminated else obs_dim
@@ -20,6 +21,8 @@ def head_out_features(head: str, obs_dim: int, predict_reward_terminated: bool) 
         )
     if head == "gaussian":
         return 2 * obs_dim
+    if head == "categorical":
+        return obs_dim
     raise ValueError(f"unknown head {head!r}")
 
 
