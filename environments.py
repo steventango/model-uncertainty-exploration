@@ -14,14 +14,15 @@ class PendulumWrapper(StateReconstructionWrapper):
             time=time,
         )
 
-    def get_reward(self, state, action, next_state, terminated):
+    def get_reward(self, state, action, next_state, terminated, env_params):
         from gymnax.environments.classic_control.pendulum import angle_normalize
 
-        max_torque = self._env.default_params.max_torque
-        u = jnp.clip(jnp.reshape(action, ()), -max_torque, max_torque)
-        return -(
+        max_torque = env_params.max_torque
+        u = jnp.clip(action, -max_torque, max_torque)
+        costs = (
             angle_normalize(state.theta) ** 2 + 0.1 * state.theta_dot**2 + 0.001 * u**2
         )
+        return -costs.squeeze()
 
 
 class MountainCarWrapper(StateReconstructionWrapper):
@@ -30,7 +31,7 @@ class MountainCarWrapper(StateReconstructionWrapper):
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
-    def get_reward(self, state, action, next_state, terminated):
+    def get_reward(self, state, action, next_state, terminated, env_params):
         return jnp.array(-1.0)
 
 
@@ -40,8 +41,8 @@ class MountainCarContinuousWrapper(StateReconstructionWrapper):
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
-    def get_reward(self, state, action, next_state, terminated):
-        return -0.1 * jnp.reshape(action, ()) ** 2 + 100 * terminated
+    def get_reward(self, state, action, next_state, terminated, env_params):
+        return (-0.1 * action**2 + 100 * terminated).squeeze()
 
 
 class CartPoleWrapper(StateReconstructionWrapper):
@@ -52,8 +53,8 @@ class CartPoleWrapper(StateReconstructionWrapper):
             x=obs[0], x_dot=obs[1], theta=obs[2], theta_dot=obs[3], time=time
         )
 
-    def get_reward(self, state, action, next_state, terminated):
-        return 1.0 - self._env.is_terminal(state, self._env.default_params)
+    def get_reward(self, state, action, next_state, terminated, env_params):
+        return 1.0 - self._env.is_terminal(state, env_params)
 
 
 class AcrobotWrapper(StateReconstructionWrapper):
@@ -68,7 +69,7 @@ class AcrobotWrapper(StateReconstructionWrapper):
             time=time,
         )
 
-    def get_reward(self, state, action, next_state, terminated):
+    def get_reward(self, state, action, next_state, terminated, env_params):
         return -1.0 * (1 - terminated)
 
 
@@ -91,7 +92,7 @@ class BraxStateReconstructionWrapper(StateReconstructionWrapper):
 class InvertedPendulumBraxWrapper(BraxStateReconstructionWrapper):
     """obs = [cart_pos, pole_angle, cart_vel, pole_ang_vel]"""
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         terminated = jnp.abs(next_obs[1]) > 0.2
         reward = jnp.ones(())
         return reward, terminated
@@ -100,7 +101,7 @@ class InvertedPendulumBraxWrapper(BraxStateReconstructionWrapper):
 class HalfCheetahBraxWrapper(BraxStateReconstructionWrapper):
     """obs = [q[1:], qd]; qd[0] = next_obs[8] ≈ x_velocity."""
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         forward_reward = next_obs[8]  # qd[0] ≈ rootx velocity
         ctrl_cost = 0.1 * jnp.sum(jnp.square(action))
         reward = forward_reward - ctrl_cost
@@ -111,7 +112,7 @@ class HalfCheetahBraxWrapper(BraxStateReconstructionWrapper):
 class SwimmerBraxWrapper(BraxStateReconstructionWrapper):
     """obs = [q[2:], qd]; qd[0] = next_obs[3] ≈ x_velocity."""
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         forward_reward = next_obs[3]  # qd[0] ≈ rootx velocity
         ctrl_cost = 1e-4 * jnp.sum(jnp.square(action))
         reward = forward_reward - ctrl_cost
@@ -125,7 +126,7 @@ class HopperBraxWrapper(BraxStateReconstructionWrapper):
     healthy_z_range=(0.7, inf), healthy_angle_range=(-0.2, 0.2).
     """
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         z = next_obs[0]  # q[rootz] ≈ Cartesian z height
         angle = next_obs[1]  # q[rooty] = trunk lean (brax uses this directly)
         is_healthy = (z > 0.7) & (angle > -0.2) & (angle < 0.2)
@@ -141,7 +142,7 @@ class Walker2dBraxWrapper(BraxStateReconstructionWrapper):
     healthy_z_range=(0.8, 2.0), healthy_angle_range=(-1.0, 1.0).
     """
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         z = next_obs[0]  # q[rootz]
         angle = next_obs[1]  # q[rooty]
         is_healthy = (z > 0.8) & (z < 2.0) & (angle > -1.0) & (angle < 1.0)
@@ -157,7 +158,7 @@ class AntBraxWrapper(BraxStateReconstructionWrapper):
     healthy_z_range=(0.2, 1.0). Ignores contact_cost (not in obs).
     """
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         z = next_obs[0]  # q[rootz]
         is_healthy = (z > 0.2) & (z < 1.0)
         terminated = ~is_healthy
@@ -169,7 +170,7 @@ class AntBraxWrapper(BraxStateReconstructionWrapper):
 class ReacherBraxWrapper(BraxStateReconstructionWrapper):
     """obs[-3:] = fingertip-to-target vector; reward = -norm(vec) - sum(action^2)."""
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         reward = -jnp.linalg.norm(next_obs[-3:]) - jnp.sum(jnp.square(action))
         terminated = jnp.bool_(False)
         return reward, terminated
@@ -181,7 +182,7 @@ class PusherBraxWrapper(BraxStateReconstructionWrapper):
     reward = -norm(obj-goal) - 0.1*sum(action^2) - 0.5*norm(finger-obj).
     """
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         fingertip = next_obs[14:17]
         obj = next_obs[17:20]
         goal = next_obs[20:23]
@@ -202,7 +203,7 @@ class InvertedDoublePendulumBraxWrapper(BraxStateReconstructionWrapper):
     Termination: y <= 1.  Maximum upright height is ~1.2m.
     """
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         sq1, sq2 = next_obs[1], next_obs[2]
         cq1, cq2 = next_obs[3], next_obs[4]
         sq1q2 = sq1 * cq2 + cq1 * sq2  # sin(q1+q2)

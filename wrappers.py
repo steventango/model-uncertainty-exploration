@@ -33,15 +33,15 @@ class StateReconstructionWrapper(GymnaxWrapper):
     def get_state(self, obs, last_action, time, next_obs=None):
         raise NotImplementedError
 
-    def get_reward(self, state, action, next_state, terminated):
+    def get_reward(self, state, action, next_state, terminated, env_params):
         raise NotImplementedError
 
-    def obs_to_reward_terminated(self, obs, action, next_obs):
-        params = self._env.default_params
+    def obs_to_reward_terminated(self, obs, action, next_obs, env_params):
         state = self.get_state(obs, action, 0)
         next_state = self.get_state(next_obs, action, 0)
-        terminated = self._env.is_terminal(next_state, params)
-        return self.get_reward(state, action, next_state, terminated), terminated
+        terminated = self._env.is_terminal(next_state, env_params)
+        reward = self.get_reward(state, action, next_state, terminated, env_params)
+        return reward, terminated
 
 
 class FlattenObservationWrapper(GymnaxWrapper):
