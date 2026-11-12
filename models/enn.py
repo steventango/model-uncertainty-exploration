@@ -89,7 +89,7 @@ def _loss_fn(model: ENNModel, batch, indices, rngs: nnx.Rngs):
     def masked_mean(loss):
         return jnp.where(keep.any(), jnp.mean(loss, where=keep), 0.0)
 
-    delta_next_state = batch.info["next_obs"] - batch.obs
+    delta_next_state = batch.info["final_observation"] - batch.obs
     delta_next_state = model.normalize_delta_obs(delta_next_state)
     delta_next_state_target = delta_next_state + noise[:, : model.obs_dim]
     delta_next_state_loss = (

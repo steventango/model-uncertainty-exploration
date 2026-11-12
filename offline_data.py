@@ -20,7 +20,7 @@ def load_offline_transitions(
     Returns:
         transitions: :class:`ppo.Transition` with leaves of shape ``(N, ...)``.
             Only ``obs``, ``action``, ``reward``, ``terminated``, ``truncated``,
-            and ``info["next_obs"]`` are meaningful; ``value``/``next_value``/
+            and ``info["final_observation"]`` are meaningful; ``value``/``next_value``/
             ``log_prob`` are zeros.
         action_space: :class:`gymnax.spaces.Box` — action space.
         observation_space: :class:`gymnax.spaces.Box` — observation space.
@@ -81,7 +81,7 @@ def load_offline_transitions(
         reward=reward,
         log_prob=zeros,
         obs=obs,
-        info={"next_obs": next_obs},
+        info={"final_observation": next_obs},
         raw_obs=obs,
         raw_action=action,
         raw_reward=reward,
