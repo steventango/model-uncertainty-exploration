@@ -12,11 +12,13 @@ class ENNConfig:
 
     name: ClassVar[str] = "enn"
     lr: float | tuple[float, ...] = 1e-3
-    hidden_dim: int | tuple[int, ...] = 64
+    hidden_dim: int | tuple[int, ...] = 200
     learnable_hidden_dim: int | tuple[int, ...] = 15
     prior_hidden_dim: int | tuple[int, ...] = 5
     index_dim: int | tuple[int, ...] = 8
-    activation: str = "tanh"
+    activation: str = "silu"
+    num_layers: int | tuple[int, ...] = 4
+    l2: float | tuple[float, ...] = 0.1
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     head: Literal["deterministic", "gaussian"] = "deterministic"
