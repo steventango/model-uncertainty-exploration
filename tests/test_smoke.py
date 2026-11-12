@@ -109,6 +109,15 @@ CASES = {
         ppo=TINY_PPO,
         model=TINY_ENN,
     ),
+    "random-reset-acrobot": Args(
+        cpu=True,
+        env="Acrobot-v1",
+        max_steps=100,
+        steps_per_rollout=50,
+        reset_source="random",
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
     "random-reset-deepsea": Args(
         cpu=True,
         env="DeepSea-6",
