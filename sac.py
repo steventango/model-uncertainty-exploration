@@ -50,6 +50,7 @@ class Actor(nnx.Module):
         low: tuple[float, ...],
         high: tuple[float, ...],
         first_kernel_init=None,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -62,7 +63,7 @@ class Actor(nnx.Module):
             hidden_dim,
             out_features,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
             first_kernel_init=first_kernel_init,
         )
@@ -96,6 +97,7 @@ class TwinQ(nnx.Module):
         hidden_dim: int,
         activation: str,
         first_kernel_init=None,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -104,7 +106,7 @@ class TwinQ(nnx.Module):
             hidden_dim,
             out_features,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
             first_kernel_init=first_kernel_init,
         )
@@ -113,7 +115,7 @@ class TwinQ(nnx.Module):
             hidden_dim,
             out_features,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
             first_kernel_init=first_kernel_init,
         )
@@ -144,6 +146,7 @@ class SAC(nnx.Module):
         high: tuple[float, ...],
         init_temperature: float,
         first_kernel_init=None,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -157,10 +160,13 @@ class SAC(nnx.Module):
             low,
             high,
             first_kernel_init,
+            num_layers,
             rngs=rngs,
         )
         q_in, q_out = (obs_dim, action_dim) if discrete else (obs_dim + action_dim, 1)
-        self.q = TwinQ(q_in, q_out, hidden_dim, activation, first_kernel_init, rngs=rngs)
+        self.q = TwinQ(
+            q_in, q_out, hidden_dim, activation, first_kernel_init, num_layers, rngs=rngs
+        )
         self.target_q = nnx.clone(self.q)
         self.temperature = Temperature(init_temperature)
 
@@ -430,6 +436,7 @@ def make_train_state(config, env, env_params, rngs):
         high,
         config["INIT_TEMPERATURE"],
         onehot_rows_init(obs_shape[0], 1) if config["ONEHOT_INIT"] else None,
+        config["NUM_LAYERS"],
         rngs=rngs,
     )
     optimizer = SACOptimizer(sac, config["LR"])

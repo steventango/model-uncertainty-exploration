@@ -74,6 +74,7 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     hidden_dim: int = 64
+    num_layers: int = 2
     activation: str = "tanh"
     use_layer_norm: bool = False
     anneal_lr: bool = False
@@ -100,6 +101,7 @@ class SACConfig:
     init_temperature: float = 1.0
     autotune: bool = True
     target_entropy_scale: float = 0.98
+    num_layers: int = 2
     real_ratio: float = 0.0
     onehot_init: bool = False
     hidden_dim: int = 256

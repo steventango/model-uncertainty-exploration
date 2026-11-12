@@ -300,6 +300,7 @@ def make_train_state(config, env, env_params, rngs):
         discrete=discrete,
         use_layer_norm=config["USE_LAYER_NORM"],
         first_kernel_init=onehot_rows_init(obs_dim, 1) if config["ONEHOT_INIT"] else None,
+        num_layers=config["NUM_LAYERS"],
         rngs=rngs,
     )
 
