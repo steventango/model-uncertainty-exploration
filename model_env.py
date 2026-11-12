@@ -61,6 +61,8 @@ class ModelEnvParams:
     init_obs: jnp.ndarray | None = None  # per-seed replay buffer obs, (N, obs_dim)
     init_weights: jnp.ndarray | None = None  # per-seed reset sampling weights, (N,)
     z: jnp.ndarray | None = None  # per-seed epistemic indices shared by every episode
+    real: tuple | None = None  # per-seed real (obs, action, next_obs, terminated) buffer
+    real_count: jnp.ndarray | None = None  # per-seed number of valid real rows
     per_seed_env_params: bool = struct.field(pytree_node=False, default=False)
 
     def seed_vmap_axes(self) -> "ModelEnvParams":
@@ -76,6 +78,8 @@ class ModelEnvParams:
             init_obs=0,
             init_weights=0,
             z=0,
+            real=0,
+            real_count=0,
         )
 
     def config_vmap_axes(self) -> "ModelEnvParams":
@@ -90,6 +94,8 @@ class ModelEnvParams:
             init_obs=None,
             init_weights=None,
             z=None,
+            real=None,
+            real_count=None,
         )
 
 

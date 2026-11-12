@@ -100,6 +100,7 @@ class SACConfig:
     init_temperature: float = 1.0
     autotune: bool = True
     target_entropy_scale: float = 0.98
+    real_ratio: float = 0.0
     onehot_init: bool = False
     hidden_dim: int = 256
     activation: str = "relu"

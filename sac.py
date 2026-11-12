@@ -289,7 +289,25 @@ def make_train(env, config):
         action_space = env.action_space(env_params)
         _update = make_update(config, target_entropy(config, action_space))
 
-        rng, _rng, key_z = jax.random.split(rng, 3)
+        rng, _rng, key_z, key_real = jax.random.split(rng, 4)
+        n_real = round(config["BATCH_SIZE"] * config["REAL_RATIO"])
+        real = None
+        if n_real:
+            z_real = env_params.model.sample_index(key_real, env.samples)
+            r_obs, r_action, r_next_obs, r_terminated = env_params.real
+            r_action = r_action.reshape(r_action.shape[:1] + replay.action.shape[1:])
+            r_reward = jax.lax.map(
+                lambda t: env.reward(z_real, *t, env_params),
+                (r_obs, r_action, r_next_obs),
+                batch_size=1024,
+            )
+            real = Batch(
+                r_obs,
+                r_action.astype(replay.action.dtype),
+                r_reward,
+                r_terminated.astype(jnp.float32),
+                r_next_obs,
+            )
         obsv, env_state = env.reset(jax.random.split(_rng, num_envs), env_params)
         buffer = Batch(
             replay.obs[...],
@@ -336,11 +354,20 @@ def make_train(env, config):
 
                 def _gradient_step(carry, key):
                     sac, optimizer = carry
-                    key_sample, key_update = jax.random.split(key)
+                    key_sample, key_real_sample, key_update = jax.random.split(key, 3)
                     index = jax.random.randint(
-                        key_sample, (config["BATCH_SIZE"],), 0, count
+                        key_sample, (config["BATCH_SIZE"] - n_real,), 0, count
                     )
                     batch = jax.tree.map(lambda x: x[index], buffer)
+                    if n_real:
+                        real_index = jax.random.randint(
+                            key_real_sample, (n_real,), 0, env_params.real_count
+                        )
+                        batch = jax.tree.map(
+                            lambda b, r: jnp.concatenate([b, r[real_index].astype(b.dtype)]),
+                            batch,
+                            real,
+                        )
                     losses = _update(sac, optimizer, batch, key_update)
                     return (sac, optimizer), losses
 

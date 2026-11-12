@@ -289,6 +289,11 @@ class ModelBasedAgent:
             params = params.replace(
                 init_obs=experience.buffer.obs, init_weights=weights
             )
+        if self.solver == "sac" and self.ppo_config["REAL_RATIO"] > 0:
+            buffer = experience.buffer
+            real = (buffer.obs, buffer.action, buffer.info["next_obs"], buffer.terminated)
+            count = jnp.full(buffer.obs.shape[0], experience.size)
+            params = params.replace(real=real, real_count=count)
         if self.z_per_plan:
             shape = (self.model_env.samples, agent_state.models.index_dim)
             z = jax.vmap(lambda k: jax.random.normal(jax.random.fold_in(k, 1), shape))(train_seed)
