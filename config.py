@@ -27,6 +27,7 @@ class ENNConfig:
     l2: float | tuple[float, ...] = 0.1
     weight_decay: float | None = None
     label_smoothing: float = 0.0
+    coupled_l2: bool = False
     update_steps: int | tuple[int, ...] = 10000
     use_layer_norm: bool = False
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"

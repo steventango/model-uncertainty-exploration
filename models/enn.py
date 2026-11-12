@@ -385,9 +385,17 @@ def _make_batched_model(
             label_smoothing=model_config.get("LABEL_SMOOTHING", 0.0),
             rngs=rngs,
         )
-        tx = optax.inject_hyperparams(
-            lambda l2: optax.adamw(model_config["LR"], weight_decay=l2)
-        )(l2=0.0)
+        if model_config.get("COUPLED_L2", False):
+            tx = optax.inject_hyperparams(
+                lambda l2: optax.chain(
+                    optax.add_decayed_weights(l2),
+                    optax.adamw(model_config["LR"], weight_decay=1e-4),
+                )
+            )(l2=0.0)
+        else:
+            tx = optax.inject_hyperparams(
+                lambda l2: optax.adamw(model_config["LR"], weight_decay=l2)
+            )(l2=0.0)
         not_prior_params = nnx.All(nnx.Param, nnx.Not(nnx.PathContains("prior")))
         optimizer = nnx.Optimizer(model, tx, wrt=not_prior_params)
         metrics = nnx.MultiMetric(
