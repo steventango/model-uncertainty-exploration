@@ -91,6 +91,23 @@ CASES = {
         rnd=RNDConfig(update_steps=10),
         model=TINY_ENN,
     ),
+    "random-reset-pendulum": Args(
+        cpu=True,
+        env="Pendulum-v1",
+        max_steps=400,
+        reset_source="random",
+        rollout_length=20,
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
+    "random-reset-deepsea": Args(
+        cpu=True,
+        env="DeepSea-6",
+        max_steps=60,
+        reset_source="random",
+        ppo=TINY_PPO,
+        model=TINY_ENN,
+    ),
     "model-free-cartpole": Args(
         cpu=True,
         env="CartPole-v1",
