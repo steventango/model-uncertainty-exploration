@@ -63,6 +63,8 @@ class PPOConfig:
     anneal_lr: bool = False
     normalize_obs: bool = True
     normalize_reward: bool = True
+    clip_obs: float | None = None
+    clip_reward: float | None = None
     debug: bool = False
 
 
