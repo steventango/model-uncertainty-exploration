@@ -95,6 +95,7 @@ class SACConfig:
     gamma: float = 0.99
     tau: float = 0.005
     init_temperature: float = 1.0
+    autotune: bool = True
     target_entropy_scale: float = 0.98
     hidden_dim: int = 256
     activation: str = "relu"

@@ -231,7 +231,8 @@ def make_update(config, entropy_target):
         temperature_loss, grads = nnx.value_and_grad(temperature_loss_fn)(
             sac.temperature
         )
-        optimizer.temperature.update(sac.temperature, grads)
+        if config["AUTOTUNE"]:
+            optimizer.temperature.update(sac.temperature, grads)
 
         target_params = optax.incremental_update(
             nnx.state(sac.q, nnx.Param),
