@@ -333,6 +333,7 @@ def main(args: Args):
             **rollout_config,
             "NUM_ENVS": 100,
             "NUM_STEPS": env_params.max_steps_in_episode,
+            "GREEDY": args.eval_greedy,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
 
