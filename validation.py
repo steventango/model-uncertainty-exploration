@@ -25,7 +25,7 @@ def generate_brax_validation_data(env, env_params, num_val=1000):
         obs, state = env.reset(k_reset, env_params)
         action = env.action_space(env_params).sample(k_act)
         _, _, reward, terminated, _, info = env.step(k_step, state, action, env_params)
-        delta_obs = info["next_obs"] - obs
+        delta_obs = info["final_observation"] - obs
         return obs, action, delta_obs, reward, terminated.astype(jnp.float32)
 
     val_obs, val_act, val_delta_obs, val_reward, val_terminated = jax.vmap(
@@ -150,7 +150,7 @@ def evaluate_validation(
             jax.nn.sigmoid(mean_y[..., -1]) if model.predict_reward_terminated else None
         )
 
-        true_delta_obs = batch.info["next_obs"] - batch.obs
+        true_delta_obs = batch.info["final_observation"] - batch.obs
         true_reward = batch.reward
         true_terminated = batch.terminated.astype(jnp.float32)
 

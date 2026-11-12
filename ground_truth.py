@@ -14,7 +14,7 @@ def true_transition(env, params, env_name, s1, s2, action):
     _, _, reward, terminated, _, info = env.step(
         jax.random.key(0), state, action, params
     )
-    return info["next_obs"] - obs, reward, terminated.astype(jnp.float32)
+    return info["final_observation"] - obs, reward, terminated.astype(jnp.float32)
 
 
 def true_delta_obs(env, params, env_name, s1, s2, action):

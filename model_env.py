@@ -174,7 +174,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         )
         obs = jax.lax.select(done, obs_re, obs_st)
 
-        info = {**info, "next_obs": obs_st}
+        info = {**info, "final_observation": obs_st}
 
         return obs, state, reward, terminated, truncated, info
 

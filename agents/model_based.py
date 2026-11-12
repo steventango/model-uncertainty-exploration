@@ -213,7 +213,7 @@ class ModelBasedAgent:
             rnd_losses = self._train_rnd(
                 agent_state.rnd,
                 agent_state.rnd_optimizer,
-                experience.buffer.info["next_obs"],
+                experience.buffer.info["final_observation"],
                 jnp.asarray(experience.size),
                 rnd_key,
             )

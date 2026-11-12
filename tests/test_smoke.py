@@ -192,7 +192,7 @@ def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX
         reward=jnp.asarray(next_obs[:, 0] - obs[:, 0]),
         log_prob=zeros,
         obs=jnp.asarray(obs),
-        info={"next_obs": jnp.asarray(next_obs)},
+        info={"final_observation": jnp.asarray(next_obs)},
         raw_obs=jnp.asarray(obs),
         raw_action=jnp.asarray(action),
         raw_reward=jnp.asarray(next_obs[:, 0] - obs[:, 0]),

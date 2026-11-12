@@ -112,7 +112,7 @@ class WorldModel(nnx.Module):
         mask = jnp.arange(n_samples) < pointer
         mask2d = mask[:, None]
 
-        delta_obs = dataset.info["next_obs"] - dataset.obs
+        delta_obs = dataset.info["final_observation"] - dataset.obs
 
         self.input_mean[: self.obs_dim] = jnp.mean(dataset.obs, axis=0, where=mask2d)
         self.input_std[: self.obs_dim] = jnp.maximum(
