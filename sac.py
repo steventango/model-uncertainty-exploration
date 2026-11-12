@@ -273,19 +273,34 @@ def make_train(env, config):
         action_space = env.action_space(env_params)
         _update = make_update(config, target_entropy(config, action_space))
 
-        rng, _rng = jax.random.split(rng)
+        rng, _rng, key_real = jax.random.split(rng, 3)
         obsv, env_state = env.reset(jax.random.split(_rng, num_envs), env_params)
         action_shape = () if sac.discrete else action_space.shape
+        action_dtype = jnp.int32 if sac.discrete else jnp.float32
         buffer = Batch(
             obs=jnp.zeros((buffer_size,) + obsv.shape[1:], obsv.dtype),
-            action=jnp.zeros(
-                (buffer_size,) + action_shape,
-                jnp.int32 if sac.discrete else jnp.float32,
-            ),
+            action=jnp.zeros((buffer_size,) + action_shape, action_dtype),
             reward=jnp.zeros(buffer_size),
             terminated=jnp.zeros(buffer_size),
             next_obs=jnp.zeros((buffer_size,) + obsv.shape[1:], obsv.dtype),
         )
+        n_real = round(config["BATCH_SIZE"] * config["REAL_RATIO"])
+        if n_real:
+            z_real = env_params.model.sample_index(key_real, env.samples)
+            r_obs, r_action, r_next_obs, r_terminated = env_params.real
+            r_action = r_action.reshape(r_action.shape[:1] + action_shape)
+            r_reward = jax.lax.map(
+                lambda t: env.reward(z_real, *t, env_params),
+                (r_obs, r_action, r_next_obs),
+                batch_size=1024,
+            )
+            real = Batch(
+                r_obs,
+                r_action.astype(action_dtype),
+                r_reward,
+                r_terminated.astype(jnp.float32),
+                r_next_obs,
+            )
 
         def make_iter(learn):
             def _iter(carry, unused):
@@ -314,11 +329,22 @@ def make_train(env, config):
 
                 def _gradient_step(carry, key):
                     sac, optimizer = carry
-                    key_sample, key_update = jax.random.split(key)
+                    key_sample, key_real_sample, key_update = jax.random.split(key, 3)
                     index = jax.random.randint(
-                        key_sample, (config["BATCH_SIZE"],), 0, count
+                        key_sample, (config["BATCH_SIZE"] - n_real,), 0, count
                     )
                     batch = jax.tree.map(lambda x: x[index], buffer)
+                    if n_real:
+                        real_index = jax.random.randint(
+                            key_real_sample, (n_real,), 0, env_params.real_count
+                        )
+                        batch = jax.tree.map(
+                            lambda b, r: jnp.concatenate(
+                                [b, r[real_index].astype(b.dtype)]
+                            ),
+                            batch,
+                            real,
+                        )
                     losses = _update(sac, optimizer, batch, key_update)
                     return (sac, optimizer), losses
 

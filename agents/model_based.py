@@ -254,6 +254,16 @@ class ModelBasedAgent:
             params = params.replace(
                 init_obs=experience.buffer.obs, init_weights=weights
             )
+        if self.solver == "sac" and self.ppo_config["REAL_RATIO"] > 0:
+            buffer = experience.buffer
+            real = (
+                buffer.obs,
+                buffer.action,
+                buffer.info["next_obs"],
+                buffer.terminated,
+            )
+            count = jnp.full(buffer.obs.shape[0], experience.size)
+            params = params.replace(real=real, real_count=count)
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
         jax.block_until_ready(out)
