@@ -39,6 +39,7 @@ class Actor(nnx.Module):
         discrete: bool,
         low: tuple[float, ...],
         high: tuple[float, ...],
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -51,7 +52,7 @@ class Actor(nnx.Module):
             hidden_dim,
             out_features,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
         )
 
@@ -83,6 +84,7 @@ class TwinQ(nnx.Module):
         out_features: int,
         hidden_dim: int,
         activation: str,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -91,7 +93,7 @@ class TwinQ(nnx.Module):
             hidden_dim,
             out_features,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
         )
         self.q2 = MLP(
@@ -99,7 +101,7 @@ class TwinQ(nnx.Module):
             hidden_dim,
             out_features,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
         )
 
@@ -128,6 +130,7 @@ class SAC(nnx.Module):
         low: tuple[float, ...],
         high: tuple[float, ...],
         init_temperature: float,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -140,10 +143,11 @@ class SAC(nnx.Module):
             discrete,
             low,
             high,
+            num_layers,
             rngs=rngs,
         )
         q_in, q_out = (obs_dim, action_dim) if discrete else (obs_dim + action_dim, 1)
-        self.q = TwinQ(q_in, q_out, hidden_dim, activation, rngs=rngs)
+        self.q = TwinQ(q_in, q_out, hidden_dim, activation, num_layers, rngs=rngs)
         self.target_q = nnx.clone(self.q)
         self.temperature = Temperature(init_temperature)
 
@@ -378,6 +382,7 @@ def make_train_state(config, env, env_params, rngs):
         low,
         high,
         config["INIT_TEMPERATURE"],
+        config["NUM_LAYERS"],
         rngs=rngs,
     )
     optimizer = SACOptimizer(sac, config["LR"])

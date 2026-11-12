@@ -81,6 +81,7 @@ class SACConfig:
     tau: float = 0.005
     init_temperature: float = 1.0
     target_entropy_scale: float = 0.98
+    num_layers: int = 2
     hidden_dim: int = 256
     activation: str = "relu"
 
