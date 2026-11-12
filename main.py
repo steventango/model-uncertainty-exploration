@@ -18,14 +18,20 @@ from agents import Experience, ModelBasedAgent, ModelFreeAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
-from deep_sea import DeepSeaOneHot
+from deep_sea import KeyedDeepSea
 from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
 from ppo import make_rollout
-from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
+from wrappers import (
+    BraxGymnaxWrapper,
+    ClipAction,
+    LogWrapper,
+    OneHotObservationWrapper,
+    VecEnv,
+)
 
 
 def _wrap_env(env, discrete):
@@ -239,7 +245,9 @@ def main(args: Args):
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
             env_params = base_env.default_params
         elif args.env.startswith("DeepSea-"):
-            base_env = DeepSeaOneHot(int(args.env.split("-")[1]))
+            base_env = OneHotObservationWrapper(
+                KeyedDeepSea(int(args.env.split("-")[1]))
+            )
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)

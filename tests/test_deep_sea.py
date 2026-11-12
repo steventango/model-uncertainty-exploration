@@ -6,7 +6,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from deep_sea import DeepSeaOneHot
+from deep_sea import KeyedDeepSea
+from wrappers import OneHotObservationWrapper
 
 SIZE = 5
 SEEDS = jnp.arange(4)
@@ -14,7 +15,7 @@ SEEDS = jnp.arange(4)
 
 @pytest.fixture(scope="module")
 def env():
-    return DeepSeaOneHot(SIZE)
+    return OneHotObservationWrapper(KeyedDeepSea(SIZE))
 
 
 @pytest.fixture(scope="module")
@@ -155,8 +156,18 @@ def test_oracle_is_linear_in_a_soft_observation(env, params):
     assert jnp.allclose(r_soft, 0.3 * r_goal + 0.7 * r_else, atol=1e-6)
 
 
-def test_observation_space(env):
+def test_inner_observation_is_the_cell_index(env, params):
+    inner = env._env
+    p = jax.tree.map(lambda x: x[0], params)
+    key = jax.random.key(0)
+    obs, state = inner.reset(key, p)
+    assert obs.dtype == jnp.int32 and obs == 0
+    assert inner.observation_space(p).n == env.num_cells
+    obs, state, *_ = inner.step(key, state, inner.action_map(p)[0, 0], p)
+    assert obs in (1, 2)
+
+
+def test_one_hot_wrapper_space(env):
     space = env.observation_space(env.default_params)
-    sample = space.sample(jax.random.key(0))
-    assert sample.shape == (env.num_cells,) and space.contains(sample)
-    assert not space.contains(jnp.ones(env.num_cells))
+    assert space.shape == (env.num_cells,)
+    assert jnp.all(space.low == 0) and jnp.all(space.high == 1)
