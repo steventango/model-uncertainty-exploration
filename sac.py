@@ -1,3 +1,4 @@
+import functools
 from typing import NamedTuple
 
 import distrax
@@ -176,11 +177,16 @@ class SAC(nnx.Module):
         return pi, jnp.minimum(q1, q2)
 
 
+@functools.lru_cache
+def _adam(lr):
+    return optax.adam(lr)
+
+
 class SACOptimizer(nnx.Module):
     def __init__(self, sac: SAC, lr: float):
-        self.actor = nnx.Optimizer(sac.actor, optax.adam(lr), wrt=nnx.Param)
-        self.q = nnx.Optimizer(sac.q, optax.adam(lr), wrt=nnx.Param)
-        self.temperature = nnx.Optimizer(sac.temperature, optax.adam(lr), wrt=nnx.Param)
+        self.actor = nnx.Optimizer(sac.actor, _adam(lr), wrt=nnx.Param)
+        self.q = nnx.Optimizer(sac.q, _adam(lr), wrt=nnx.Param)
+        self.temperature = nnx.Optimizer(sac.temperature, _adam(lr), wrt=nnx.Param)
 
 
 def q_values(q, obs, action, discrete):
