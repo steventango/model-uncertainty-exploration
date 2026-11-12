@@ -195,16 +195,19 @@ def _make_batched_model(
     @nnx.vmap
     def build(key):
         rngs = nnx.Rngs(key)
+        epinet = model_config["EPINET"]
         enn = ENN(
             in_features,
             model_config["HIDDEN_DIM"],
-            model_config["LEARNABLE_HIDDEN_DIM"],
-            model_config["PRIOR_HIDDEN_DIM"],
+            epinet["learnable_hidden_dim"],
+            epinet["prior_hidden_dim"],
             out_features,
-            model_config["INDEX_DIM"],
+            epinet["index_dim"],
             use_layer_norm=model_config.get("USE_LAYER_NORM", False),
             num_layers=model_config["NUM_LAYERS"],
             activation=model_config["ACTIVATION"],
+            epinet_num_layers=epinet["num_layers"],
+            epinet_activation=epinet["activation"],
             rngs=rngs,
         )
         model = ENNModel(

@@ -159,7 +159,13 @@ class ActorCritic(nnx.Module):
 
 class ProjectedMLP(nnx.Module):
     def __init__(
-        self, in_features: int, hidden_features: int, out_features: int, rngs: nnx.Rngs
+        self,
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        rngs: nnx.Rngs,
+        num_layers: int = 1,
+        activation: str = "tanh",
     ):
         self.mlp = MLP(
             in_features=in_features,
@@ -168,6 +174,8 @@ class ProjectedMLP(nnx.Module):
             rngs=rngs,
             out_kernel_init=nnx.initializers.zeros,
             use_layer_norm=False,
+            num_layers=num_layers,
+            activation=activation,
         )
 
     def __call__(self, x, z, rngs: nnx.Rngs | None = None):
@@ -185,6 +193,8 @@ class MLPEnsemble(nnx.Module):
         hidden_features: int,
         out_features: int,
         rngs: nnx.Rngs,
+        num_layers: int = 1,
+        activation: str = "tanh",
     ):
         keys = jax.random.split(rngs.params(), num_models)
 
@@ -195,6 +205,8 @@ class MLPEnsemble(nnx.Module):
                 hidden_features,
                 out_features,
                 use_layer_norm=False,
+                num_layers=num_layers,
+                activation=activation,
                 rngs=nnx.Rngs(params=key),
             )
 
@@ -222,6 +234,8 @@ class EpiNet(nnx.Module):
         out_features: int,
         index_dim: int,
         *,
+        num_layers: int = 1,
+        activation: str = "tanh",
         rngs: nnx.Rngs,
     ):
         self.learnable = ProjectedMLP(
@@ -229,6 +243,8 @@ class EpiNet(nnx.Module):
             hidden_features=learnable_hidden_features,
             out_features=out_features * index_dim,
             rngs=rngs,
+            num_layers=num_layers,
+            activation=activation,
         )
         self.prior = MLPEnsemble(
             num_models=index_dim,
@@ -236,6 +252,8 @@ class EpiNet(nnx.Module):
             hidden_features=prior_hidden_features,
             out_features=out_features,
             rngs=rngs,
+            num_layers=num_layers,
+            activation=activation,
         )
         self.prior_scale = 1.0
 
@@ -258,6 +276,8 @@ class ENN(nnx.Module):
         use_layer_norm: bool = False,
         num_layers: int = 1,
         activation: str = "tanh",
+        epinet_num_layers: int = 1,
+        epinet_activation: str = "tanh",
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
@@ -276,6 +296,8 @@ class ENN(nnx.Module):
             base_features=hidden_features,
             out_features=out_features,
             index_dim=index_dim,
+            num_layers=epinet_num_layers,
+            activation=epinet_activation,
             rngs=rngs,
         )
         self.index_dim = index_dim

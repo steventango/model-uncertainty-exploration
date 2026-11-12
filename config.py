@@ -7,15 +7,21 @@ import tyro
 
 
 @dataclass(frozen=True)
+class EpinetConfig:
+    learnable_hidden_dim: int | tuple[int, ...] = 15
+    prior_hidden_dim: int | tuple[int, ...] = 5
+    index_dim: int | tuple[int, ...] = 8
+    num_layers: int | tuple[int, ...] = 2
+    activation: str = "silu"
+
+
+@dataclass(frozen=True)
 class ENNConfig:
     """Epistemic Neural Network"""
 
     name: ClassVar[str] = "enn"
     lr: float | tuple[float, ...] = 1e-3
     hidden_dim: int | tuple[int, ...] = 200
-    learnable_hidden_dim: int | tuple[int, ...] = 15
-    prior_hidden_dim: int | tuple[int, ...] = 5
-    index_dim: int | tuple[int, ...] = 8
     activation: str = "silu"
     num_layers: int | tuple[int, ...] = 4
     l2: float | tuple[float, ...] = 0.1
@@ -23,6 +29,7 @@ class ENNConfig:
     use_layer_norm: bool = False
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
     bootstrap_noise: float = 1.0
+    epinet: EpinetConfig = field(default_factory=EpinetConfig)
 
 
 @dataclass(frozen=True)
