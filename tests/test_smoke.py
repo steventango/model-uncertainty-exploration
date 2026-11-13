@@ -96,6 +96,14 @@ CASES = {
         steps_per_rollout=50,
         ppo=TINY_PPO,
     ),
+    "model-free-deepsea": Args(
+        env="DeepSea-5",
+        model_free=True,
+        num_seeds=2,
+        max_steps=50,
+        steps_per_rollout=10,
+        ppo=TINY_PPO,
+    ),
     "brax-inverted-pendulum": Args(
         env="inverted_pendulum",
         max_steps=100,
@@ -200,6 +208,12 @@ def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX
     action_space = gymnasium.spaces.Box(0.4, 1.3, (act_dim,), np.float32)
     observation_space = gymnasium.spaces.Box(0.0, 2.0, (obs_dim,), np.float32)
     return transitions, action_space, observation_space, ep_len
+
+
+def test_model_based_rejects_discrete_observations(tmp_path):
+    args = Args(env="DeepSea-5", ppo=TINY_PPO, model=TINY_ENN, log_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="Discrete observations"):
+        main.main(args)
 
 
 def test_offline(monkeypatch, tmp_path):

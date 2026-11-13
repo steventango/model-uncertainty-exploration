@@ -24,12 +24,11 @@ from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
-from ppo import make_rollout
+from ppo import make_rollout, normalizes_obs
 from wrappers import (
     BraxGymnaxWrapper,
     ClipAction,
     LogWrapper,
-    OneHotObservationWrapper,
     VecEnv,
 )
 
@@ -62,7 +61,7 @@ def run_online(
     )
     agent_state = agent.init(init_key)
 
-    if agent.on_policy and rollout_config["NORMALIZE_ENV"]:
+    if agent.on_policy and normalizes_obs(rollout_config, env, env_params):
 
         @nnx.jit
         @nnx.vmap
@@ -245,9 +244,7 @@ def main(args: Args):
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
             env_params = base_env.default_params
         elif args.env.startswith("DeepSea-"):
-            base_env = OneHotObservationWrapper(
-                KeyedDeepSea(int(args.env.split("-")[1]))
-            )
+            base_env = KeyedDeepSea(int(args.env.split("-")[1]))
             env_params = base_env.default_params
         else:
             base_env, env_params = gymnax.make(args.env)
@@ -271,7 +268,14 @@ def main(args: Args):
         discrete = isinstance(action_space, spaces.Discrete)
         action_dim = action_space.n if discrete else action_space.shape[0]
         act_dim = action_space.n if discrete else None
-        discrete_obs = getattr(base_env, "discrete_obs", False)
+        obs_space = base_env.observation_space(env_params)
+        discrete_obs = isinstance(obs_space, spaces.Discrete)
+        if discrete_obs and not args.model_free:
+            raise ValueError(
+                f"{args.env} has Discrete observations; model-based agents need "
+                "a model and ModelEnvironment that handle them (categorical head). "
+                "Use --model-free."
+            )
         if args.env.startswith("DeepSea-"):
             seed_env_params = jax.vmap(base_env.params_for_seed)(seeds)
             env_params_axis = 0
@@ -288,7 +292,7 @@ def main(args: Args):
                 base_env, env_params, args.env
             )
 
-        obs_dim = env.observation_space(env_params).shape[0]
+        obs_dim = obs_space.n if discrete_obs else obs_space.shape[0]
         in_features = obs_dim + action_dim
         out_features = obs_dim + 2 if predict_reward_terminated else obs_dim
 

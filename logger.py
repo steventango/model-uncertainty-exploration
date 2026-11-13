@@ -47,7 +47,7 @@ class ExperimentLogger:
         rewards = np.asarray(batch.reward)
 
         if self._discrete_obs:
-            states = obs.argmax(axis=1)
+            states = obs if obs.ndim == 1 else obs.argmax(axis=1)
             self._log_time_series("dataset/state", states, start_step)
             self._visited.update(states.tolist())
             self._writer.add_scalar(

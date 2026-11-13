@@ -61,11 +61,7 @@ class KeyedDeepSea(DeepSea):
         return spaces.Discrete(self.num_cells)
 
     def reward_table(self, action, params) -> jax.Array:
-        """r(cell, action) for every cell, shape (num_cells,).
-
-        With terminated_table, the model env's oracle (see
-        OneHotObservationWrapper.obs_to_reward_terminated).
-        """
+        """r(cell, action) for every cell, shape (num_cells,)."""
         right_action = self.action_map(params)[self.cell_rows, self.cell_cols]
         right = right_action == jnp.reshape(action, ()).astype(jnp.int32)
         goal = jax.nn.one_hot(self.goal, self.num_cells)
@@ -74,3 +70,13 @@ class KeyedDeepSea(DeepSea):
     def terminated_table(self) -> jax.Array:
         """Whether each cell is on the bottom row, shape (num_cells,)."""
         return jnp.arange(self.num_cells) >= self.num_cells - self.size
+
+    def obs_to_reward_terminated(self, obs, action, next_obs, params):
+        """Oracle reward and termination for the model env.
+
+        Both are read from the current cell: by VBE's convention the observation
+        after the bottom row is the reset cell 0, so ``next_obs`` carries no
+        termination information.
+        """
+        reward = self.reward_table(action, params)[obs]
+        return reward.astype(jnp.float32), self.terminated_table()[obs]

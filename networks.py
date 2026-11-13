@@ -135,9 +135,12 @@ class ActorCritic(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        obs_classes: int | None = None,
         *,
         rngs: nnx.Rngs,
     ):
+        # Discrete observations arrive as class indices and are one-hot encoded.
+        self.obs_classes = obs_classes
         self.actor = Actor(
             state_dim,
             action_dim,
@@ -152,6 +155,8 @@ class ActorCritic(nnx.Module):
         )
 
     def __call__(self, x):
+        if self.obs_classes is not None:
+            x = jax.nn.one_hot(x, self.obs_classes)
         pi = self.actor(x)
         critic = self.critic(x)
         return pi, critic
