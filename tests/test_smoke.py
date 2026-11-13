@@ -30,12 +30,15 @@ TINY_PPO = PPOConfig(
 TINY_ENN = ENNConfig(update_steps=10, hidden_dim=16)
 TINY_BLR = BLRConfig(num_samples=4)
 
+# Cases run on the GPU (``-m gpu``); the rest run on CPU, selected by the caller
+# through ``JAX_PLATFORMS`` (see conftest.py).
+GPU_CASES = {"pendulum-every-tenth"}
+
 CASES = {
     "enn-pendulum": Args(
-        cpu=True, env="Pendulum-v1", max_steps=400, ppo=TINY_PPO, model=TINY_ENN
+        env="Pendulum-v1", max_steps=400, ppo=TINY_PPO, model=TINY_ENN
     ),
     "blr-cartpole-2seeds": Args(
-        cpu=True,
         env="CartPole-v1",
         num_seeds=2,
         max_steps=100,
@@ -47,7 +50,6 @@ CASES = {
         model=TINY_BLR,
     ),
     "enn-cartpole-terminating": Args(
-        cpu=True,
         env="CartPole-v1",
         max_steps=100,
         steps_per_rollout=50,
@@ -55,7 +57,6 @@ CASES = {
         model=TINY_ENN,
     ),
     "predict-reward-buffer-reset": Args(
-        cpu=True,
         env="Pendulum-v1",
         max_steps=400,
         predict_reward_terminated=True,
@@ -67,14 +68,12 @@ CASES = {
         model=TINY_ENN,
     ),
     "enn-bernoulli-bootstrap": Args(
-        cpu=True,
         env="Pendulum-v1",
         max_steps=200,
         ppo=TINY_PPO,
         model=dataclasses.replace(TINY_ENN, bootstrap="bernoulli"),
     ),
     "enn-gaussian-bootstrap-reward": Args(
-        cpu=True,
         env="Pendulum-v1",
         max_steps=200,
         predict_reward_terminated=True,
@@ -82,7 +81,6 @@ CASES = {
         model=dataclasses.replace(TINY_ENN, bootstrap="gaussian", bootstrap_noise=0.1),
     ),
     "rnd-pendulum-2seeds": Args(
-        cpu=True,
         env="Pendulum-v1",
         num_seeds=2,
         max_steps=400,
@@ -92,15 +90,21 @@ CASES = {
         model=TINY_ENN,
     ),
     "model-free-cartpole": Args(
-        cpu=True,
         env="CartPole-v1",
         model_free=True,
         max_steps=100,
         steps_per_rollout=50,
         ppo=TINY_PPO,
     ),
+    "model-free-deepsea": Args(
+        env="DeepSea-5",
+        model_free=True,
+        num_seeds=2,
+        max_steps=50,
+        steps_per_rollout=10,
+        ppo=TINY_PPO,
+    ),
     "brax-inverted-pendulum": Args(
-        cpu=True,
         env="inverted_pendulum",
         max_steps=100,
         steps_per_rollout=50,
@@ -161,14 +165,14 @@ def _check_outputs(log_dir, *, model):
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(name, marks=() if args.cpu else pytest.mark.gpu)
-        for name, args in CASES.items()
+        pytest.param(name, marks=pytest.mark.gpu if name in GPU_CASES else ())
+        for name in CASES
     ],
 )
 def test_online(tmp_path, case):
     args = CASES[case]
     main.main(dataclasses.replace(args, log_dir=str(tmp_path)))
-    assert jax.default_backend() == ("cpu" if args.cpu else "gpu")
+    assert jax.default_backend() == ("gpu" if case in GPU_CASES else "cpu")
     scalars = _check_outputs(tmp_path, model=not args.model_free)
     assert len(scalars) == args.num_seeds
     assert all("eval/mean_return" in tags for tags in scalars.values())
@@ -196,7 +200,7 @@ def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX
         reward=jnp.asarray(next_obs[:, 0] - obs[:, 0]),
         log_prob=zeros,
         obs=jnp.asarray(obs),
-        info={"next_obs": jnp.asarray(next_obs)},
+        info={"final_observation": jnp.asarray(next_obs)},
         raw_obs=jnp.asarray(obs),
         raw_action=jnp.asarray(action),
         raw_reward=jnp.asarray(next_obs[:, 0] - obs[:, 0]),
@@ -206,13 +210,15 @@ def _fake_plant_dataset(num_episodes=4, ep_len=14, act_dim=1, obs_dim=AREA_INDEX
     return transitions, action_space, observation_space, ep_len
 
 
+def test_model_based_rejects_discrete_observations(tmp_path):
+    args = Args(env="DeepSea-5", ppo=TINY_PPO, model=TINY_ENN, log_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="Discrete observations"):
+        main.main(args)
+
+
 def test_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "load_offline_transitions", lambda _: _fake_plant_dataset()
     )
-    main.main(
-        Args(
-            cpu=True, offline=True, log_dir=str(tmp_path), ppo=TINY_PPO, model=TINY_ENN
-        )
-    )
+    main.main(Args(offline=True, log_dir=str(tmp_path), ppo=TINY_PPO, model=TINY_ENN))
     _check_golden("offline", _check_outputs(tmp_path, model=True))

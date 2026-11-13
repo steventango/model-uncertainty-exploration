@@ -213,7 +213,7 @@ class ModelBasedAgent:
             rnd_losses = self._train_rnd(
                 agent_state.rnd,
                 agent_state.rnd_optimizer,
-                experience.buffer.info["next_obs"],
+                experience.buffer.info["final_observation"],
                 jnp.asarray(experience.size),
                 rnd_key,
             )
@@ -229,6 +229,9 @@ class ModelBasedAgent:
         )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         params = self.model_env.default_params.replace(
+            env_params=self.model_env.seed_env_params
+            if self.model_env.seed_env_params is not None
+            else self.model_env.default_params.env_params,
             model=agent_state.models,
             rnd=agent_state.rnd,
             alpha=self.alphas,

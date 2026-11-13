@@ -26,8 +26,15 @@ class Transition(NamedTuple):
     raw_reward: jnp.ndarray
 
 
+def normalizes_obs(config, env, env_params):
+    """Observation normalization is meaningless for Discrete (index) observations."""
+    discrete_obs = isinstance(env.observation_space(env_params), spaces.Discrete)
+    return config["NORMALIZE_ENV"] and not discrete_obs
+
+
 def make_rollout(config, env, env_params, training=True):
     discrete = isinstance(env.action_space(env_params), spaces.Discrete)
+    normalize_obs = normalizes_obs(config, env, env_params)
 
     def _rollout(runner_state):
         # COLLECT TRAJECTORIES
@@ -36,7 +43,7 @@ def make_rollout(config, env, env_params, training=True):
             network, _, normalize_vec_obs, normalize_vec_reward = train_state
             # SELECT ACTION
             rng, _rng = jax.random.split(rng)
-            if config["NORMALIZE_ENV"]:
+            if normalize_obs:
                 normalize_vec_obs.eval()
                 network_last_obs = normalize_vec_obs(last_obs)
             else:
@@ -51,18 +58,18 @@ def make_rollout(config, env, env_params, training=True):
             obsv, env_state, reward, terminated, truncated, info = env.step(
                 rng_step, env_state, action, env_params
             )
-            next_obs = info["next_obs"]
+            next_obs = info["final_observation"]
             raw_reward = reward
 
-            if config["NORMALIZE_ENV"]:
+            if normalize_obs:
                 if training:
                     normalize_vec_obs.train()
                     normalize_vec_obs(obsv)
                 normalize_vec_obs.eval()
                 next_obs = normalize_vec_obs(next_obs)
-                if training:
-                    normalize_vec_reward.train()
-                    reward = normalize_vec_reward(reward, terminated, truncated)
+            if config["NORMALIZE_ENV"] and training:
+                normalize_vec_reward.train()
+                reward = normalize_vec_reward(reward, terminated, truncated)
 
             _, next_value = network(next_obs)
 
@@ -232,7 +239,7 @@ def make_train(env, config):
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
         obsv, env_state = env.reset(reset_rng, env_params)
 
-        if config["NORMALIZE_ENV"]:
+        if normalizes_obs(config, env, env_params):
             normalize_vec_obs.train()
             normalize_vec_obs(obsv)
 
@@ -291,13 +298,16 @@ def make_train_state(config, env, env_params, rngs):
     action_space = env.action_space(env_params)
     discrete = isinstance(action_space, spaces.Discrete)
     action_dim = action_space.n if discrete else action_space.shape[0]
+    obs_space = env.observation_space(env_params)
+    obs_classes = obs_space.n if isinstance(obs_space, spaces.Discrete) else None
     network = ActorCritic(
-        env.observation_space(env_params).shape[0],
+        obs_space.shape[0] if obs_classes is None else obs_classes,
         action_dim,
         config["HIDDEN_DIM"],
         activation=config["ACTIVATION"],
         discrete=discrete,
         use_layer_norm=config["USE_LAYER_NORM"],
+        obs_classes=obs_classes,
         rngs=rngs,
     )
 
