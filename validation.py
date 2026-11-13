@@ -31,6 +31,8 @@ def generate_brax_validation_data(env, env_params, num_val=1000):
     val_obs, val_act, val_delta_obs, val_reward, val_terminated = jax.vmap(
         sample_transition
     )(reset_keys, act_keys, step_keys)
+    if val_act.ndim == 1:  # discrete actions: models expect (N, 1)
+        val_act = val_act[:, None]
     return val_obs, val_act, val_delta_obs, val_reward, val_terminated
 
 
@@ -106,6 +108,26 @@ def validation_metrics(
     ).mean()
 
     return dyn_mae, rew_mae, term_bce, term_f1, mean_uncertainty, dyn_nll
+
+
+def state_action_uncertainty(model, grid_obs, grid_act, key, explore_bonus):
+    """Epistemic uncertainty at each row of a (state, action) grid, shape (N,)."""
+    x_norm = _model_inputs(model, grid_obs, grid_act)
+    idx = model.sample_index(key, _NUM_UNC_SAMPLES)
+    return model.batch_uncertainty(x_norm, idx, explore_bonus, reduce_output=True)
+
+
+def make_batched_state_action_uncertainty(explore_bonus):
+    """Vmap state_action_uncertainty over a leading seed axis on the model."""
+    return nnx.jit(
+        nnx.vmap(
+            lambda m, obs, act, key: state_action_uncertainty(
+                m, obs, act, key, explore_bonus
+            ),
+            in_axes=(0, None, None, 0),
+            out_axes=0,
+        )
+    )
 
 
 def make_batched_validation_metrics():

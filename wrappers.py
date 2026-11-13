@@ -182,6 +182,88 @@ class BraxGymnaxWrapper:
         )
 
 
+class PacMDPGymnaxWrapper:
+    """Gymnax-style adapter for classic_pacmdp_envs (RiverSwim, SixArms).
+
+    Observations are the state index as a float vector of shape (1,). The env state
+    is (inner_state, t); episodes truncate after ``episode_length`` steps and
+    auto-reset, mirroring BraxGymnaxWrapper.
+    """
+
+    def __init__(self, env_name, episode_length=5000):
+        from classic_pacmdp_envs import RiverSwimJaxEnv, SixArmsJaxEnv
+
+        envs_by_name = {"riverswim": RiverSwimJaxEnv, "sixarms": SixArmsJaxEnv}
+        # "<env>_onehot" emits a one-hot state vector instead of the state index.
+        self._one_hot = env_name.endswith("_onehot")
+        self._env = envs_by_name[env_name.removesuffix("_onehot")]()
+        self._episode_length = episode_length
+        self._num_actions = self._env.env.action_space.n
+        self._num_states = self._env.env.observation_space.n
+        self.discrete_obs = self._one_hot
+
+    @property
+    def default_params(self):
+        return environment.EnvParams(max_steps_in_episode=self._episode_length)
+
+    def _obs(self, obs):
+        if self._one_hot:
+            return jax.nn.one_hot(jnp.reshape(obs, ()), self._num_states)
+        return jnp.reshape(obs, (1,)).astype(jnp.float32)
+
+    def reset_env(self, key, params=None):
+        inner, obs = self._env.reset(key)
+        return self._obs(obs), (inner, jnp.zeros((), jnp.int32))
+
+    def reset(self, key, params=None):
+        return self.reset_env(key, params)
+
+    def step_env(self, key, state, action, params=None):
+        inner, t = state
+        next_inner, obs, reward, terminated, _, _ = self._env.step(
+            inner, jnp.asarray(action, jnp.int32)
+        )
+        t = t + 1
+        return (
+            self._obs(obs),
+            (next_inner, t),
+            reward.astype(jnp.float32),
+            terminated,
+            {},
+        )
+
+    def step(self, key, state, action, params=None):
+        key, key_reset = jax.random.split(key)
+        obs, next_state, reward, terminated, _ = self.step_env(
+            key, state, action, params
+        )
+        truncated = next_state[1] >= self._episode_length
+        done = terminated | truncated
+        reset_obs, reset_state = self.reset_env(key_reset, params)
+        state_out = jax.tree_util.tree_map(
+            lambda r, s: jax.lax.select(done, r, s), reset_state, next_state
+        )
+        obs_out = jax.lax.select(done, reset_obs, obs)
+        return obs_out, state_out, reward, terminated, truncated, {"next_obs": obs}
+
+    def state_action_grid(self):
+        """Every (state, action) pair: obs (S*A, obs_dim), act (S*A, 1) int, (S, A)."""
+        obs = jax.vmap(self._obs)(jnp.arange(self._num_states))
+        obs = jnp.repeat(obs, self._num_actions, axis=0)
+        act = jnp.tile(jnp.arange(self._num_actions, dtype=jnp.int32), self._num_states)
+        return obs, act[:, None], (self._num_states, self._num_actions)
+
+    def observation_space(self, params):
+        if self._one_hot:
+            from deep_sea import OneHot
+
+            return OneHot(self._num_states)
+        return spaces.Box(low=0.0, high=float(self._num_states - 1), shape=(1,))
+
+    def action_space(self, params):
+        return spaces.Discrete(self._num_actions)
+
+
 class ClipAction(GymnaxWrapper):
     def __init__(self, env, low=-1.0, high=1.0):
         super().__init__(env)

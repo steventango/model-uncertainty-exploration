@@ -19,14 +19,25 @@ from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict, sac_config_dict
 from data import collate_rollout
 from deep_sea import DeepSeaOneHot
-from environments import BRAX_BACKENDS, BRAX_ENVS, make_state_reconstruction_wrapper
+from environments import (
+    BRAX_BACKENDS,
+    BRAX_ENVS,
+    PACMDP_ENVS,
+    make_state_reconstruction_wrapper,
+)
 from logger import ExperimentLogger, log_eval, log_time
 from model_env import ModelEnvironment
 from models.base import head_out_features
 from offline_data import AREA_INDEX, load_offline_transitions
 from plant_env import PlantEnv, PlantEnvParams
 from ppo import make_rollout
-from wrappers import BraxGymnaxWrapper, ClipAction, LogWrapper, VecEnv
+from wrappers import (
+    BraxGymnaxWrapper,
+    ClipAction,
+    LogWrapper,
+    PacMDPGymnaxWrapper,
+    VecEnv,
+)
 
 
 def _wrap_env(env, discrete):
@@ -245,8 +256,12 @@ def main(args: Args):
         seed_env_params, env_params_axis = env_params, None
 
     else:
-        is_brax = args.env in BRAX_ENVS
-        if is_brax:
+        is_pacmdp = args.env in PACMDP_ENVS
+        is_brax = args.env in BRAX_ENVS or is_pacmdp
+        if is_pacmdp:
+            base_env = PacMDPGymnaxWrapper(args.env)
+            env_params = base_env.default_params
+        elif is_brax:
             backend = BRAX_BACKENDS.get(args.env, "positional")
             base_env = BraxGymnaxWrapper(args.env, backend=backend)
             env_params = base_env.default_params
@@ -256,7 +271,7 @@ def main(args: Args):
         else:
             base_env, env_params = gymnax.make(args.env)
 
-        if is_brax:
+        if is_brax and not is_pacmdp:
             predict_reward_terminated = args.predict_reward_terminated or not hasattr(
                 base_env, "obs_to_reward_terminated"
             )
@@ -283,7 +298,9 @@ def main(args: Args):
             seed_env_params, env_params_axis = env_params, None
         env = _wrap_env(base_env, discrete)
 
-        if is_brax:
+        if is_pacmdp:
+            val_data = None
+        elif is_brax:
             val_data = validation.generate_brax_validation_data(base_env, env_params)
         elif args.env.startswith("DeepSea-"):
             val_data = None

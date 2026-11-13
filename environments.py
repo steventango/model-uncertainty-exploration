@@ -51,6 +51,35 @@ class AcrobotWrapper(StateReconstructionWrapper):
         )
 
 
+class RiverSwimWrapper(StateReconstructionWrapper):
+    """obs = [position]; reward and termination are analytic in (obs, action, next_obs)."""
+
+    def obs_to_reward_terminated(self, obs, action, next_obs, params=None):
+        params = self._env._env.env.params
+        pos, next_pos = obs[0], next_obs[0]
+        last = params.num_states - 1
+        a = jnp.reshape(action, ()).astype(jnp.float32)
+        easy = (1 - a) * (pos == 0) * params.easy_reward
+        hard = a * (pos == next_pos) * (pos == last) * params.hard_reward
+        return (easy + hard).astype(jnp.float32), jnp.bool_(False)
+
+
+class RiverSwimOneHotWrapper(RiverSwimWrapper):
+    """obs = one-hot state (possibly soft, i.e. model-predicted probabilities).
+
+    Reward is the expectation under the soft state, so no float equality is needed:
+    easy = P(at 0) * [a == left]; hard = P(at last) * P(stay at last | a == right).
+    """
+
+    def obs_to_reward_terminated(self, obs, action, next_obs, params=None):
+        params = self._env._env.env.params
+        last = params.num_states - 1
+        a = jnp.reshape(action, ()).astype(jnp.float32)
+        easy = (1 - a) * obs[0] * params.easy_reward
+        hard = a * obs[last] * next_obs[last] * params.hard_reward
+        return (easy + hard).astype(jnp.float32), jnp.bool_(False)
+
+
 # ---------------------------------------------------------------------------
 # Brax wrappers
 # ---------------------------------------------------------------------------
@@ -202,6 +231,8 @@ class GenericBraxWrapper(BraxStateReconstructionWrapper):
 
 
 _WRAPPER_MAP = {
+    "riverswim": RiverSwimWrapper,
+    "riverswim_onehot": RiverSwimOneHotWrapper,
     "Pendulum-v1": PendulumWrapper,
     "MountainCar-v0": MountainCarWrapper,
     "MountainCarContinuous-v0": MountainCarContinuousWrapper,
@@ -238,6 +269,8 @@ BRAX_ENVS = frozenset(
 )
 
 BRAX_BACKENDS = {"swimmer": "generalized"}
+
+PACMDP_ENVS = frozenset({"riverswim", "riverswim_onehot"})
 
 
 def make_state_reconstruction_wrapper(env, env_name: str) -> StateReconstructionWrapper:

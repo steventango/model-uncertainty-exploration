@@ -152,11 +152,32 @@ class ExperimentLogger:
         self._track_summary_metric("validation/termination_f1", term_f1)
         self._track_summary_metric("validation/mean_uncertainty", mean_uncertainty)
 
+    def log_state_action_uncertainty(self, unc, shape, dataset_size):
+        """unc: flat (S*A,) uncertainties in (state-major, action-minor) order."""
+        num_states, num_actions = shape
+        unc = unc.reshape(num_states, num_actions)
+        for s in range(num_states):
+            for a in range(num_actions):
+                self._writer.add_scalar(
+                    f"validation/uncertainty/s{s}_a{a}",
+                    float(unc[s, a]),
+                    int(dataset_size),
+                )
+
     def close(self):
         if self._hparams:
             metrics = self._summary_metrics or {"hparam/complete": 1.0}
             self._writer.add_hparams(self._hparams, metrics)
         self._writer.close()
+
+
+def log_state_action_uncertainty(
+    loggers, batched_sa_unc, models, grid, dataset_ptr, keys
+):
+    obs, act, shape = grid
+    unc = batched_sa_unc(models, obs, act, keys)
+    for b, logger in enumerate(loggers):
+        logger.log_state_action_uncertainty(unc[b], shape, dataset_ptr)
 
 
 def log_validation(
