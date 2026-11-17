@@ -421,6 +421,7 @@ def main(args: Args):
             reset_source=reset_source,
             max_steps_in_episode=args.rollout_length,
             uncertainty_threshold=args.uncertainty_threshold,
+            reset_mix=args.reset_mix,
         )
         agent = ModelBasedAgent(
             model_name=args.model.name,

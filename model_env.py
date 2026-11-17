@@ -2,14 +2,14 @@ from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
-from flax import struct
+from flax import nnx, struct
 from gymnax.environments import environment, spaces
 
 from batching import seed_slice
 from models import WorldModel
 from rnd import RND
 
-ResetSource = Literal["env", "buffer", "init", "random"]
+ResetSource = Literal["env", "buffer", "init", "random", "unique", "uncertain"]
 
 
 def reset_weights(
@@ -40,6 +40,70 @@ def reset_weights(
     else:
         raise ValueError(f"source must be 'buffer' or 'init', got {source!r}")
     return w / w.sum(axis=-1, keepdims=True)
+
+
+def inverse_count_weights(
+    index: jnp.ndarray, valid: jnp.ndarray, n: int
+) -> jnp.ndarray:
+    """Uniform over the distinct discrete states in the buffer: ``1 / visits(s_i)``.
+
+    ``index`` (N,) are state indices in ``[0, n)``, ``valid`` (N,) marks filled rows.
+    """
+    v = valid.astype(jnp.float32)
+    counts = jnp.zeros(n, jnp.float32).at[index].add(v)
+    return v / jnp.maximum(counts[index], 1.0)
+
+
+def inverse_density_weights(
+    obs: jnp.ndarray,
+    valid: jnp.ndarray,
+    key: jax.Array,
+    num_features: int = 512,
+    bandwidth_rows: int = 256,
+) -> jnp.ndarray:
+    """Roughly uniform over the region the buffer covers: ``1 / rho(s_i)``.
+
+    ``rho`` is a Gaussian-kernel density estimate on standardized observations,
+    computed with random Fourier features so it costs O(N * num_features) instead of
+    the O(N^2) pairwise kernel sum: ``rho(x) ~ phi(x) . mean_j phi(x_j)``. The
+    bandwidth is the median pairwise distance of ``bandwidth_rows`` random valid rows.
+    With a vanishing bandwidth this is ``1 / visits``, i.e. ``inverse_count_weights``.
+    The density is floored at 1% of its mean so no row's weight exceeds 100x average.
+
+    ``obs`` is (N, d), ``valid`` (N,). Kernel density estimates degrade as ``d`` grows;
+    for high-dimensional observations the weights approach uniform.
+    """
+    v = valid.astype(jnp.float32)
+    n_valid = v.sum()
+    mean = (obs * v[:, None]).sum(0) / n_valid
+    std = jnp.sqrt((((obs - mean) ** 2) * v[:, None]).sum(0) / n_valid)
+    x = (obs - mean) / jnp.maximum(std, 1e-6)
+
+    key_rows, key_w, key_b = jax.random.split(key, 3)
+    rows = jax.random.choice(key_rows, obs.shape[0], (bandwidth_rows,), p=v / n_valid)
+    sample = x[rows]
+    dist = jnp.sqrt(((sample[:, None] - sample[None]) ** 2).sum(-1))
+    bandwidth = jnp.maximum(jnp.median(dist), 1e-3)
+
+    w = jax.random.normal(key_w, (num_features, x.shape[-1])) / bandwidth
+    b = jax.random.uniform(key_b, (num_features,), maxval=2 * jnp.pi)
+    phi = jnp.sqrt(2.0 / num_features) * jnp.cos(x @ w.T + b)
+    mu = (phi * v[:, None]).sum(0) / n_valid
+    rho = phi @ mu
+    rho = jnp.maximum(rho, 0.01 * (rho * v).sum() / n_valid)
+    return v / rho
+
+
+def mix_with_uniform(score: jnp.ndarray, valid: jnp.ndarray, mix: float) -> jnp.ndarray:
+    """``(1 - mix) * score / sum(score) + mix * uniform`` over the valid rows.
+
+    The uniform part keeps every state reachable: starting only at the most uncertain
+    states would never train the policy to reach them from the real start.
+    """
+    v = valid.astype(jnp.float32)
+    p = jnp.maximum(score, 0.0) * v
+    p = p / jnp.maximum(p.sum(), 1e-12)
+    return (1.0 - mix) * p + mix * v / v.sum()
 
 
 @struct.dataclass
@@ -111,6 +175,7 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         reset_source: ResetSource = "env",
         max_steps_in_episode: int | None = None,
         uncertainty_threshold: float | None = None,
+        reset_mix: float = 0.1,
     ):
         if prediction_mode not in ("mean", "sample"):
             raise ValueError(
@@ -120,11 +185,21 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
             raise ValueError(
                 f"explore_bonus must be 'std', 'eig' or 'rnd', got {explore_bonus!r}"
             )
-        if reset_source not in ("env", "buffer", "init", "random"):
+        if reset_source not in (
+            "env",
+            "buffer",
+            "init",
+            "random",
+            "unique",
+            "uncertain",
+        ):
             raise ValueError(
-                "reset_source must be 'env', 'buffer', 'init' or 'random', "
-                f"got {reset_source!r}"
+                "reset_source must be 'env', 'buffer', 'init', 'random', 'unique' or "
+                f"'uncertain', got {reset_source!r}"
             )
+        if not 0.0 <= reset_mix <= 1.0:
+            raise ValueError(f"reset_mix must be in [0, 1], got {reset_mix}")
+        self.reset_mix = reset_mix
         self._real_env = env
         self.env_params = env_params
         single_env_params = seed_slice(env_params, 0)
@@ -146,25 +221,110 @@ class ModelEnvironment(environment.Environment[ModelEnvState, ModelEnvParams]):
         terminated: jnp.ndarray,
         truncated: jnp.ndarray,
         count: jnp.ndarray | int,
+        key: jax.Array | None = None,
     ) -> ModelEnvParams:
+        """Attach the buffer-derived reset distribution for ``reset_source``.
+
+        ``obs``/``terminated``/``truncated`` carry a leading seed axis (or none, for a
+        single seed). ``key`` seeds the density features and the action/index draws of
+        the ``"unique"`` and ``"uncertain"`` sources.
+        """
         if self.reset_source == "env":
             return params
-        if self.reset_source != "random":
+        space = self._real_env.observation_space(seed_slice(self.env_params, 0))
+        if self.reset_source == "random":
+            if not isinstance(space, spaces.Box):
+                return params
+            low = jnp.broadcast_to(space.low, space.shape).astype(jnp.float32)
+            high = jnp.broadcast_to(space.high, space.shape).astype(jnp.float32)
+            valid = (jnp.arange(obs.shape[-2]) < jnp.asarray(count)[..., None])[
+                ..., None
+            ]
+            data_low = jnp.where(valid, obs, jnp.inf).min(axis=-2)
+            data_high = jnp.where(valid, obs, -jnp.inf).max(axis=-2)
+            usable = jnp.isfinite(high - low)
+            return params.replace(
+                init_low=jnp.where(usable, low, data_low),
+                init_high=jnp.where(usable, high, data_high),
+            )
+        if self.reset_source in ("buffer", "init"):
             weights = reset_weights(terminated, truncated, count, self.reset_source)
             return params.replace(init_obs=obs, init_weights=weights)
-        space = self._real_env.observation_space(seed_slice(self.env_params, 0))
-        if not isinstance(space, spaces.Box):
-            return params
-        low = jnp.broadcast_to(space.low, space.shape).astype(jnp.float32)
-        high = jnp.broadcast_to(space.high, space.shape).astype(jnp.float32)
-        valid = (jnp.arange(obs.shape[-2]) < jnp.asarray(count)[..., None])[..., None]
-        data_low = jnp.where(valid, obs, jnp.inf).min(axis=-2)
-        data_high = jnp.where(valid, obs, -jnp.inf).max(axis=-2)
-        usable = jnp.isfinite(high - low)
+
+        key = jax.random.key(0) if key is None else key
+        batched = terminated.ndim == 2
+        count = jnp.broadcast_to(jnp.asarray(count), terminated.shape[:-1])
+        if self.reset_source == "unique":
+            fn = self._unique_weights(space)
+            if batched:
+                keys = jax.random.split(key, terminated.shape[0])
+                weights = jax.vmap(fn)(obs, count, keys)
+            else:
+                weights = fn(obs, count, key)
+        else:
+            if batched:
+                keys = jax.random.split(key, terminated.shape[0])
+                weights = nnx.vmap(self._uncertain_weights)(
+                    params.model, params.rnd, obs, count, keys
+                )
+            else:
+                weights = self._uncertain_weights(
+                    params.model, params.rnd, obs, count, key
+                )
         return params.replace(
-            init_low=jnp.where(usable, low, data_low),
-            init_high=jnp.where(usable, high, data_high),
+            init_obs=obs, init_weights=weights / weights.sum(-1, keepdims=True)
         )
+
+    def _unique_weights(self, space):
+        """``(obs (N, ...), count, key) -> weights (N,)``, ``1 / density`` of the row."""
+        if isinstance(space, spaces.Discrete):
+
+            def fn(obs, count, key):
+                flat = obs.reshape(obs.shape[0], -1)
+                index = flat[:, 0] if flat.shape[1] == 1 else flat.argmax(-1)
+                valid = jnp.arange(obs.shape[0]) < count
+                return inverse_count_weights(index.astype(jnp.int32), valid, space.n)
+
+        else:
+
+            def fn(obs, count, key):
+                valid = jnp.arange(obs.shape[0]) < count
+                return inverse_density_weights(
+                    obs.reshape(obs.shape[0], -1).astype(jnp.float32), valid, key
+                )
+
+        return fn
+
+    def _uncertain_weights(self, model, rnd, obs, count, key):
+        """Epistemic uncertainty of the model at each buffer state, mixed with uniform.
+
+        The bonus is averaged over actions: all of them for a discrete space, a fixed
+        random draw of 4 for a continuous one. With ``explore_bonus="rnd"`` the score
+        is the RND novelty of the state itself.
+        """
+        n = obs.shape[0]
+        valid = jnp.arange(n) < count
+        key_z, key_a = jax.random.split(key)
+        if self.explore_bonus == "rnd":
+            score = jax.lax.map(rnd, obs, batch_size=1024)
+        else:
+            action_space = self._real_env.action_space(seed_slice(self.env_params, 0))
+            if isinstance(action_space, spaces.Discrete):
+                actions = jnp.arange(action_space.n)
+            else:
+                actions = jax.vmap(action_space.sample)(jax.random.split(key_a, 4))
+            z = model.sample_index(key_z, self.samples)
+
+            def per_state(o):
+                def per_action(a):
+                    return model.uncertainty(
+                        model.single_input(o, a), z, self.explore_bonus
+                    )
+
+                return jax.vmap(per_action)(actions).mean()
+
+            score = jax.lax.map(per_state, obs, batch_size=1024)
+        return mix_with_uniform(score, valid, self.reset_mix)
 
     @property
     def default_params(self) -> ModelEnvParams:

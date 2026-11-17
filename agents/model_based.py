@@ -244,6 +244,7 @@ class ModelBasedAgent:
             experience.buffer.terminated,
             experience.buffer.truncated,
             experience.size,
+            key=jax.random.fold_in(jax.random.key(0), step),
         )
         t0 = time.perf_counter()
         out = self._train_ppo(train_states, params, vsplit(train_seed, num_configs).T)
