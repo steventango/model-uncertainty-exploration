@@ -110,7 +110,10 @@ class Args:
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
     predict_reward_terminated: bool = False
-    reset_source: Literal["env", "buffer", "init", "random"] = "env"
+    reset_source: Literal["env", "buffer", "init", "random", "unique", "uncertain"] = (
+        "env"
+    )
+    reset_mix: float = 0.1  # uniform share of the "uncertain" reset distribution
     rollout_length: int | None = None
     steps_per_rollout: int | None = None
     eval_every: int | None = None
