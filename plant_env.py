@@ -87,6 +87,7 @@ class PlantEnv(environment.Environment[PlantEnvState, PlantEnvParams]):
         last_action: jax.Array | None = None,
         time: int | None = None,
         next_obs: jax.Array | None = None,
+        params: PlantEnvParams | None = None,
     ) -> PlantEnvState:
         assert time is not None
         assert next_obs is not None

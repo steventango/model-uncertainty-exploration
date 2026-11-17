@@ -47,12 +47,16 @@ class ExperimentLogger:
         rewards = np.asarray(batch.reward)
 
         if self._discrete_obs:
-            states = obs.argmax(axis=1)
-            self._log_time_series("dataset/state", states, start_step)
-            self._visited.update(states.tolist())
-            self._writer.add_scalar(
-                "coverage/unique_states", len(self._visited), start_step + len(states)
+            self._log_time_series("dataset/state", obs, start_step)
+            is_new = np.zeros(len(obs), dtype=bool)
+            is_new[np.unique(obs, return_index=True)[1]] = True
+            is_new &= ~np.isin(obs, list(self._visited))
+            self._log_time_series(
+                "coverage/unique_states",
+                len(self._visited) + np.cumsum(is_new),
+                start_step,
             )
+            self._visited.update(obs.tolist())
         else:
             for i in range(obs.shape[1]):
                 self._log_time_series(f"dataset/obs_{i}", obs[:, i], start_step)
@@ -194,8 +198,10 @@ def log_validation(
         )
 
 
-def log_eval(loggers, batched_eval, eval_policy_state, eval_keys, dataset_ptr):
-    mean_returns = batched_eval(eval_policy_state, eval_keys)
+def log_eval(
+    loggers, batched_eval, eval_policy_state, env_params, eval_keys, dataset_ptr
+):
+    mean_returns = batched_eval(eval_policy_state, eval_keys, env_params)
     for b, logger in enumerate(loggers):
         logger.log_eval_return(dataset_ptr, mean_returns[b])
 

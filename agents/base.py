@@ -6,6 +6,7 @@ import orbax.checkpoint as ocp
 from flax import nnx
 from gymnax.environments import environment
 
+from batching import seed_slice
 from models.base import WorldModel
 from networks import ActorCritic
 from normalization import NormalizeVecObs, NormalizeVecReward
@@ -55,6 +56,8 @@ class Agent[S](Protocol):
 def make_batched_policy(
     config: Config, env: Env, env_params: environment.EnvParams, keys: jax.Array
 ) -> PolicyState:
+    env_params = seed_slice(env_params, 0)
+
     @nnx.vmap
     def build(key):
         return make_train_state(config, env, env_params, nnx.Rngs(params=key))

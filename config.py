@@ -7,15 +7,21 @@ import tyro
 
 
 @dataclass(frozen=True)
+class EpinetConfig:
+    learnable_hidden_dim: int | tuple[int, ...] = 15
+    prior_hidden_dim: int | tuple[int, ...] = 5
+    index_dim: int | tuple[int, ...] = 8
+    num_layers: int | tuple[int, ...] = 2
+    activation: str = "silu"
+
+
+@dataclass(frozen=True)
 class ENNConfig:
     """Epistemic Neural Network"""
 
     name: ClassVar[str] = "enn"
     lr: float | tuple[float, ...] = 1e-3
     hidden_dim: int | tuple[int, ...] = 200
-    learnable_hidden_dim: int | tuple[int, ...] = 15
-    prior_hidden_dim: int | tuple[int, ...] = 5
-    index_dim: int | tuple[int, ...] = 8
     activation: str = "silu"
     num_layers: int | tuple[int, ...] = 4
     l2: float | tuple[float, ...] = 0.1
@@ -30,6 +36,7 @@ class ENNConfig:
     beta_nll: float = 0.5
     bootstrap: Literal["none", "bernoulli", "gaussian"] = "none"
     bootstrap_noise: float = 1.0
+    epinet: EpinetConfig = field(default_factory=EpinetConfig)
 
 
 @dataclass(frozen=True)
@@ -64,10 +71,12 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     hidden_dim: int = 64
+    num_layers: int = 2
     activation: str = "tanh"
     use_layer_norm: bool = False
     anneal_lr: bool = False
-    normalize_env: bool = True
+    normalize_obs: bool = True
+    normalize_reward: bool = True
     debug: bool = False
 
 
@@ -109,7 +118,6 @@ class Args:
     offline: bool = False
     dataset: str = "plant-data/visu-v27"
     debug: bool = False
-    cpu: bool = False
     log_dir: str | None = None
     label: str = ""
     ppo: PPOConfig = field(default_factory=PPOConfig)
@@ -121,6 +129,15 @@ class Args:
             raise ValueError("--model-free needs an online env")
         if self.model_free and self.explore_bonus == "rnd":
             raise ValueError("--explore-bonus rnd is a model-env bonus")
+        if self.solver == "vi" and getattr(self.model, "head", None) != "categorical":
+            raise ValueError("--solver vi needs --model.head categorical")
+        if getattr(self.model, "head", None) == "categorical":
+            if self.offline:
+                raise ValueError(
+                    "--model.head categorical needs an online Discrete env"
+                )
+            if self.explore_bonus == "rnd":
+                raise ValueError("--explore-bonus rnd does not support Discrete obs")
 
 
 def candidate_configs(m):
@@ -172,11 +189,13 @@ def ppo_config_dict(
     env_name: str,
     seed: int,
     offline: bool,
+    discrete_obs: bool = False,
 ) -> dict:
     """Convert PPO config to the UPPERCASE dict ppo.py expects.
 
     Computes derived keys NUM_UPDATES and MINIBATCH_SIZE from the tunable base
     keys so that overriding e.g. --ppo.num-envs automatically re-derives them.
+    Observation normalization is disabled for Discrete (index) observations.
     """
     d: dict = {k.upper(): v for k, v in dataclasses.asdict(p).items()}
     if not offline:
@@ -184,4 +203,5 @@ def ppo_config_dict(
     d["SEED"] = seed
     d["NUM_UPDATES"] = int(d["TOTAL_TIMESTEPS"]) // d["NUM_STEPS"] // d["NUM_ENVS"]
     d["MINIBATCH_SIZE"] = d["NUM_ENVS"] * d["NUM_STEPS"] // d["NUM_MINIBATCHES"]
+    d["NORMALIZE_OBS"] = d["NORMALIZE_OBS"] and not discrete_obs
     return d

@@ -4,7 +4,7 @@ from wrappers import StateReconstructionWrapper
 
 
 class PendulumWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time, next_obs=None):
+    def get_state(self, obs, last_action, time, next_obs=None, params=None):
         from gymnax.environments.classic_control.pendulum import EnvState
 
         return EnvState(
@@ -14,32 +14,52 @@ class PendulumWrapper(StateReconstructionWrapper):
             time=time,
         )
 
+    def get_reward(self, state, action, next_state, terminated, params):
+        from gymnax.environments.classic_control.pendulum import angle_normalize
+
+        u = jnp.clip(action, -params.max_torque, params.max_torque)
+        reward = -(
+            angle_normalize(state.theta) ** 2
+            + 0.1 * state.theta_dot**2
+            + 0.001 * (u**2)
+        )
+        return reward.squeeze()
+
 
 class MountainCarWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time, next_obs=None):
+    def get_state(self, obs, last_action, time, next_obs=None, params=None):
         from gymnax.environments.classic_control.mountain_car import EnvState
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
+    def get_reward(self, state, action, next_state, terminated, params):
+        return jnp.array(-1.0)
+
 
 class MountainCarContinuousWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time, next_obs=None):
+    def get_state(self, obs, last_action, time, next_obs=None, params=None):
         from gymnax.environments.classic_control.continuous_mountain_car import EnvState
 
         return EnvState(position=obs[0], velocity=obs[1], time=time)
 
+    def get_reward(self, state, action, next_state, terminated, params):
+        return (-0.1 * action**2 + 100 * terminated).squeeze()
+
 
 class CartPoleWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time, next_obs=None):
+    def get_state(self, obs, last_action, time, next_obs=None, params=None):
         from gymnax.environments.classic_control.cartpole import EnvState
 
         return EnvState(
             x=obs[0], x_dot=obs[1], theta=obs[2], theta_dot=obs[3], time=time
         )
 
+    def get_reward(self, state, action, next_state, terminated, params):
+        return 1.0 - self._env.is_terminal(state, params)
+
 
 class AcrobotWrapper(StateReconstructionWrapper):
-    def get_state(self, obs, last_action, time, next_obs=None):
+    def get_state(self, obs, last_action, time, next_obs=None, params=None):
         from gymnax.environments.classic_control.acrobot import EnvState
 
         return EnvState(
@@ -50,6 +70,9 @@ class AcrobotWrapper(StateReconstructionWrapper):
             time=time,
         )
 
+    def get_reward(self, state, action, next_state, terminated, params):
+        return -1.0 * (1 - terminated)
+
 
 # ---------------------------------------------------------------------------
 # Brax wrappers
@@ -59,7 +82,7 @@ class AcrobotWrapper(StateReconstructionWrapper):
 class BraxStateReconstructionWrapper(StateReconstructionWrapper):
     """Base for brax envs: state reconstruction from obs is not possible."""
 
-    def get_state(self, obs, last_action, time, next_obs=None):
+    def get_state(self, obs, last_action, time, next_obs=None, params=None):
         raise NotImplementedError(
             "Brax pipeline states cannot be reconstructed from observations. "
             "Use predict_reward_terminated=True (model predictions) or ensure "

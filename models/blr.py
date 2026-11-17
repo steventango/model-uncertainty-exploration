@@ -92,7 +92,10 @@ def _train_model(
 
     Y = (
         model.build_targets(
-            dataset.obs, dataset.info["next_obs"], dataset.reward, dataset.terminated
+            dataset.obs,
+            dataset.info["final_observation"],
+            dataset.reward,
+            dataset.terminated,
         )
         * mask
     )

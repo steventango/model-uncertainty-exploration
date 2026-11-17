@@ -20,7 +20,11 @@ from agents.tabular_vi import make_batched_solve_vi
 from batching import seed_slice, vsplit
 from config import RNDConfig
 from logger import ExperimentLogger, log_time, log_validation
-from model_env import ModelEnvironment, ResetSource, reset_weights
+from model_env import (
+    ModelEnvironment,
+    ResetSource,
+    reset_weights,
+)
 from models import make_batched_model, make_batched_rngs, make_batched_train_model
 from models.base import WorldModel
 from networks import TabularPolicy
@@ -110,7 +114,7 @@ class ModelBasedAgent:
                 model_env,
                 model_dims[1],
                 model_dims[3],
-                env_params.max_steps_in_episode,
+                int(seed_slice(env_params, 0).max_steps_in_episode),
                 ppo_config["GAMMA"],
             )
         self._train_ppo = nnx.jit(
@@ -200,7 +204,7 @@ class ModelBasedAgent:
             validation.evaluate_validation(
                 model,
                 base_env,
-                self.env_params,
+                seed_slice(self.env_params, 0),
                 env_name,
                 *self.val_data,
                 buffer,
@@ -213,7 +217,7 @@ class ModelBasedAgent:
             plotting.evaluate_and_plot_uncertainty(
                 model,
                 base_env,
-                self.env_params,
+                seed_slice(self.env_params, 0),
                 env_name,
                 unc_seed[0],
                 buffer,
@@ -227,7 +231,7 @@ class ModelBasedAgent:
             rnd_losses = self._train_rnd(
                 agent_state.rnd,
                 agent_state.rnd_optimizer,
-                experience.buffer.info["next_obs"],
+                experience.buffer.info["final_observation"],
                 jnp.asarray(experience.size),
                 rnd_key,
             )
@@ -237,7 +241,7 @@ class ModelBasedAgent:
         if self.solver == "vi":
             q_explore, q_eval = self._solve_vi(
                 agent_state.models,
-                self.model_env.seed_env_params,
+                self.env_params,
                 train_seed,
                 self.alphas[self.EXPLORE],
                 self.betas[self.EXPLORE],
@@ -251,14 +255,11 @@ class ModelBasedAgent:
         train_states = make_batched_train_state(
             self.ppo_config,
             self.model_env,
-            self.model_env.default_params,
+            self.model_env.default_params.unbatched(),
             vsplit(ts_seed, num_configs).T,  # (B, C)
         )
         # model varies per seed (B axis); alpha/beta vary per config (C axis).
         params = self.model_env.default_params.replace(
-            env_params=self.model_env.seed_env_params
-            if self.model_env.seed_env_params is not None
-            else self.model_env.default_params.env_params,
             model=agent_state.models,
             rnd=agent_state.rnd,
             alpha=self.alphas,

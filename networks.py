@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from itertools import pairwise
 
 import distrax
@@ -66,7 +67,7 @@ class MLP(nnx.Module):
             ]
         )
         self.out = nnx.Linear(
-            hidden_features, out_features, kernel_init=out_kernel_init, rngs=rngs
+            sizes[-1], out_features, kernel_init=out_kernel_init, rngs=rngs
         )
 
     def __call__(self, x, rngs: nnx.Rngs | None = None):
@@ -84,6 +85,7 @@ class Actor(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -93,7 +95,7 @@ class Actor(nnx.Module):
             hidden_dim,
             action_dim,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
             use_layer_norm=use_layer_norm,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -118,6 +120,7 @@ class Critic(nnx.Module):
         hidden_dim: int,
         activation: str = "tanh",
         use_layer_norm: bool = False,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
@@ -126,7 +129,7 @@ class Critic(nnx.Module):
             hidden_dim,
             1,
             rngs=rngs,
-            num_layers=2,
+            num_layers=num_layers,
             activation=activation,
             use_layer_norm=use_layer_norm,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -147,9 +150,12 @@ class ActorCritic(nnx.Module):
         activation: str = "tanh",
         discrete: bool = False,
         use_layer_norm: bool = False,
+        preprocess_obs_fn: Callable[[jax.Array], jax.Array] | None = None,
+        num_layers: int = 2,
         *,
         rngs: nnx.Rngs,
     ):
+        self.preprocess_obs_fn = preprocess_obs_fn
         self.actor = Actor(
             state_dim,
             action_dim,
@@ -157,13 +163,16 @@ class ActorCritic(nnx.Module):
             activation,
             discrete,
             use_layer_norm,
+            num_layers,
             rngs=rngs,
         )
         self.critic = Critic(
-            state_dim, hidden_dim, activation, use_layer_norm, rngs=rngs
+            state_dim, hidden_dim, activation, use_layer_norm, num_layers, rngs=rngs
         )
 
     def __call__(self, x):
+        if self.preprocess_obs_fn is not None:
+            x = self.preprocess_obs_fn(x)
         pi = self.actor(x)
         critic = self.critic(x)
         return pi, critic
@@ -177,6 +186,8 @@ class ProjectedMLP(nnx.Module):
         out_features: int,
         rngs: nnx.Rngs,
         first_kernel_init=None,
+        num_layers: int = 1,
+        activation: str = "tanh",
     ):
         self.mlp = MLP(
             in_features=in_features,
@@ -186,6 +197,8 @@ class ProjectedMLP(nnx.Module):
             out_kernel_init=nnx.initializers.zeros,
             first_kernel_init=first_kernel_init,
             use_layer_norm=False,
+            num_layers=num_layers,
+            activation=activation,
         )
 
     def __call__(self, x, z, rngs: nnx.Rngs | None = None):
@@ -204,6 +217,8 @@ class MLPEnsemble(nnx.Module):
         out_features: int,
         rngs: nnx.Rngs,
         first_kernel_init=None,
+        num_layers: int = 1,
+        activation: str = "tanh",
     ):
         keys = jax.random.split(rngs.params(), num_models)
 
@@ -215,6 +230,8 @@ class MLPEnsemble(nnx.Module):
                 out_features,
                 use_layer_norm=False,
                 first_kernel_init=first_kernel_init,
+                num_layers=num_layers,
+                activation=activation,
                 rngs=nnx.Rngs(params=key),
             )
 
@@ -244,6 +261,8 @@ class EpiNet(nnx.Module):
         *,
         prior_scale: float = 1.0,
         first_kernel_init=None,
+        num_layers: int = 1,
+        activation: str = "tanh",
         rngs: nnx.Rngs,
     ):
         self.learnable = ProjectedMLP(
@@ -252,6 +271,8 @@ class EpiNet(nnx.Module):
             out_features=out_features * index_dim,
             rngs=rngs,
             first_kernel_init=first_kernel_init,
+            num_layers=num_layers,
+            activation=activation,
         )
         self.prior = MLPEnsemble(
             num_models=index_dim,
@@ -260,6 +281,8 @@ class EpiNet(nnx.Module):
             out_features=out_features,
             rngs=rngs,
             first_kernel_init=first_kernel_init,
+            num_layers=num_layers,
+            activation=activation,
         )
         self.prior_scale = prior_scale
 
@@ -284,6 +307,8 @@ class ENN(nnx.Module):
         activation: str = "tanh",
         prior_scale: float = 1.0,
         first_kernel_init=None,
+        epinet_num_layers: int = 1,
+        epinet_activation: str = "tanh",
         rngs: nnx.Rngs,
     ):
         self.base = MLP(
@@ -305,6 +330,8 @@ class ENN(nnx.Module):
             index_dim=index_dim,
             prior_scale=prior_scale,
             first_kernel_init=first_kernel_init,
+            num_layers=epinet_num_layers,
+            activation=epinet_activation,
             rngs=rngs,
         )
         self.index_dim = index_dim
@@ -320,6 +347,7 @@ class TabularPolicy(nnx.Module):
         self.q = nnx.Variable(q)
 
     def __call__(self, x):
-        q = self.q[...]
+        """x: Discrete state indices. Greedy policy and value from the Q table."""
+        q = self.q[...][x.astype(jnp.int32)]
         greedy = jax.nn.one_hot(q.argmax(-1), q.shape[-1])
-        return distrax.Categorical(logits=1e3 * (x @ greedy)), x @ q.max(-1)
+        return distrax.Categorical(logits=1e3 * greedy), q.max(-1)

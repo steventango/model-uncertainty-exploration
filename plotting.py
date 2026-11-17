@@ -1134,7 +1134,7 @@ def plot_offline_visualization(
     explore_ts0 = unstack_train_state(explore_train_state, 0)
     exploit_ts0 = unstack_train_state(eval_train_state, 0)
 
-    model0_env_params = model_env.default_params.replace(
+    model0_env_params = model_env.default_params.unbatched().replace(
         model=model0,
         alpha=jnp.float32(1.0),
         beta=jnp.float32(0.0),
