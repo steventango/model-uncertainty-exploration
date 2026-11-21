@@ -105,7 +105,7 @@ class Args:
     num_seeds: int = 1
     alpha: float = 0.0
     beta: float = 1.0
-    solver: Literal["ppo"] = "ppo"
+    solver: Literal["ppo", "vi"] = "ppo"
     model_free: bool = False
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
@@ -131,6 +131,8 @@ class Args:
             raise ValueError("--model-free needs an online env")
         if self.model_free and self.explore_bonus == "rnd":
             raise ValueError("--explore-bonus rnd is a model-env bonus")
+        if self.solver == "vi" and getattr(self.model, "head", None) != "categorical":
+            raise ValueError("--solver vi needs --model.head categorical")
         if getattr(self.model, "head", None) == "categorical":
             if self.offline:
                 raise ValueError(

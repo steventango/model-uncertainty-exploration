@@ -122,6 +122,26 @@ CASES = {
             update_steps=10, hidden_dim=16, head="categorical", bootstrap="bernoulli"
         ),
     ),
+    "enn-categorical-deepsea-onehot-fixes": Args(
+        env="DeepSea-6",
+        max_steps=60,
+        ppo=TINY_PPO,
+        model=dataclasses.replace(
+            TINY_ENN,
+            head="categorical",
+            onehot_init=True,
+            weight_decay=1e-2,
+            label_smoothing=0.01,
+        ),
+    ),
+    "vi-deepsea-2seeds": Args(
+        env="DeepSea-6",
+        num_seeds=2,
+        max_steps=60,
+        solver="vi",
+        ppo=TINY_PPO,
+        model=dataclasses.replace(TINY_ENN, head="categorical"),
+    ),
     "model-free-deepsea": Args(
         env="DeepSea-5",
         model_free=True,
@@ -176,13 +196,13 @@ def _check_golden(name, actual):
     chex.assert_trees_all_close(actual, expected)
 
 
-def _check_outputs(log_dir, *, model):
+def _check_outputs(log_dir, *, model, solver="ppo"):
     scalars = _all_scalars(log_dir)
     assert scalars
     for seed, tags in scalars.items():
         ckpt = log_dir / seed / "checkpoint"
-        assert (ckpt / "ppo_explore" / "network").is_dir()
-        assert (ckpt / "ppo_eval" / "network").is_dir()
+        assert (ckpt / f"{solver}_explore" / "network").is_dir()
+        assert (ckpt / f"{solver}_eval" / "network").is_dir()
         assert (ckpt / "model").is_dir() == model
         assert all(math.isfinite(v) for points in tags.values() for _, v in points)
     return scalars
@@ -199,7 +219,7 @@ def test_online(tmp_path, case):
     args = CASES[case]
     main.main(dataclasses.replace(args, log_dir=str(tmp_path)))
     assert jax.default_backend() == ("gpu" if case in GPU_CASES else "cpu")
-    scalars = _check_outputs(tmp_path, model=not args.model_free)
+    scalars = _check_outputs(tmp_path, model=not args.model_free, solver=args.solver)
     assert len(scalars) == args.num_seeds
     assert all("eval/mean_return" in tags for tags in scalars.values())
     _check_golden(case, scalars)
