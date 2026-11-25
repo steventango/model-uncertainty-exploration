@@ -24,11 +24,15 @@ def evaluate_policy(eval_config, env, env_params, rollout_fn, eval_train_state, 
     return jnp.where(jnp.any(done), mean_return, 0.0)
 
 
-def make_batched_evaluate_policy(eval_config, env):
-    """Vmap policy evaluation over a leading seed axis; returns (B,) mean returns."""
+def make_batched_evaluate_policy(eval_config, env, rollout_factory=make_rollout):
+    """Vmap policy evaluation over a leading seed axis; returns (B,) mean returns.
+
+    rollout_factory: the agent's make_rollout when it has one (e.g. OPAX's planner),
+    ppo.make_rollout otherwise.
+    """
 
     def one(eval_train_state, rng, params):
-        rollout_fn = make_rollout(eval_config, env, params, training=False)
+        rollout_fn = rollout_factory(eval_config, env, params, training=False)
         return evaluate_policy(
             eval_config, env, params, rollout_fn, eval_train_state, rng
         )

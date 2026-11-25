@@ -92,6 +92,33 @@ class RNDConfig:
     update_steps: int = 100
 
 
+
+@dataclass(frozen=True)
+class OpaxConfig:
+    """Opax agent (--opax) and its iCEM planner hyperparameters"""
+    #iCEM configuration
+    num_samples: int = 500
+    num_elites: int = 50
+    init_std: float = 0.5
+    alpha: float = 0.0
+    elite_set_fraction: float = 0.3
+    horizon: int = 25 #depends on env: 20 for CC, 30 for mujoco
+    train_steps_per_model_update: int = 35
+    transitions_per_update: int = 500
+    normalize: bool = True
+    #model configuration
+    num_ensembles: int = 5
+    num_layers: int = 2
+    hidden_dim: int = 256
+    reset_model: bool = True
+    pred_diff: bool = True
+    beta: float = 2.0
+    deterministic_env: bool = True
+    n_particles: int = 5
+    num_steps: int = 20
+    eval_envs: int = 10
+
+
 ModelConfig = (
     Annotated[ENNConfig, tyro.conf.subcommand("enn", default=ENNConfig())]
     | Annotated[BLRConfig, tyro.conf.subcommand("blr")]
@@ -106,7 +133,7 @@ class Args:
     alpha: float = 0.0
     beta: float = 1.0
     solver: Literal["ppo"] = "ppo"
-    model_free: bool = False
+    agent: Literal["opax", "model-based", "model-free"] = "model-based"
     model_env_mode: Literal["mean", "sample"] = "sample"
     explore_bonus: Literal["std", "eig", "rnd"] = "eig"
     predict_reward_terminated: bool = False
@@ -125,12 +152,20 @@ class Args:
     ppo: PPOConfig = field(default_factory=PPOConfig)
     rnd: RNDConfig = field(default_factory=RNDConfig)
     model: ModelConfig = field(default_factory=ENNConfig)
+    opax: OpaxConfig = field(default_factory=OpaxConfig)
 
     def __post_init__(self):
-        if self.model_free and self.offline:
-            raise ValueError("--model-free needs an online env")
-        if self.model_free and self.explore_bonus == "rnd":
-            raise ValueError("--explore-bonus rnd is a model-env bonus")
+        if (self.agent != "model-based") and self.offline:
+            raise ValueError(f"--agent {self.agent} needs an online env")
+        if (self.agent != "model-based") and self.explore_bonus == "rnd":
+            raise ValueError(
+                "--explore-bonus rnd is a model-env bonus (--agent model-based only)"
+            )
+        if (self.agent == "opax") and self.predict_reward_terminated:
+            raise ValueError(
+                "--predict-reward-terminated cannot be used with OPAX "
+                "(it plans with the env's reward oracle)"
+            )
         if getattr(self.model, "head", None) == "categorical":
             if self.offline:
                 raise ValueError(

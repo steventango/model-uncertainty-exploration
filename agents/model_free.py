@@ -40,7 +40,7 @@ class ModelFreeAgent:
     ):
         if config["NUM_STEPS"] % config["NUM_MINIBATCHES"]:
             raise ValueError(
-                f"--model-free: --ppo.num-minibatches ({config['NUM_MINIBATCHES']})"
+                f"--agent model-free: --ppo.num-minibatches ({config['NUM_MINIBATCHES']})"
                 f" must divide the real steps per rollout ({config['NUM_STEPS']})"
             )
         self.config = config

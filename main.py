@@ -14,7 +14,7 @@ from gymnax.environments import spaces
 import evaluation
 import plotting
 import validation
-from agents import Experience, ModelBasedAgent, ModelFreeAgent
+from agents import Experience, ModelBasedAgent, ModelFreeAgent, OpaxAgent
 from batching import seed_slice, vsplit
 from config import Args, model_config_dict, ppo_config_dict
 from data import collate_rollout
@@ -73,8 +73,12 @@ def run_online(
 
         _init_obs_stats(agent.explore_policy(agent_state), obsv)
 
+    # Agents that do not act through a PPO policy (OPAX's MPC planner) supply their own
+    # rollout with the same contract; everyone else uses PPO's.
+    rollout_factory = getattr(agent, "make_rollout", make_rollout)
+
     def rollout(runner_state, params):
-        return make_rollout(rollout_config, env, params, training=agent.on_policy)(
+        return rollout_factory(rollout_config, env, params, training=agent.on_policy)(
             runner_state
         )
 
@@ -102,7 +106,9 @@ def run_online(
 
         return jax.tree_util.tree_map(jax.vmap(append_one), buffer, batch)
 
-    batched_eval = evaluation.make_batched_evaluate_policy(eval_config, env)
+    batched_eval = evaluation.make_batched_evaluate_policy(
+        eval_config, env, rollout_factory
+    )
     key, eval_keys = vsplit(key)
     log_eval(
         loggers, batched_eval, agent.eval_policy(agent_state), env_params, eval_keys, 0
@@ -200,6 +206,8 @@ def main(args: Args):
     B = args.num_seeds
     seeds = args.seed + jnp.arange(B)
     seed_keys = jax.vmap(jax.random.key)(seeds)
+    is_model_free = args.agent == "model-free"
+    is_opax = args.agent == "opax"
 
     if args.offline:
         print(f"Loading offline dataset: {args.dataset}")
@@ -280,16 +288,21 @@ def main(args: Args):
         obs_space = base_env.observation_space(single_env_params)
         discrete_obs = isinstance(obs_space, spaces.Discrete)
         head = getattr(args.model, "head", "deterministic")
-        if not args.model_free:
+        if args.agent == "model-based":
             if discrete_obs and head != "categorical":
                 raise ValueError(
                     f"{args.env} has Discrete observations; model-based agents "
-                    "need --model.head categorical (or use --model-free)."
+                    "need --model.head categorical (or use --agent model-free)."
                 )
             if head == "categorical" and not discrete_obs:
                 raise ValueError(
                     "--model.head categorical needs a Discrete observation space"
                 )
+        elif is_opax and discrete_obs:
+            raise ValueError(
+                f"{args.env} has Discrete observations; OPAX's Gaussian ensemble "
+                "needs continuous observations."
+            )
         env = _wrap_env(base_env, discrete)
 
         if is_brax:
@@ -360,7 +373,8 @@ def main(args: Args):
         }
         eval_config = {
             **rollout_config,
-            "NUM_ENVS": 100,
+            # MPC eval plans at every step of every env, so OPAX uses fewer envs.
+            "NUM_ENVS": args.opax.eval_envs if is_opax else 100,
             "NUM_STEPS": single_env_params.max_steps_in_episode,
         }
         hparams_extra = {"rollout": rollout_config, "eval": eval_config}
@@ -372,7 +386,15 @@ def main(args: Args):
     )
     os.makedirs(log_dir, exist_ok=True)
     with open(os.path.join(log_dir, "config.json"), "w") as _f:
-        json.dump({"env": args.env, "model": args.model.name, "label": args.label}, _f)
+        json.dump(
+            {
+                "env": args.env,
+                "agent": args.agent,
+                "model": args.model.name,
+                "label": args.label,
+            },
+            _f,
+        )
 
     seed_dirs, loggers = [], []
     for b in range(B):
@@ -381,7 +403,7 @@ def main(args: Args):
         args_flat = {
             k: v
             for k, v in dataclasses.asdict(args).items()
-            if k not in ("ppo", "model", "rnd")
+            if k not in ("ppo", "model", "rnd", "opax")
         }
         args_flat["model"] = args.model.name
         args_flat["seed"] = int(seeds[b])
@@ -391,13 +413,16 @@ def main(args: Args):
             model=model_config,
             run=hparams_run,
             **({"rnd": dataclasses.asdict(rnd_config)} if rnd_config else {}),
+            **({"opax": dataclasses.asdict(args.opax)} if is_opax else {}),
             **hparams_extra,
         )
         seed_dirs.append(seed_dir)
         loggers.append(logger)
 
-    if args.model_free:
+    if is_model_free:
         agent = ModelFreeAgent(rollout_config, env, env_params, loggers, args.solver)
+    elif is_opax:
+        agent = OpaxAgent(args.opax, env, env_params, obs_dim, loggers)
     else:
         # Offline has no real env to reset; "env" falls back to the dataset's
         # initial-state distribution ("init").

@@ -106,7 +106,7 @@ CASES = {
     ),
     "model-free-cartpole": Args(
         env="CartPole-v1",
-        model_free=True,
+        agent="model-free",
         max_steps=100,
         steps_per_rollout=50,
         ppo=TINY_PPO,
@@ -124,7 +124,7 @@ CASES = {
     ),
     "model-free-deepsea": Args(
         env="DeepSea-5",
-        model_free=True,
+        agent="model-free",
         num_seeds=2,
         max_steps=50,
         steps_per_rollout=10,
@@ -199,7 +199,7 @@ def test_online(tmp_path, case):
     args = CASES[case]
     main.main(dataclasses.replace(args, log_dir=str(tmp_path)))
     assert jax.default_backend() == ("gpu" if case in GPU_CASES else "cpu")
-    scalars = _check_outputs(tmp_path, model=not args.model_free)
+    scalars = _check_outputs(tmp_path, model=args.agent=="model-based")
     assert len(scalars) == args.num_seeds
     assert all("eval/mean_return" in tags for tags in scalars.values())
     _check_golden(case, scalars)
